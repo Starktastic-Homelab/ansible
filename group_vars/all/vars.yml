@@ -13,4 +13,4 @@ argocd_repo_url: "https://github.com/Starktastic-Homelab/platform.git"
 k3s_init_k3s_version: "v1.31.4+k3s1"
 
 # renovate: datasource=docker depName=ghcr.io/kube-vip/kube-vip
-k3s_init_kube_vip_version: "v0.9.2"
+k3s_init_kube_vip_version: "v1.0.3"

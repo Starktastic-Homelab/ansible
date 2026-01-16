@@ -42,7 +42,8 @@ jobs:
       - name: Setup Helm
         uses: azure/setup-helm@v4.3.1
         with:
-          version: 'v3.19.4'
+          # renovate: datasource=github-releases depName=helm/helm
+          version: 'v4.0.5'
 
       - name: Setup SSH Key
         run: |

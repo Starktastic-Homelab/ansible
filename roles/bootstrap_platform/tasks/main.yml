@@ -25,16 +25,10 @@
         tls.key: "{{ sealed_secrets_key_b64 }}"
         tls.crt: "{{ sealed_secrets_crt_b64 }}"
 
-- name: Check if helm-diff is installed
-  ansible.builtin.command: helm plugin list
-  register: helm_plugin_list
-  changed_when: false
-  failed_when: false
-
 - name: Install helm-diff plugin
-  ansible.builtin.command:
-    cmd: helm plugin install https://github.com/databus23/helm-diff --verify=false
-  when: "'diff' not in helm_plugin_list.stdout"
+  kubernetes.core.helm_plugin:
+    plugin_path: https://github.com/databus23/helm-diff
+    state: present
 
 - name: Setup ArgoCD
   ansible.builtin.include_tasks: argocd.yml

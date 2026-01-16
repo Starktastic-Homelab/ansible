@@ -10,6 +10,7 @@
     cmd: /tmp/k3s-install.sh
   environment:
     K3S_TOKEN: "{{ global_k3s_token }}"
+    INSTALL_K3S_VERSION: "{{ k3s_init_k3s_version }}"
     INSTALL_K3S_EXEC: >-
       agent
       --server https://{{ vip_address }}:6443

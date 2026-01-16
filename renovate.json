@@ -4,14 +4,15 @@
     "config:recommended"
   ],
   "ansible": {
-    "managerFilePatterns": ["/(^|/)tasks/[^/]+\\.ya?ml$/"]
+    "managerFilePatterns": ["/(^|/)tasks/[^/]+\\.ya?ml$", "/vars\\.ya?ml$"]
   },
   "customManagers": [
     {
+      "description": "Update Ansible variables with Renovate comments",
       "customType": "regex",
-      "fileMatch": ["(^|/)tasks/[^/]+\\.ya?ml$", "\\.ya?ml$"],
+      "fileMatch": ["(^|/)group_vars/all/vars\\.ya?ml$", "(^|/)tasks/[^/]+\\.ya?ml$"],
       "matchStrings": [
-        "#\\s*renovate:\\s*datasource=(?<datasource>.*?)\\s+depName=(?<depName>.*?)(?:\\s+registryUrl=(?<registryUrl>.*?))?\\s+.*?chart_version:\\s*\"?(?<currentValue>.*?)\"?\\s"
+        "#\\s*renovate:\\s*datasource=(?<datasource>.*?)\\s+depName=(?<depName>.*?)(?:\\s+registryUrl=(?<registryUrl>.*?))?\\s+.*?[a-z0-9_]+_version:\\s*\"?(?<currentValue>.*?)\"?\\s"
       ]
     }
   ]

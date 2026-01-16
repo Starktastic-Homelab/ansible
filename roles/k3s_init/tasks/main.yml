@@ -9,6 +9,7 @@
   ansible.builtin.command:
     cmd: /tmp/k3s-install.sh
   environment:
+    INSTALL_K3S_VERSION: "{{ k3s_init_k3s_version }}"
     INSTALL_K3S_EXEC: >-
       server
       --cluster-init

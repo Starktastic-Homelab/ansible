@@ -11,20 +11,6 @@
     dest: "{{ k3s_manifests_directory }}/kube-vip-rbac.yaml"
     mode: '0444'
 
-- name: Get Kube-Vip releases
-  ansible.builtin.uri:
-    url: https://api.github.com/repos/kube-vip/kube-vip/releases
-    method: GET
-    return_content: true
-    status_code: 200
-    body_format: json
-  register: k3s_init_kube_vip_releases
-
-- name: Set version of Kube-Vip to latest
-  ansible.builtin.set_fact:
-    k3s_init_kube_vip_version:
-      "{{ k3s_init_kube_vip_releases.json[0].tag_name }}"
-
 - name: Pull Kube-Vip image
   ansible.builtin.command: >-
     ctr image pull ghcr.io/kube-vip/kube-vip:{{ k3s_init_kube_vip_version }}

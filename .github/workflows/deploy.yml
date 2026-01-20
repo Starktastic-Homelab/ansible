@@ -14,7 +14,7 @@ on:
       - 'renovate.json'
 
 jobs:
-  deploy:
+  provision:
     name: Apply Configuration
     runs-on: self-hosted
     container:
@@ -59,3 +59,29 @@ jobs:
             --vault-password-file .vault_pass \
             --private-key private_key.pem \
             k3s.yml
+
+      - name: Stage Kubeconfig
+        run: cp ~/.kube/config ./kubeconfig_artifact
+
+      - name: Upload Kubeconfig Artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: kubeconfig
+          path: kubeconfig_artifact
+          retention-days: 1
+
+  handoff:
+    name: Push secret to Platform repo
+    needs: provision
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Kubeconfig Artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: kubeconfig
+      
+      - name: Update Platform repo secret
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_PLATFORM_REPO_SECRET_UPDATER }}
+        run: |
+          gh secret set KUBECONFIG_RAW --repo Starktastic-Homelab/platform --body "$(cat kubeconfig_artifact)"

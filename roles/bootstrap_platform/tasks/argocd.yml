@@ -76,8 +76,8 @@
           repoURL: "{{ argocd_repo_url }}"
           targetRevision: HEAD
           path: apps/bootstrap
-        directory:
-          recurse: true
+          directory:
+            recurse: true
         destination:
           server: https://kubernetes.default.svc
           namespace: argocd

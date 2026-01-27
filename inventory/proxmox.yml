@@ -10,11 +10,9 @@ keyed_groups:
 groups:
   all_k3s: "'k3s' in (proxmox_tags_parsed|list)"
   masters: >-
-    'k3s' in (proxmox_tags_parsed|list) and
-    'master' in (proxmox_tags_parsed|list)
+    'k3s' in (proxmox_tags_parsed|list) and 'master' in (proxmox_tags_parsed|list)
   workers: >-
-    'k3s' in (proxmox_tags_parsed|list) and
-    'worker' in (proxmox_tags_parsed|list)
+    'k3s' in (proxmox_tags_parsed|list) and 'worker' in (proxmox_tags_parsed|list)
 
 compose:
   ansible_host: proxmox_ipconfig0.ip.split('/')[0]

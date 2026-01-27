@@ -1,0 +1,3 @@
+.github/workflows/
+.vault_pass
+group_vars/all/secrets.yml

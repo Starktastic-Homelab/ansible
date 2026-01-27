@@ -56,8 +56,8 @@
       - "app.kubernetes.io/name=argocd-server"
   register: argocd_pods
   until: >
-    argocd_pods.resources | length > 0 and
-    argocd_pods.resources | map(attribute='status.availableReplicas') | select('defined') | list | length == argocd_pods.resources | length
+    argocd_pods.resources | length > 0 and argocd_pods.resources | map(attribute='status.availableReplicas') |
+    select('defined') | list | length == argocd_pods.resources | length
   retries: 30
   delay: 10
 

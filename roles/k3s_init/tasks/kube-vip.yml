@@ -3,13 +3,13 @@
   ansible.builtin.file:
     path: "{{ k3s_manifests_directory }}"
     state: directory
-    mode: '0700'
+    mode: "0700"
 
 - name: Upload Kube-Vip RBAC Manifest
   ansible.builtin.get_url:
     url: https://kube-vip.io/manifests/rbac.yaml
     dest: "{{ k3s_manifests_directory }}/kube-vip-rbac.yaml"
-    mode: '0444'
+    mode: "0444"
 
 - name: Pull Kube-Vip image
   ansible.builtin.command: >-
@@ -31,4 +31,4 @@
   ansible.builtin.copy:
     content: "{{ k3s_init_kube_vip_daemonset_manifest.stdout }}"
     dest: "{{ k3s_manifests_directory }}/kube-vip-daemonset.yaml"
-    mode: '0444'
+    mode: "0444"

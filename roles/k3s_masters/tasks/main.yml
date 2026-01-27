@@ -3,7 +3,7 @@
   ansible.builtin.get_url:
     url: https://get.k3s.io
     dest: /tmp/k3s-install.sh
-    mode: '0755'
+    mode: "0755"
 
 - name: Join Master to Cluster
   ansible.builtin.command:
@@ -12,11 +12,6 @@
     K3S_TOKEN: "{{ global_k3s_token }}"
     INSTALL_K3S_VERSION: "{{ k3s_init_k3s_version }}"
     INSTALL_K3S_EXEC: >-
-      server
-      --server https://{{ vip_address }}:6443
-      --tls-san {{ vip_address }}
-      --flannel-iface {{ flannel_iface }}
-      --node-ip {{ ansible_host }}
-      --disable traefik
-      --disable servicelb
+      server --server https://{{ vip_address }}:6443 --tls-san {{ vip_address }} --flannel-iface {{ flannel_iface }}
+      --node-ip {{ ansible_host }} --disable traefik --disable servicelb
   changed_when: true

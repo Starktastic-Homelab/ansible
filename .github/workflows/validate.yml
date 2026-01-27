@@ -1,9 +1,9 @@
 ---
 name: Validate Ansible playbook
 on:
+  workflow_dispatch:
   pull_request:
-    branches:
-      - main
+    branches: [main]
     paths-ignore:
       - 'README.md'
       - 'renovate.json'
@@ -27,24 +27,23 @@ jobs:
         run: pip install ansible-lint
 
       - name: Run ansible-lint
-        id: lint
         run: |
           set +e
-
-          ansible-lint --offline --nocolor . > lint.log 2>&1
+          OUTPUT=$(ansible-lint --offline --force-color . 2>&1)
           EXIT_CODE=$?
+          set -e
 
-          echo "$EXIT_CODE" > lint.exitcode
-          cat lint.log
-
-      - name: Upload artifacts
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: ansible-lint-results
-          path: |
-            lint.log
-            lint.exitcode
+          echo "### 🔍 Ansible Lint Results" >> $GITHUB_STEP_SUMMARY
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+             echo "✅ **Passed**" >> $GITHUB_STEP_SUMMARY
+          else
+             echo "❌ **Failed**" >> $GITHUB_STEP_SUMMARY
+             echo '```term' >> $GITHUB_STEP_SUMMARY
+             echo "$OUTPUT" >> $GITHUB_STEP_SUMMARY
+             echo '```' >> $GITHUB_STEP_SUMMARY
+             exit 1
+          fi
 
   syntax-check:
     name: Ansible Syntax Check
@@ -72,113 +71,22 @@ jobs:
           PROXMOX_TOKEN_ID: ${{ secrets.PROXMOX_TOKEN_ID }}
           PROXMOX_TOKEN_SECRET: ${{ secrets.PROXMOX_TOKEN_SECRET }}
         run: |
+          echo "### 🛠️ Syntax Check Results" >> $GITHUB_STEP_SUMMARY
+
           set +e
-
-          ansible-playbook -i inventory/proxmox.yml \
+          OUTPUT=$(ansible-playbook -i inventory/proxmox.yml \
             --vault-password-file .vault_pass \
-            --private-key private_key.pem --syntax-check \
-            k3s.yml > syntax.log 2>&1
+            --private-key private_key.pem \
+            --syntax-check k3s.yml 2>&1)
           EXIT_CODE=$?
-          
-          echo "$EXIT_CODE" > syntax.exitcode
-          cat syntax.log
+          set -e
 
-      - name: Upload artifacts
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: ansible-syntax-results
-          path: |
-            syntax.log
-            syntax.exitcode
-
-  comment:
-    if: always()
-    name: Report Results
-    runs-on: ubuntu-latest
-    needs: [lint, syntax-check]
-    permissions:
-      pull-requests: write
-    steps:
-      - name: Download Lint Results
-        uses: actions/download-artifact@v7
-        continue-on-error: true
-        with:
-          name: ansible-lint-results
-
-      - name: Download Syntax Results
-        uses: actions/download-artifact@v7
-        continue-on-error: true
-        with:
-          name: ansible-syntax-results
-
-      - name: Construct and Post Comment
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ -f "lint.exitcode" ]; then
-            LINT_CODE=$(cat lint.exitcode)
-            LINT_LOG=$(cat lint.log)
-            if [ "$LINT_CODE" -eq "0" ]; then
-               LINT_ICON="✅ Passed"
-            else
-               LINT_ICON="❌ Failed"
-            fi
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "✅ **Valid**" >> $GITHUB_STEP_SUMMARY
           else
-            LINT_CODE=1
-            LINT_ICON="⚠️ Skipped / Crashed"
-            LINT_LOG="No log available. The job likely failed before generating artifacts."
-          fi
-
-          if [ -f "syntax.exitcode" ]; then
-            SYNTAX_CODE=$(cat syntax.exitcode)
-            SYNTAX_LOG=$(cat syntax.log)
-            if [ "$SYNTAX_CODE" -eq "0" ]; then
-               SYNTAX_ICON="✅ Passed"
-            else
-               SYNTAX_ICON="❌ Failed"
-            fi
-          else
-            SYNTAX_CODE=1
-            SYNTAX_ICON="⚠️ Skipped / Crashed"
-            SYNTAX_LOG="No log available."
-          fi
-
-          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
-          
-          cat << $EOF > comment_body.md
-          ## 🤖 Ansible Validation Report
-
-          | Check | Status |
-          | :--- | :--- |
-          | **Ansible Lint** | $LINT_ICON |
-          | **Syntax Check** | $SYNTAX_ICON |
-
-          <details>
-          <summary>🔍 <strong>Lint Details</strong></summary>
-
-          \`\`\`text
-          $LINT_LOG
-          \`\`\`
-          </details>
-
-          <details>
-          <summary>🛠️ <strong>Syntax Details</strong></summary>
-
-          \`\`\`text
-          $SYNTAX_LOG
-          \`\`\`
-          </details>
-          $EOF
-
-          gh pr comment ${{ github.event.pull_request.number }} \
-            -R ${{ github.repository }} \
-            --body-file comment_body.md
-
-          if [ "$LINT_CODE" -ne "0" ] || [ "$SYNTAX_CODE" -ne "0" ]; then
-            echo "::error::Validation checks failed or were skipped."
+            echo "❌ **Invalid**" >> $GITHUB_STEP_SUMMARY
+            echo '```term' >> $GITHUB_STEP_SUMMARY
+            echo "$OUTPUT" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
             exit 1
-          else
-            echo "All checks passed."
-            exit 0
           fi

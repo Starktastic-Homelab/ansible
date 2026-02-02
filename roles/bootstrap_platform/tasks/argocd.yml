@@ -47,6 +47,9 @@
           scopes: "[groups]"
           policy.csv: |
             g, authentik Admins, role:admin
+      notifications:
+        secret:
+          create: false
 
 - name: Wait for ArgoCD server to be ready
   kubernetes.core.k8s_info:

@@ -35,10 +35,10 @@
             oidc.authentik.clientID: "{{ argocd_oidc_client_id }}"
             oidc.authentik.clientSecret: "{{ argocd_oidc_client_secret }}"
         cm:
-          url: "https://argocd.internal.starktastic.net"
+          url: "{{ argocd_url }}"
           oidc.config: |
             name: Authentik
-            issuer: "https://auth.starktastic.net/application/o/argo-cd/"
+            issuer: "{{ authentik_url }}/application/o/argo-cd/"
             clientID: "$oidc.authentik.clientID"
             clientSecret: "$oidc.authentik.clientSecret"
             requestedScopes: ["openid", "profile", "email", "groups"]

@@ -1,17 +1,30 @@
 ---
-- name: Download K3s install script
-  ansible.builtin.get_url:
-    url: https://get.k3s.io
-    dest: /tmp/k3s-install.sh
-    mode: "0755"
+- name: Join master node to cluster
+  tags:
+    - k3s
+    - masters
+  block:
+    - name: Join Master to Cluster
+      ansible.builtin.command:
+        cmd: /tmp/k3s-install.sh
+      environment:
+        K3S_TOKEN: "{{ global_k3s_token }}"
+        INSTALL_K3S_VERSION: "{{ k3s_init_k3s_version }}"
+        INSTALL_K3S_EXEC: >-
+          server --server https://{{ vip_address }}:6443 --tls-san {{ vip_address }} --flannel-iface {{ flannel_iface }}
+          --node-ip {{ ansible_host }} --disable traefik --disable servicelb
+      when: not k3s_binary.stat.exists
+      changed_when: true
+      register: k3s_join_result
 
-- name: Join Master to Cluster
-  ansible.builtin.command:
-    cmd: /tmp/k3s-install.sh
-  environment:
-    K3S_TOKEN: "{{ global_k3s_token }}"
-    INSTALL_K3S_VERSION: "{{ k3s_init_k3s_version }}"
-    INSTALL_K3S_EXEC: >-
-      server --server https://{{ vip_address }}:6443 --tls-san {{ vip_address }} --flannel-iface {{ flannel_iface }}
-      --node-ip {{ ansible_host }} --disable traefik --disable servicelb
-  changed_when: true
+    - name: Wait for K3s to be ready
+      ansible.builtin.wait_for:
+        path: /etc/rancher/k3s/k3s.yaml
+        state: present
+        timeout: 120
+      when: k3s_join_result is changed
+
+  rescue:
+    - name: K3s master join failed
+      ansible.builtin.fail:
+        msg: "K3s master join failed on {{ inventory_hostname }}. Check /var/log/syslog for details."

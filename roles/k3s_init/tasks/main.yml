@@ -1,22 +1,43 @@
 ---
-- name: Download K3s install script
-  ansible.builtin.get_url:
-    url: https://get.k3s.io
-    dest: /tmp/k3s-install.sh
-    mode: "0755"
+- name: Install K3s on init node
+  tags:
+    - k3s
+    - init
+  block:
+    - name: Install K3s (Init)
+      ansible.builtin.command:
+        cmd: /tmp/k3s-install.sh
+      environment:
+        INSTALL_K3S_VERSION: "{{ k3s_init_k3s_version }}"
+        INSTALL_K3S_EXEC: >-
+          server --cluster-init --tls-san {{ vip_address }} --flannel-iface {{ flannel_iface }} --node-ip {{
+          ansible_host }} --disable traefik --disable servicelb
+      when: not k3s_binary.stat.exists
+      changed_when: true
+      register: k3s_install_result
 
-- name: Install K3s (Init)
-  ansible.builtin.command:
-    cmd: /tmp/k3s-install.sh
-  environment:
-    INSTALL_K3S_VERSION: "{{ k3s_init_k3s_version }}"
-    INSTALL_K3S_EXEC: >-
-      server --cluster-init --tls-san {{ vip_address }} --flannel-iface {{ flannel_iface }} --node-ip {{ ansible_host }}
-      --disable traefik --disable servicelb
-  changed_when: true
+    - name: Wait for K3s to be ready
+      ansible.builtin.wait_for:
+        path: /etc/rancher/k3s/k3s.yaml
+        state: present
+        timeout: 120
+      when: k3s_install_result is changed
+
+  rescue:
+    - name: K3s installation failed
+      ansible.builtin.fail:
+        msg: "K3s initialization failed on {{ inventory_hostname }}. Check /var/log/syslog for details."
 
 - name: Set up Kube-Vip
   ansible.builtin.include_tasks: kube-vip.yml
+  tags:
+    - k3s
+    - init
+    - kube-vip
 
 - name: Setup local kubeconfig
   ansible.builtin.include_tasks: kubeconfig.yml
+  tags:
+    - k3s
+    - init
+    - kubeconfig

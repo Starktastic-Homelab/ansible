@@ -4,18 +4,24 @@
     path: "{{ k3s_manifests_directory }}"
     state: directory
     mode: "0700"
+  tags:
+    - kube-vip
 
-- name: Upload Kube-Vip RBAC Manifest
+- name: Download Kube-Vip RBAC Manifest
   ansible.builtin.get_url:
     url: https://kube-vip.io/manifests/rbac.yaml
     dest: "{{ k3s_manifests_directory }}/kube-vip-rbac.yaml"
     mode: "0444"
+  tags:
+    - kube-vip
 
 - name: Pull Kube-Vip image
   ansible.builtin.command: >-
     ctr image pull ghcr.io/kube-vip/kube-vip:{{ k3s_init_kube_vip_version }}
   register: k3s_init_kube_vip_pull
   changed_when: "'unpacking' in k3s_init_kube_vip_pull.stdout"
+  tags:
+    - kube-vip
 
 - name: Generate Kube-Vip DaemonSet
   ansible.builtin.command: >-
@@ -26,9 +32,13 @@
       --inCluster --taint --controlplane --services --arp --leaderElection
   register: k3s_init_kube_vip_daemonset_manifest
   changed_when: false
+  tags:
+    - kube-vip
 
 - name: Copy Kube-Vip DaemonSet to manifests directory
   ansible.builtin.copy:
     content: "{{ k3s_init_kube_vip_daemonset_manifest.stdout }}"
     dest: "{{ k3s_manifests_directory }}/kube-vip-daemonset.yaml"
     mode: "0444"
+  tags:
+    - kube-vip

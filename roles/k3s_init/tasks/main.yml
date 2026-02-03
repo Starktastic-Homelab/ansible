@@ -1,7 +1,4 @@
 ---
-# Note: k3s_common role is included via meta/main.yml dependency
-# It checks if K3s is installed and downloads the install script if needed
-
 - name: Install K3s on init node
   tags:
     - k3s

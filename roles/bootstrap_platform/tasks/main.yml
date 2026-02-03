@@ -1,3 +1,4 @@
+---
 - name: Configure Kube-Vip service ranges
   kubernetes.core.k8s:
     namespace: kube-system
@@ -8,6 +9,9 @@
         name: kubevip
       data:
         cidr-global: "{{ vip_service_cidrs }}"
+  tags:
+    - bootstrap
+    - kube-vip
 
 - name: Pre-seed sealed-secrets master key
   kubernetes.core.k8s:
@@ -24,11 +28,20 @@
       data:
         tls.key: "{{ sealed_secrets_key_b64 }}"
         tls.crt: "{{ sealed_secrets_crt_b64 }}"
+  tags:
+    - bootstrap
+    - sealed-secrets
 
 - name: Install helm-diff plugin
   kubernetes.core.helm_plugin:
     plugin_path: https://github.com/databus23/helm-diff
     state: present
+  tags:
+    - bootstrap
+    - helm
 
 - name: Setup ArgoCD
   ansible.builtin.include_tasks: argocd.yml
+  tags:
+    - bootstrap
+    - argocd

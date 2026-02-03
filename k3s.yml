@@ -2,6 +2,8 @@
 - name: Wait for SSH availability on all nodes
   hosts: all_k3s
   gather_facts: false
+  tags:
+    - always
   tasks:
     - name: Wait for SSH to become available
       delegate_to: localhost
@@ -15,6 +17,9 @@
   hosts: masters[0]
   become: true
   gather_facts: true
+  tags:
+    - k3s
+    - init
   roles:
     - role: k3s_init
 
@@ -22,6 +27,9 @@
   hosts: masters[0]
   become: true
   gather_facts: false
+  tags:
+    - k3s
+    - token
   tasks:
     - name: Fetch node token
       ansible.builtin.slurp:
@@ -47,6 +55,9 @@
   hosts: masters[1:]
   become: true
   gather_facts: true
+  tags:
+    - k3s
+    - masters
   roles:
     - role: k3s_masters
 
@@ -54,6 +65,9 @@
   hosts: workers
   become: true
   gather_facts: true
+  tags:
+    - k3s
+    - workers
   roles:
     - role: k3s_workers
 
@@ -61,6 +75,9 @@
   hosts: localhost
   gather_facts: false
   become: false
+  tags:
+    - bootstrap
+    - argocd
   vars:
     vip_service_cidrs: "{{ hostvars[groups['masters'][0]]['vip_service_cidrs'] }}"
   roles:

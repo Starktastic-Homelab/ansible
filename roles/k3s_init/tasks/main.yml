@@ -13,8 +13,8 @@
       environment:
         INSTALL_K3S_VERSION: "{{ k3s_init_k3s_version }}"
         INSTALL_K3S_EXEC: >-
-          server --cluster-init --tls-san {{ vip_address }} --flannel-iface {{ flannel_iface }} --node-ip {{ ansible_host }}
-          --disable traefik --disable servicelb
+          server --cluster-init --tls-san {{ vip_address }} --flannel-iface {{ flannel_iface }} --node-ip {{
+          ansible_host }} --disable traefik --disable servicelb
       when: not k3s_binary.stat.exists
       changed_when: true
       register: k3s_install_result

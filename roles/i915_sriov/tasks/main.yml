@@ -1,0 +1,198 @@
+---
+# i915 SR-IOV DKMS driver upgrade role for Proxmox hosts
+# Handles driver installation, kernel compatibility, GRUB params, and sysfs config
+
+- name: Validate i915_sriov_version is provided
+  ansible.builtin.assert:
+    that:
+      - i915_sriov_version is defined
+      - i915_sriov_version | length > 0
+    fail_msg: |
+      i915_sriov_version must be provided.
+      When running manually: ansible-playbook -e "i915_sriov_version=YYYY.MM.DD" i915-sriov.yml
+      When triggered via CI: version is passed from Terraform dispatch payload.
+    success_msg: "Target driver version: {{ i915_sriov_version }}"
+
+- name: Gather package facts
+  ansible.builtin.package_facts:
+    manager: apt
+
+- name: Get currently installed driver version
+  ansible.builtin.set_fact:
+    i915_installed_version: "{{ ansible_facts.packages['i915-sriov-dkms'][0].version | default('none') }}"
+  when: "'i915-sriov-dkms' in ansible_facts.packages"
+
+- name: Set installed version to none if not installed
+  ansible.builtin.set_fact:
+    i915_installed_version: "none"
+  when: "'i915-sriov-dkms' not in ansible_facts.packages"
+
+- name: Display version information
+  ansible.builtin.debug:
+    msg: |
+      Currently installed: {{ i915_installed_version }}
+      Target version: {{ i915_sriov_version }}
+
+# --- Kernel compatibility check ---
+
+- name: Get pinned kernel version
+  ansible.builtin.command: proxmox-boot-tool kernel list
+  register: kernel_list_output
+  changed_when: false
+
+- name: Parse pinned kernel version
+  ansible.builtin.set_fact:
+    pinned_kernel:
+      "{{ kernel_list_output.stdout | regex_search('Pinned kernel:\\s*([\\d.]+-\\d+-pve)', '\\1') | first |
+      default('none') }}"
+
+- name: Extract kernel major.minor version
+  ansible.builtin.set_fact:
+    pinned_kernel_version: "{{ pinned_kernel | regex_search('^([0-9]+\\.[0-9]+)') }}"
+  when: pinned_kernel != 'none'
+
+- name: Display kernel information
+  ansible.builtin.debug:
+    msg: |
+      Pinned kernel: {{ pinned_kernel }}
+      Kernel version: {{ pinned_kernel_version | default('unknown') }}
+      Compatible range: {{ i915_kernel_min }} - {{ i915_kernel_max }}
+
+- name: Check kernel compatibility
+  ansible.builtin.assert:
+    that:
+      - pinned_kernel_version is version(i915_kernel_min, '>=')
+      - pinned_kernel_version is version(i915_kernel_max, '<=')
+    fail_msg: |
+      Pinned kernel {{ pinned_kernel }} ({{ pinned_kernel_version }}) is outside compatible range {{ i915_kernel_min }}-{{ i915_kernel_max }}.
+      Please upgrade the kernel manually or adjust the kernel pin.
+
+      Available kernels can be listed with: apt list 'pve-kernel-*' --installed
+      To upgrade:
+        1. apt install pve-kernel-<version>-pve
+        2. proxmox-boot-tool kernel unpin
+        3. proxmox-boot-tool kernel pin <version>-pve
+        4. proxmox-boot-tool refresh
+        5. reboot
+    success_msg: "Kernel {{ pinned_kernel }} is compatible with driver version {{ i915_sriov_version }}"
+  when: pinned_kernel != 'none'
+
+# --- Driver installation ---
+
+- name: Check if upgrade is needed
+  ansible.builtin.set_fact:
+    i915_upgrade_needed: "{{ i915_installed_version != i915_sriov_version }}"
+
+- name: Download new driver package
+  ansible.builtin.get_url:
+    url: "{{ i915_release_url }}"
+    dest: "/tmp/i915-sriov-dkms_{{ i915_sriov_version }}_amd64.deb"
+    mode: "0644"
+  when: i915_upgrade_needed
+
+- name: Remove existing driver package
+  ansible.builtin.apt:
+    name: i915-sriov-dkms
+    state: absent
+    purge: true
+  when: i915_upgrade_needed and i915_installed_version != 'none'
+
+- name: Install new driver package
+  ansible.builtin.apt:
+    deb: "/tmp/i915-sriov-dkms_{{ i915_sriov_version }}_amd64.deb"
+    state: present
+  when: i915_upgrade_needed
+  notify:
+    - initramfs updated
+    - reboot required
+
+- name: Clean up downloaded package
+  ansible.builtin.file:
+    path: "/tmp/i915-sriov-dkms_{{ i915_sriov_version }}_amd64.deb"
+    state: absent
+  when: i915_upgrade_needed
+
+- name: Verify DKMS module is installed for pinned kernel
+  ansible.builtin.command: dkms status
+  register: dkms_status
+  changed_when: false
+
+- name: Display DKMS status
+  ansible.builtin.debug:
+    msg: "{{ dkms_status.stdout_lines }}"
+
+# --- GRUB configuration ---
+
+- name: Read current GRUB configuration
+  ansible.builtin.slurp:
+    src: /etc/default/grub
+  register: grub_content
+
+- name: Decode GRUB content
+  ansible.builtin.set_fact:
+    grub_config: "{{ grub_content.content | b64decode }}"
+
+- name: Check for required GRUB parameters
+  ansible.builtin.set_fact:
+    grub_params_present:
+      intel_iommu: "{{ 'intel_iommu=on' in grub_config }}"
+      enable_guc: "{{ 'i915.enable_guc=3' in grub_config }}"
+      max_vfs: "{{ 'i915.max_vfs=' in grub_config }}"
+      module_blacklist: "{{ 'module_blacklist=xe' in grub_config }}"
+
+- name: Display GRUB parameter status
+  ansible.builtin.debug:
+    msg: |
+      GRUB parameters present:
+        intel_iommu=on: {{ grub_params_present.intel_iommu }}
+        i915.enable_guc=3: {{ grub_params_present.enable_guc }}
+        i915.max_vfs: {{ grub_params_present.max_vfs }}
+        module_blacklist=xe: {{ grub_params_present.module_blacklist }}
+
+- name: Update GRUB_CMDLINE_LINUX_DEFAULT with required parameters
+  ansible.builtin.lineinfile:
+    path: /etc/default/grub
+    regexp: "^GRUB_CMDLINE_LINUX_DEFAULT="
+    line: 'GRUB_CMDLINE_LINUX_DEFAULT="{{ i915_grub_params }} quiet"'
+    backup: true
+  when:
+    not (grub_params_present.intel_iommu and grub_params_present.enable_guc and grub_params_present.max_vfs and
+    grub_params_present.module_blacklist)
+  notify:
+    - grub updated
+    - initramfs updated
+    - reboot required
+
+# --- sysfs configuration for VF creation on boot ---
+
+- name: Ensure sysfsutils is installed
+  ansible.builtin.apt:
+    name: sysfsutils
+    state: present
+
+- name: Configure sriov_numvfs on boot
+  ansible.builtin.lineinfile:
+    path: /etc/sysfs.conf
+    regexp: "^devices/pci0000:00/0000:00:02.0/sriov_numvfs"
+    line: "devices/pci0000:00/0000:00:02.0/sriov_numvfs = {{ i915_max_vfs }}"
+    create: true
+    mode: "0644"
+  notify: reboot required
+
+# --- Final verification ---
+
+- name: Get current VF count (if system is already configured)
+  ansible.builtin.slurp:
+    src: /sys/devices/pci0000:00/0000:00:02.0/sriov_numvfs
+  register: current_vfs
+  failed_when: false
+
+- name: Display current VF configuration
+  ansible.builtin.debug:
+    msg: |
+      Current VFs configured: {{ (current_vfs.content | b64decode | trim) if current_vfs.content is defined else 'Unable to read (reboot may be required)' }}
+      Target VFs: {{ i915_max_vfs }}
+
+- name: Flush handlers for immediate reboot if configured
+  ansible.builtin.meta: flush_handlers
+  when: i915_reboot_after_upgrade

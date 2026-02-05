@@ -1,0 +1,58 @@
+name: Upgrade i915 SR-IOV Driver
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'group_vars/proxmox_hosts/i915_sriov.yml'
+
+  workflow_dispatch:
+    inputs:
+      i915_sriov_version:
+        description: 'i915 SR-IOV driver version to install (e.g., 2026.02.04). Leave empty to use version from group_vars.'
+        required: false
+        type: string
+
+jobs:
+  upgrade-driver:
+    name: Upgrade i915 SR-IOV on Proxmox
+    runs-on: self-hosted
+    continue-on-error: true
+    container:
+      image: python:3.14.3-trixie
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Cache Pip Packages
+        uses: actions/cache@v5.0.3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install Ansible and requirements
+        run: pip install -r requirements.txt
+
+      - name: Install sshpass for password auth
+        run: apt-get update && apt-get install -y sshpass
+
+      - name: Create Ansible Vault password file
+        run: echo "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > .vault_pass
+
+      - name: Get version from group_vars
+        id: get-version
+        run: |
+          VERSION=$(grep -oP 'i915_sriov_version:\s*"\K[0-9.]+' group_vars/proxmox_hosts/i915_sriov.yml)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Run i915 SR-IOV upgrade playbook
+        run: |
+          VERSION="${{ inputs.i915_sriov_version || steps.get-version.outputs.version }}"
+          ansible-playbook -i inventory/hosts.yml \
+            --vault-password-file .vault_pass \
+            -e "i915_sriov_version=$VERSION" \
+            i915-sriov.yml

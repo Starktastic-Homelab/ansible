@@ -1,0 +1,11 @@
+---
+- name: Upgrade i915 SR-IOV DKMS driver on Proxmox hosts
+  hosts: proxmox_hosts
+  become: true
+  gather_facts: true
+  tags:
+    - i915
+    - sriov
+    - driver
+  roles:
+    - role: i915_sriov

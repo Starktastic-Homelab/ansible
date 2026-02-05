@@ -1,0 +1,21 @@
+---
+# i915 SR-IOV configuration defaults
+
+# Number of virtual functions to create (max 7 for Intel UHD)
+i915_max_vfs: 7
+
+# Kernel compatibility range for current driver version
+# See: https://github.com/strongtz/i915-sriov-dkms
+i915_kernel_min: "6.12"
+i915_kernel_max: "6.19"
+
+# Required GRUB kernel parameters for the host
+i915_grub_params: "intel_iommu=on i915.enable_guc=3 i915.max_vfs=7 module_blacklist=xe"
+
+# Whether to reboot after upgrade if changes were made
+i915_reboot_after_upgrade: true
+
+# GitHub release URL template
+i915_release_url:
+  "https://github.com/strongtz/i915-sriov-dkms/releases/download/{{ i915_sriov_version }}/i915-sriov-dkms_{{
+  i915_sriov_version }}_amd64.deb"

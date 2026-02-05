@@ -42,7 +42,9 @@
 
 - name: Parse pinned kernel version
   ansible.builtin.set_fact:
-    pinned_kernel: "{{ kernel_list_output.stdout | regex_search('Pinned kernel:\\s*([\\d.]+-\\d+-pve)', '\\1') | first | default('none') }}"
+    pinned_kernel:
+      "{{ kernel_list_output.stdout | regex_search('Pinned kernel:\\s*([\\d.]+-\\d+-pve)', '\\1') | first |
+      default('none') }}"
 
 - name: Extract kernel major.minor version
   ansible.builtin.set_fact:
@@ -150,10 +152,12 @@
 - name: Update GRUB_CMDLINE_LINUX_DEFAULT with required parameters
   ansible.builtin.lineinfile:
     path: /etc/default/grub
-    regexp: '^GRUB_CMDLINE_LINUX_DEFAULT='
+    regexp: "^GRUB_CMDLINE_LINUX_DEFAULT="
     line: 'GRUB_CMDLINE_LINUX_DEFAULT="{{ i915_grub_params }} quiet"'
     backup: true
-  when: not (grub_params_present.intel_iommu and grub_params_present.enable_guc and grub_params_present.max_vfs and grub_params_present.module_blacklist)
+  when:
+    not (grub_params_present.intel_iommu and grub_params_present.enable_guc and grub_params_present.max_vfs and
+    grub_params_present.module_blacklist)
   notify:
     - grub updated
     - initramfs updated
@@ -169,7 +173,7 @@
 - name: Configure sriov_numvfs on boot
   ansible.builtin.lineinfile:
     path: /etc/sysfs.conf
-    regexp: '^devices/pci0000:00/0000:00:02.0/sriov_numvfs'
+    regexp: "^devices/pci0000:00/0000:00:02.0/sriov_numvfs"
     line: "devices/pci0000:00/0000:00:02.0/sriov_numvfs = {{ i915_max_vfs }}"
     create: true
     mode: "0644"

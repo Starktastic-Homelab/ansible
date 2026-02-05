@@ -1,9 +1,10 @@
 ---
 - name: Reboot host
-  ansible.builtin.reboot:
-    msg: "Rebooting for i915 SR-IOV driver update"
-    reboot_timeout: 300
+  ansible.builtin.shell: |
+    nohup bash -c 'sleep 60 && reboot' &>/dev/null &
   listen: reboot required
+  async: 1
+  poll: 0
 
 - name: Update GRUB
   ansible.builtin.command: update-grub

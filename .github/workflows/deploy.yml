@@ -95,6 +95,7 @@ jobs:
     name: Upgrade i915 SR-IOV driver on Proxmox host
     needs: handoff
     if: github.event.client_payload.i915_sriov_version != '' || inputs.i915_sriov_version != ''
+    continue-on-error: true
     runs-on: self-hosted
     container:
       image: python:3.14.2-trixie

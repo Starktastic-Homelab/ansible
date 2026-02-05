@@ -16,4 +16,6 @@ i915_grub_params: "intel_iommu=on i915.enable_guc=3 i915.max_vfs=7 module_blackl
 i915_reboot_after_upgrade: true
 
 # GitHub release URL template
-i915_release_url: "https://github.com/strongtz/i915-sriov-dkms/releases/download/{{ i915_sriov_version }}/i915-sriov-dkms_{{ i915_sriov_version }}_amd64.deb"
+i915_release_url:
+  "https://github.com/strongtz/i915-sriov-dkms/releases/download/{{ i915_sriov_version }}/i915-sriov-dkms_{{
+  i915_sriov_version }}_amd64.deb"

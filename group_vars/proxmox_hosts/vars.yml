@@ -1,0 +1,3 @@
+---
+# Proxmox host credentials (password retrieved from vault)
+ansible_password: "{{ vault_proxmox_root_password }}"

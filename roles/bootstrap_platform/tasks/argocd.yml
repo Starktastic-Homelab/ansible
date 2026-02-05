@@ -24,13 +24,8 @@
         replicas: 1
       repoServer:
         replicas: 1
-        # Fix for stale symlink after node reboot (PR pending: argoproj/argo-helm)
-        # Uses ln -sf instead of ln -s to handle pre-existing symlinks
-        initContainers:
-          - name: copyutil
-            args:
-              - /bin/cp --update=none /usr/local/bin/argocd /var/run/argocd/argocd && /bin/ln -sf /var/run/argocd/argocd
-                /var/run/argocd/argocd-cmp-server
+        # TODO: Remove comment after argoproj/argo-helm#3709 is merged
+        # Workaround: manually delete repo-server pod after node reboot
       applicationSet:
         replicas: 1
       redis:

@@ -12,6 +12,7 @@ on:
     paths-ignore:
       - 'README.md'
       - 'renovate.json'
+      - 'group_vars/proxmox_hosts/**'
 
 jobs:
   provision:

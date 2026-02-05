@@ -8,7 +8,7 @@
     {
       "description": "Update Ansible variables and GitHub Actions inputs",
       "customType": "regex",
-      "fileMatch": ["(^|/)group_vars/all/vars\\.ya?ml$", "(^|/)tasks/[^/]+\\.ya?ml$", "^\\.github/workflows/.*\\.yml$"],
+      "fileMatch": ["(^|/)group_vars/.*/.*\\.ya?ml$", "(^|/)tasks/[^/]+\\.ya?ml$", "^\\.github/workflows/.*\\.yml$"],
       "matchStrings": [
         "#\\s*renovate:\\s*datasource=(?<datasource>.*?)\\s+depName=(?<depName>.*?)(?:\\s+registryUrl=(?<registryUrl>.*?))?\\s+.*?(?:version|[a-z0-9_]+_version):\\s*['\"]?(?<currentValue>.*?)['\"]?\\s"
       ]

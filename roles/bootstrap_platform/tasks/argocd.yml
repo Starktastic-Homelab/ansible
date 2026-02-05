@@ -15,7 +15,7 @@
     chart_ref: argo/argo-cd
     release_namespace: argocd
     # renovate: datasource=helm depName=argo-cd registryUrl=https://argoproj.github.io/argo-helm
-    chart_version: "9.3.7" # do not change until https://github.com/argoproj/argo-helm/pull/3711 is merged and released
+    chart_version: "9.4.1" # do not change until https://github.com/argoproj/argo-helm/pull/3711 is merged and released
     update_repo_cache: true
     values:
       controller:

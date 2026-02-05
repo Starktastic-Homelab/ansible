@@ -49,7 +49,7 @@ jobs:
     name: Ansible Syntax Check
     runs-on: self-hosted
     container:
-      image: python:slim
+      image: python:trixie
     steps:
       - uses: actions/checkout@v6
 

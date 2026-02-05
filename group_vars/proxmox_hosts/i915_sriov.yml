@@ -1,0 +1,7 @@
+---
+# i915 SR-IOV DKMS driver version for Proxmox host
+# This should match the version installed in VM images (homelab-packer)
+# Updated automatically via PR from Packer CI workflow
+
+# renovate: datasource=github-releases depName=strongtz/i915-sriov-dkms
+i915_sriov_version: "2025.12.10"

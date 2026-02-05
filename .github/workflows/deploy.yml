@@ -39,6 +39,9 @@ jobs:
       - name: Install Ansible and requirements
         run: pip install -r requirements.txt
 
+      - name: Install sshpass for password auth
+        run: apt-get update && apt-get install -y sshpass
+
       - name: Setup Helm
         uses: azure/setup-helm@v4.3.1
         with:
@@ -69,6 +72,14 @@ jobs:
           name: kubeconfig
           path: kubeconfig_artifact
           retention-days: 1
+
+      - name: Upgrade i915 SR-IOV driver on Proxmox host
+        if: github.event.client_payload.i915_sriov_version != ''
+        run: |
+          ansible-playbook -i inventory/hosts.yml \
+            --vault-password-file .vault_pass \
+            -e "i915_sriov_version=${{ github.event.client_payload.i915_sriov_version }}" \
+            i915-sriov.yml
 
   handoff:
     name: Push secret to Platform repo

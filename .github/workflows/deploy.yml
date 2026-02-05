@@ -2,6 +2,11 @@ name: Deploy K3s Cluster
 
 on:
   workflow_dispatch:
+    inputs:
+      i915_sriov_version:
+        description: 'i915 SR-IOV driver version to install on Proxmox host (e.g., 2026.02.04)'
+        required: false
+        type: string
 
   repository_dispatch:
     types: [infrastructure-changed]
@@ -89,7 +94,7 @@ jobs:
   upgrade-host-driver:
     name: Upgrade i915 SR-IOV driver on Proxmox host
     needs: handoff
-    if: github.event.client_payload.i915_sriov_version != ''
+    if: github.event.client_payload.i915_sriov_version != '' || inputs.i915_sriov_version != ''
     runs-on: self-hosted
     container:
       image: python:3.14.2-trixie
@@ -117,5 +122,5 @@ jobs:
         run: |
           ansible-playbook -i inventory/hosts.yml \
             --vault-password-file .vault_pass \
-            -e "i915_sriov_version=${{ github.event.client_payload.i915_sriov_version }}" \
+            -e "i915_sriov_version=${{ inputs.i915_sriov_version || github.event.client_payload.i915_sriov_version }}" \
             i915-sriov.yml

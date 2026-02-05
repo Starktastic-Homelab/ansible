@@ -12,6 +12,16 @@
       "matchStrings": [
         "#\\s*renovate:\\s*datasource=(?<datasource>.*?)\\s+depName=(?<depName>.*?)(?:\\s+registryUrl=(?<registryUrl>.*?))?\\s+.*?(?:version|[a-z0-9_]+_version):\\s*['\"]?(?<currentValue>.*?)['\"]?\\s"
       ]
+    },
+    {
+      "description": "Update i915-sriov-dkms with loose versioning",
+      "customType": "regex",
+      "fileMatch": ["(^|/)group_vars/.*/.*\\.ya?ml$"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=github-releases\\s+depName=(?<depName>strongtz/i915-sriov-dkms)\\s+.*?i915_sriov_version:\\s*['\"]?(?<currentValue>[^'\"\\s]+)['\"]?"
+      ],
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "loose"
     }
   ]
 }

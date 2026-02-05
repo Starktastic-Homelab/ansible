@@ -1,7 +1,7 @@
 # Homelab Ansible
 
 [![K3s Deploy](https://github.com/starktastic/homelab-ansible/actions/workflows/k3s.yml/badge.svg)](https://github.com/starktastic/homelab-ansible/actions/workflows/k3s.yml)
-[![SR-IOV Upgrade](https://github.com/starktastic/homelab-ansible/actions/workflows/i915-sriov.yml/badge.svg)](https://github.com/starktastic/homelab-ansible/actions/workflows/i915-sriov.yml)
+[![SR-IOV Upgrade](https://github.com/starktastic/homelab-ansible/actions/workflows/i915-sriov-upgrade.yml/badge.svg)](https://github.com/starktastic/homelab-ansible/actions/workflows/i915-sriov-upgrade.yml)
 ![Ansible](https://img.shields.io/badge/Ansible-13.x-EE0000?logo=ansible)
 ![K3s](https://img.shields.io/badge/K3s-v1.35.0-FFC61C?logo=k3s)
 
@@ -139,6 +139,52 @@ flowchart LR
 | `k3s_workers` | Joins worker nodes, applies GPU and worker labels |
 | `bootstrap_platform` | Deploys Kube-VIP config, sealed-secrets keys, ArgoCD with OIDC |
 | `i915_sriov` | Upgrades Intel SR-IOV DKMS driver with kernel compatibility checks |
+
+## Intel SR-IOV Driver Management
+
+The `i915_sriov` role manages the Intel SR-IOV DKMS driver on Proxmox hosts, enabling GPU virtual function passthrough to VMs. The driver version is kept in sync with the VM template via Renovate.
+
+### Driver Coordination
+
+Both the Proxmox host and VM templates need matching driver versions:
+
+```mermaid
+flowchart LR
+    subgraph Host["Proxmox Host"]
+        HD[i915-sriov-dkms] -->|Creates| VF[7 Virtual Functions]
+    end
+    
+    subgraph VMs["K3s VMs"]
+        VM1[VM Driver] -->|Uses| VF
+        VM2[VM Driver] -->|Uses| VF
+    end
+    
+    style Host fill:#e53e3e
+    style VMs fill:#4299e1
+```
+
+**Merge Order**: When Renovate detects a new driver version:
+1. Merge the **Ansible PR first** → triggers host upgrade and reboot
+2. Wait for Proxmox host to come back online
+3. Merge the **Packer PR** → builds new VM template
+
+The Packer repo has a PR check (`check-host-driver.yml`) that blocks merging until the Ansible `main` branch has the matching version.
+
+### Workflow Triggers
+
+| Trigger | Action |
+|---------|--------|
+| Push to `main` modifying `group_vars/proxmox_hosts/i915_sriov.yml` | Runs upgrade playbook |
+| Manual `workflow_dispatch` | Runs with optional version override |
+
+### Role Tasks
+
+1. Validates kernel version is within supported range (6.12.x - 6.18.x)
+2. Compares installed vs desired driver version
+3. Downloads and installs the new DKMS driver
+4. Configures GRUB parameters (`intel_iommu=on`, `i915.enable_guc=3`, `i915.max_vfs=7`)
+5. Sets up sysfsutils for VF creation on boot
+6. Schedules delayed reboot (60s) to allow workflow completion
 
 ## Usage
 

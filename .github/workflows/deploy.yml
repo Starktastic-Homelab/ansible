@@ -19,7 +19,7 @@ jobs:
     name: Apply Configuration
     runs-on: self-hosted
     container:
-      image: python:3.14.3-trixie
+      image: python:slim
     env:
       PROXMOX_URL: ${{ secrets.PROXMOX_URL }}
       PROXMOX_USER: ${{ secrets.PROXMOX_USER }}

@@ -63,14 +63,6 @@ jobs:
             --private-key private_key.pem \
             k3s.yml
 
-      - name: Upgrade i915 SR-IOV driver on Proxmox host
-        if: github.event.client_payload.i915_sriov_version != ''
-        run: |
-          ansible-playbook -i inventory/hosts.yml \
-            --vault-password-file .vault_pass \
-            -e "i915_sriov_version=${{ github.event.client_payload.i915_sriov_version }}" \
-            i915-sriov.yml
-
       - name: Stage Kubeconfig
         run: cp ~/.kube/config ./kubeconfig_artifact
 
@@ -80,6 +72,14 @@ jobs:
           name: kubeconfig
           path: kubeconfig_artifact
           retention-days: 1
+
+      - name: Upgrade i915 SR-IOV driver on Proxmox host
+        if: github.event.client_payload.i915_sriov_version != ''
+        run: |
+          ansible-playbook -i inventory/hosts.yml \
+            --vault-password-file .vault_pass \
+            -e "i915_sriov_version=${{ github.event.client_payload.i915_sriov_version }}" \
+            i915-sriov.yml
 
   handoff:
     name: Push secret to Platform repo

@@ -1,0 +1,106 @@
+---
+- name: Create cert backup mount point
+  ansible.builtin.file:
+    path: /tmp/cert-backup
+    state: directory
+    mode: "0755"
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Mount cert backup NFS share
+  ansible.posix.mount:
+    path: /tmp/cert-backup
+    src: "{{ nfs_server }}:{{ nfs_base_path }}/cert-backup/cert-backup"
+    fstype: nfs
+    opts: ro,noatime,nfsvers=4.1
+    state: mounted
+  register: nfs_mount
+  ignore_errors: true
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Find backed up cert secrets
+  ansible.builtin.find:
+    paths: /tmp/cert-backup
+    patterns: "*.yaml"
+  register: cert_backup_files
+  when: nfs_mount is succeeded
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Display found backup files
+  ansible.builtin.debug:
+    msg: "Found cert backups: {{ cert_backup_files.files | map(attribute='path') | list }}"
+  when:
+    - nfs_mount is succeeded
+    - cert_backup_files.matched > 0
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Extract namespaces from backup filenames
+  ansible.builtin.set_fact:
+    cert_backup_namespaces: "{{ cert_backup_files.files | map(attribute='path') | map('basename') | map('regex_replace', '--.*$', '') | unique | list }}"
+  when:
+    - nfs_mount is succeeded
+    - cert_backup_files.matched > 0
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Ensure target namespaces exist
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Namespace
+    name: "{{ item }}"
+    state: present
+  loop: "{{ cert_backup_namespaces }}"
+  when:
+    - nfs_mount is succeeded
+    - cert_backup_files.matched > 0
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Restore cert secrets from backup
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ item.path }}"
+  loop: "{{ cert_backup_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when:
+    - nfs_mount is succeeded
+    - cert_backup_files.matched > 0
+  ignore_errors: true
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Unmount cert backup NFS share
+  ansible.posix.mount:
+    path: /tmp/cert-backup
+    state: unmounted
+  when: nfs_mount is succeeded
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Remove cert backup mount point
+  ansible.builtin.file:
+    path: /tmp/cert-backup
+    state: absent
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Cert backup restore skipped (no NFS backup found)
+  ansible.builtin.debug:
+    msg: "No cert backup NFS share found — skipping restore (expected on first deploy)"
+  when: nfs_mount is failed
+  tags:
+    - bootstrap
+    - restore-certs

@@ -32,6 +32,12 @@
     - bootstrap
     - sealed-secrets
 
+- name: Restore TLS certs from NFS backup
+  ansible.builtin.include_tasks: restore-certs.yml
+  tags:
+    - bootstrap
+    - restore-certs
+
 - name: Install helm-diff plugin
   kubernetes.core.helm_plugin:
     plugin_path: https://github.com/databus23/helm-diff

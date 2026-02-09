@@ -1,22 +1,10 @@
 ---
-# ---------------------------------------------------------------------------
-# Restore TLS cert secrets from NFS backup via SSH delegation.
-#
-# The bootstrap_platform play runs on localhost inside a CI container that
-# cannot NFS-mount.  We delegate the mount + file discovery to the first
-# master node (which has kernel NFS support and root via SSH), fetch the
-# YAML files back to the runner, and apply them with kubernetes.core.k8s
-# which already works on localhost.
-# ---------------------------------------------------------------------------
-
 - name: Set master delegation target
   ansible.builtin.set_fact:
     _cert_master: "{{ groups['masters'][0] }}"
   tags:
     - bootstrap
     - restore-certs
-
-# -- Remote: mount NFS on the master node ------------------------------------
 
 - name: Create cert backup mount point on master
   ansible.builtin.file:
@@ -63,8 +51,6 @@
     - bootstrap
     - restore-certs
 
-# -- Fetch files from master to the CI runner --------------------------------
-
 - name: Fetch cert backup files to runner
   ansible.builtin.fetch:
     src: "{{ item.path }}"
@@ -81,8 +67,6 @@
   tags:
     - bootstrap
     - restore-certs
-
-# -- Remote: unmount + clean up on master ------------------------------------
 
 - name: Unmount cert backup NFS share on master
   ansible.builtin.command:
@@ -104,8 +88,6 @@
   tags:
     - bootstrap
     - restore-certs
-
-# -- Local: find fetched files and apply to cluster --------------------------
 
 - name: Find fetched cert files on runner
   ansible.builtin.find:
@@ -157,8 +139,6 @@
   tags:
     - bootstrap
     - restore-certs
-
-# -- Local: clean up fetched files -------------------------------------------
 
 - name: Remove fetched cert files from runner
   ansible.builtin.file:

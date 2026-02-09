@@ -29,6 +29,8 @@
       redis:
         enabled: true
       configs:
+        params:
+          applicationsetcontroller.enable.progressive.syncs: "true"
         secret:
           argocdServerAdminPassword: "{{ argocd_admin_password_hash }}"
           extra:

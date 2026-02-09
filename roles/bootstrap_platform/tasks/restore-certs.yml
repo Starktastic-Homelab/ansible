@@ -1,30 +1,52 @@
 ---
-- name: Create cert backup mount point
+# ---------------------------------------------------------------------------
+# Restore TLS cert secrets from NFS backup via SSH delegation.
+#
+# The bootstrap_platform play runs on localhost inside a CI container that
+# cannot NFS-mount.  We delegate the mount + file discovery to the first
+# master node (which has kernel NFS support and root via SSH), fetch the
+# YAML files back to the runner, and apply them with kubernetes.core.k8s
+# which already works on localhost.
+# ---------------------------------------------------------------------------
+
+- name: Set master delegation target
+  ansible.builtin.set_fact:
+    _cert_master: "{{ groups['masters'][0] }}"
+  tags:
+    - bootstrap
+    - restore-certs
+
+# -- Remote: mount NFS on the master node ------------------------------------
+
+- name: Create cert backup mount point on master
   ansible.builtin.file:
     path: /tmp/cert-backup
     state: directory
     mode: "0755"
+  delegate_to: "{{ _cert_master }}"
+  become: true
   tags:
     - bootstrap
     - restore-certs
 
-- name: Mount cert backup NFS share
-  ansible.posix.mount:
-    path: /tmp/cert-backup
-    src: "{{ nfs_server }}:{{ nfs_base_path }}/cert-backup/cert-backup"
-    fstype: nfs
-    opts: ro,noatime,nfsvers=4.1
-    state: mounted
+- name: Mount cert backup NFS share on master
+  ansible.builtin.command:
+    cmd: mount -t nfs -o ro,noatime,nfsvers=4.1 {{ nfs_server }}:{{ nfs_base_path }}/cert-backup/cert-backup /tmp/cert-backup
+  delegate_to: "{{ _cert_master }}"
+  become: true
   register: nfs_mount
   ignore_errors: true
+  changed_when: nfs_mount.rc == 0
   tags:
     - bootstrap
     - restore-certs
 
-- name: Find backed up cert secrets
+- name: Find backed up cert secrets on master
   ansible.builtin.find:
     paths: /tmp/cert-backup
     patterns: "*.yaml"
+  delegate_to: "{{ _cert_master }}"
+  become: true
   register: cert_backup_files
   when: nfs_mount is succeeded
   tags:
@@ -41,12 +63,68 @@
     - bootstrap
     - restore-certs
 
-- name: Extract namespaces from backup filenames
-  ansible.builtin.set_fact:
-    cert_backup_namespaces: "{{ cert_backup_files.files | map(attribute='path') | map('basename') | map('regex_replace', '--.*$', '') | unique | list }}"
+# -- Fetch files from master to the CI runner --------------------------------
+
+- name: Fetch cert backup files to runner
+  ansible.builtin.fetch:
+    src: "{{ item.path }}"
+    dest: /tmp/cert-restore/
+    flat: true
+  delegate_to: "{{ _cert_master }}"
+  become: true
+  loop: "{{ cert_backup_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
   when:
     - nfs_mount is succeeded
     - cert_backup_files.matched > 0
+  tags:
+    - bootstrap
+    - restore-certs
+
+# -- Remote: unmount + clean up on master ------------------------------------
+
+- name: Unmount cert backup NFS share on master
+  ansible.builtin.command:
+    cmd: umount /tmp/cert-backup
+  delegate_to: "{{ _cert_master }}"
+  become: true
+  when: nfs_mount is succeeded
+  changed_when: true
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Remove cert backup mount point on master
+  ansible.builtin.file:
+    path: /tmp/cert-backup
+    state: absent
+  delegate_to: "{{ _cert_master }}"
+  become: true
+  tags:
+    - bootstrap
+    - restore-certs
+
+# -- Local: find fetched files and apply to cluster --------------------------
+
+- name: Find fetched cert files on runner
+  ansible.builtin.find:
+    paths: /tmp/cert-restore
+    patterns: "*.yaml"
+  register: cert_local_files
+  when:
+    - nfs_mount is succeeded
+    - cert_backup_files.matched > 0
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Extract namespaces from backup filenames
+  ansible.builtin.set_fact:
+    cert_backup_namespaces: "{{ cert_local_files.files | map(attribute='path') | map('basename') | map('regex_replace', '--.*$', '') | unique | list }}"
+  when:
+    - cert_local_files is defined
+    - cert_local_files.files | default([]) | length > 0
   tags:
     - bootstrap
     - restore-certs
@@ -59,8 +137,8 @@
     state: present
   loop: "{{ cert_backup_namespaces }}"
   when:
-    - nfs_mount is succeeded
-    - cert_backup_files.matched > 0
+    - cert_backup_namespaces is defined
+    - cert_backup_namespaces | length > 0
   tags:
     - bootstrap
     - restore-certs
@@ -69,29 +147,22 @@
   kubernetes.core.k8s:
     state: present
     src: "{{ item.path }}"
-  loop: "{{ cert_backup_files.files }}"
+  loop: "{{ cert_local_files.files }}"
   loop_control:
     label: "{{ item.path | basename }}"
   when:
-    - nfs_mount is succeeded
-    - cert_backup_files.matched > 0
+    - cert_local_files is defined
+    - cert_local_files.files | default([]) | length > 0
   ignore_errors: true
   tags:
     - bootstrap
     - restore-certs
 
-- name: Unmount cert backup NFS share
-  ansible.posix.mount:
-    path: /tmp/cert-backup
-    state: unmounted
-  when: nfs_mount is succeeded
-  tags:
-    - bootstrap
-    - restore-certs
+# -- Local: clean up fetched files -------------------------------------------
 
-- name: Remove cert backup mount point
+- name: Remove fetched cert files from runner
   ansible.builtin.file:
-    path: /tmp/cert-backup
+    path: /tmp/cert-restore
     state: absent
   tags:
     - bootstrap

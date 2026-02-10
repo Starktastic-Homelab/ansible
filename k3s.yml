@@ -71,7 +71,7 @@
   roles:
     - role: k3s_workers
 
-- name: Bootstrap platform
+- name: Bootstrap cluster
   hosts: localhost
   gather_facts: false
   become: false
@@ -81,4 +81,4 @@
   vars:
     vip_service_cidrs: "{{ hostvars[groups['masters'][0]]['vip_service_cidrs'] }}"
   roles:
-    - role: bootstrap_platform
+    - role: bootstrap_cluster

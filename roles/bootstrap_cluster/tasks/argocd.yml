@@ -80,7 +80,7 @@
         source:
           repoURL: "{{ argocd_repo_url }}"
           targetRevision: HEAD
-          path: apps/bootstrap
+          path: bootstrap
           directory:
             recurse: true
         destination:

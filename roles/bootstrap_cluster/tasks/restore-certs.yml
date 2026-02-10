@@ -19,7 +19,9 @@
 
 - name: Mount cert backup NFS share on master
   ansible.builtin.command:
-    cmd: mount -t nfs -o ro,noatime,nfsvers=4.1 {{ nfs_server }}:{{ nfs_base_path }}/cert-backup/cert-backup /tmp/cert-backup
+    cmd:
+      mount -t nfs -o ro,noatime,nfsvers=4.1 {{ nfs_server }}:{{ nfs_base_path }}/cert-backup/cert-backup
+      /tmp/cert-backup
   delegate_to: "{{ _cert_master }}"
   become: true
   register: nfs_mount
@@ -103,7 +105,9 @@
 
 - name: Extract namespaces from backup filenames
   ansible.builtin.set_fact:
-    cert_backup_namespaces: "{{ cert_local_files.files | map(attribute='path') | map('basename') | map('regex_replace', '--.*$', '') | unique | list }}"
+    cert_backup_namespaces:
+      "{{ cert_local_files.files | map(attribute='path') | map('basename') | map('regex_replace', '--.*$', '') | unique
+      | list }}"
   when:
     - cert_local_files is defined
     - cert_local_files.files | default([]) | length > 0

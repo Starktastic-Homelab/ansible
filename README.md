@@ -1,7 +1,7 @@
 # Homelab Ansible
 
-[![K3s Deploy](https://github.com/starktastic/homelab-ansible/actions/workflows/k3s.yml/badge.svg)](https://github.com/starktastic/homelab-ansible/actions/workflows/k3s.yml)
-[![SR-IOV Upgrade](https://github.com/starktastic/homelab-ansible/actions/workflows/i915-sriov-upgrade.yml/badge.svg)](https://github.com/starktastic/homelab-ansible/actions/workflows/i915-sriov-upgrade.yml)
+[![K3s Deploy](https://github.com/starktastic/ansible/actions/workflows/k3s.yml/badge.svg)](https://github.com/starktastic/ansible/actions/workflows/k3s.yml)
+[![SR-IOV Upgrade](https://github.com/starktastic/ansible/actions/workflows/i915-sriov-upgrade.yml/badge.svg)](https://github.com/starktastic/ansible/actions/workflows/i915-sriov-upgrade.yml)
 ![Ansible](https://img.shields.io/badge/Ansible-13.x-EE0000?logo=ansible)
 ![K3s](https://img.shields.io/badge/K3s-v1.35.0-FFC61C?logo=k3s)
 
@@ -9,7 +9,7 @@ Ansible playbooks for provisioning and managing a K3s Kubernetes cluster on Prox
 
 ## Overview
 
-This repository configures K3s Kubernetes on VMs provisioned by [homelab-terraform](https://github.com/starktastic/homelab-terraform) and bootstraps the GitOps platform with ArgoCD and sealed-secrets. It also manages Intel SR-IOV GPU drivers on Proxmox hosts.
+This repository configures K3s Kubernetes on VMs provisioned by [terraform](https://github.com/starktastic/terraform) and bootstraps the cluster with ArgoCD and sealed-secrets. It also manages Intel SR-IOV GPU drivers on Proxmox hosts.
 
 ```mermaid
 flowchart TB
@@ -22,7 +22,7 @@ flowchart TB
         Init --> Token[Harvest Token]
         Token --> Masters[k3s_masters]
         Masters --> Workers[k3s_workers]
-        Workers --> Bootstrap[bootstrap_platform]
+        Workers --> Bootstrap[bootstrap_cluster]
     end
     
     subgraph Cluster["K3s Cluster"]
@@ -51,7 +51,7 @@ flowchart TB
 ## Repository Structure
 
 ```
-homelab-ansible/
+ansible/
 ├── k3s.yml                 # Main K3s cluster playbook
 ├── i915-sriov.yml          # Intel SR-IOV driver upgrade playbook
 ├── ansible.cfg             # Ansible configuration
@@ -71,7 +71,7 @@ homelab-ansible/
     ├── k3s_init/           # First control plane node
     ├── k3s_masters/        # Additional control plane nodes
     ├── k3s_workers/        # Worker node configuration
-    ├── bootstrap_platform/ # ArgoCD + sealed-secrets
+    ├── bootstrap_cluster/  # ArgoCD + sealed-secrets
     └── i915_sriov/         # Intel GPU driver management
 ```
 
@@ -114,7 +114,7 @@ flowchart LR
         Init[k3s_init<br/>First Master]
         Masters[k3s_masters<br/>Join Masters]
         Workers[k3s_workers<br/>Join Workers]
-        Bootstrap[bootstrap_platform<br/>ArgoCD + Secrets]
+        Bootstrap[bootstrap_cluster<br/>ArgoCD + Secrets]
         SRIOV[i915_sriov<br/>GPU Driver]
     end
     
@@ -137,7 +137,7 @@ flowchart LR
 | `k3s_init` | Initializes first control plane, deploys Kube-VIP, fetches kubeconfig |
 | `k3s_masters` | Joins additional control plane nodes to cluster |
 | `k3s_workers` | Joins worker nodes, applies GPU and worker labels |
-| `bootstrap_platform` | Deploys Kube-VIP config, sealed-secrets keys, ArgoCD with OIDC |
+| `bootstrap_cluster` | Deploys Kube-VIP config, sealed-secrets keys, ArgoCD with OIDC |
 | `i915_sriov` | Upgrades Intel SR-IOV DKMS driver with kernel compatibility checks |
 
 ## Intel SR-IOV Driver Management
@@ -199,7 +199,7 @@ ansible-playbook k3s.yml
 
 # Run with specific tags
 ansible-playbook k3s.yml --tags k3s           # K3s installation only
-ansible-playbook k3s.yml --tags bootstrap     # Platform bootstrap only
+ansible-playbook k3s.yml --tags bootstrap     # Cluster bootstrap only
 ansible-playbook k3s.yml --tags workers       # Worker nodes only
 ```
 
@@ -213,7 +213,7 @@ ansible-playbook k3s.yml --tags workers       # Worker nodes only
 | `workers` | Worker nodes |
 | `kube-vip` | Kube-VIP deployment |
 | `kubeconfig` | Kubeconfig setup |
-| `bootstrap` | Platform bootstrapping |
+| `bootstrap` | Cluster bootstrapping |
 | `argocd` | ArgoCD installation |
 | `sealed-secrets` | Sealed-secrets key seeding |
 
@@ -283,17 +283,17 @@ flowchart TD
         Packer["📦 Packer<br/>VM Template"]
         Terraform["🏗️ Terraform<br/>VM Provisioning"]
         Ansible["⚙️ Ansible<br/>K3s Cluster"]
-        Platform["🚀 Platform<br/>GitOps Apps"]
+        Apps["🚀 Apps<br/>GitOps Apps"]
     end
     
     Packer -->|manifest.json| Terraform
     Terraform -->|dispatch| Ansible
-    Ansible -->|bootstrap| Platform
+    Ansible -->|bootstrap| Apps
     
     style Packer fill:#4299e1,stroke:#2b6cb0
     style Terraform fill:#805ad5,stroke:#553c9a
     style Ansible fill:#48bb78,stroke:#276749
-    style Platform fill:#ed8936,stroke:#c05621
+    style Apps fill:#ed8936,stroke:#c05621
 ```
 
 ## Troubleshooting
@@ -310,9 +310,9 @@ flowchart TD
 
 | Repository | Description |
 |------------|-------------|
-| [homelab-packer](https://github.com/starktastic/homelab-packer) | Builds VM templates |
-| [homelab-terraform](https://github.com/starktastic/homelab-terraform) | Provisions VMs on Proxmox |
-| [homelab-platform](https://github.com/starktastic/homelab-platform) | GitOps application definitions |
+| [packer](https://github.com/starktastic/packer) | Builds VM templates |
+| [terraform](https://github.com/starktastic/terraform) | Provisions VMs on Proxmox |
+| [apps](https://github.com/starktastic/apps) | GitOps application definitions |
 
 ## License
 

@@ -8,7 +8,11 @@
     {
       "description": "Update Ansible variables and GitHub Actions inputs",
       "customType": "regex",
-      "fileMatch": ["(^|/)group_vars/.*/.*\\.ya?ml$", "(^|/)tasks/[^/]+\\.ya?ml$", "^\\.github/workflows/.*\\.yml$"],
+      "managerFilePatterns": [
+        "/(^|/)group_vars/.*/.*\\.ya?ml$/",
+        "/(^|/)tasks/[^/]+\\.ya?ml$/",
+        "/^\\.github/workflows/.*\\.yml$/"
+      ],
       "matchStrings": [
         "#\\s*renovate:\\s*datasource=(?<datasource>.*?)\\s+depName=(?<depName>.*?)(?:\\s+registryUrl=(?<registryUrl>.*?))?\\s+.*?(?:version|[a-z0-9_]+_version):\\s*['\"]?(?<currentValue>.*?)['\"]?\\s"
       ]
@@ -16,7 +20,7 @@
     {
       "description": "Update i915-sriov-dkms with loose versioning",
       "customType": "regex",
-      "fileMatch": ["(^|/)group_vars/.*/.*\\.ya?ml$"],
+      "managerFilePatterns": ["/(^|/)group_vars/.*/.*\\.ya?ml$/"],
       "matchStrings": [
         "#\\s*renovate:\\s*datasource=github-releases\\s+depName=(?<depName>strongtz/i915-sriov-dkms)\\s+.*?i915_sriov_version:\\s*['\"]?(?<currentValue>[^'\"\\s]+)['\"]?"
       ],

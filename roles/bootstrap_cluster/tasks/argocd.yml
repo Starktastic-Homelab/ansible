@@ -15,7 +15,7 @@
     chart_ref: argo/argo-cd
     release_namespace: argocd
     # renovate: datasource=helm depName=argo-cd registryUrl=https://argoproj.github.io/argo-helm
-    chart_version: "9.4.0"
+    chart_version: "9.4.1"
     update_repo_cache: true
     values:
       controller:
@@ -24,13 +24,13 @@
         replicas: 1
       repoServer:
         replicas: 1
-        # TODO: Remove comment after argoproj/argo-helm#3709 is merged
-        # Workaround: manually delete repo-server pod after node reboot
       applicationSet:
         replicas: 1
       redis:
         enabled: true
       configs:
+        params:
+          applicationsetcontroller.enable.progressive.syncs: "true"
         secret:
           argocdServerAdminPassword: "{{ argocd_admin_password_hash }}"
           extra:
@@ -80,7 +80,7 @@
         source:
           repoURL: "{{ argocd_repo_url }}"
           targetRevision: HEAD
-          path: apps/bootstrap
+          path: bootstrap
           directory:
             recurse: true
         destination:

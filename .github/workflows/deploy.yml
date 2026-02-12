@@ -19,7 +19,7 @@ jobs:
     name: Apply Configuration
     runs-on: self-hosted
     container:
-      image: python:3.14.3-trixie
+      image: python:trixie
     env:
       PROXMOX_URL: ${{ secrets.PROXMOX_URL }}
       PROXMOX_USER: ${{ secrets.PROXMOX_USER }}
@@ -72,7 +72,7 @@ jobs:
           retention-days: 1
 
   handoff:
-    name: Push secret to Platform repo
+    name: Push secret to Apps repo
     needs: provision
     runs-on: ubuntu-latest
     steps:
@@ -81,8 +81,8 @@ jobs:
         with:
           name: kubeconfig
       
-      - name: Update Platform repo secret
+      - name: Update Apps repo secret
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_PLATFORM_REPO_SECRET_UPDATER }}
+          GH_TOKEN: ${{ secrets.GH_PAT_APPS_REPO_SECRET_UPDATER }}
         run: |
-          gh secret set KUBECONFIG_RAW --repo Starktastic-Homelab/platform --body "$(cat kubeconfig_artifact)"
+          gh secret set KUBECONFIG_RAW --repo Starktastic-Homelab/apps --body "$(cat kubeconfig_artifact)"

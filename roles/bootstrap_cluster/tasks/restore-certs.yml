@@ -1,0 +1,161 @@
+---
+- name: Set master delegation target
+  ansible.builtin.set_fact:
+    _cert_master: "{{ groups['masters'][0] }}"
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Create cert backup mount point on master
+  ansible.builtin.file:
+    path: /tmp/cert-backup
+    state: directory
+    mode: "0755"
+  delegate_to: "{{ _cert_master }}"
+  become: true
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Mount cert backup NFS share on master
+  ansible.builtin.command:
+    cmd:
+      mount -t nfs -o ro,noatime,nfsvers=4.1 {{ nfs_server }}:{{ nfs_base_path }}/cert-backup/cert-backup
+      /tmp/cert-backup
+  delegate_to: "{{ _cert_master }}"
+  become: true
+  register: nfs_mount
+  ignore_errors: true
+  changed_when: nfs_mount.rc == 0
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Find backed up cert secrets on master
+  ansible.builtin.find:
+    paths: /tmp/cert-backup
+    patterns: "*.yaml"
+  delegate_to: "{{ _cert_master }}"
+  become: true
+  register: cert_backup_files
+  when: nfs_mount is succeeded
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Display found backup files
+  ansible.builtin.debug:
+    msg: "Found cert backups: {{ cert_backup_files.files | map(attribute='path') | list }}"
+  when:
+    - nfs_mount is succeeded
+    - cert_backup_files.matched > 0
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Fetch cert backup files to runner
+  ansible.builtin.fetch:
+    src: "{{ item.path }}"
+    dest: /tmp/cert-restore/
+    flat: true
+  delegate_to: "{{ _cert_master }}"
+  become: true
+  loop: "{{ cert_backup_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when:
+    - nfs_mount is succeeded
+    - cert_backup_files.matched > 0
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Unmount cert backup NFS share on master
+  ansible.builtin.command:
+    cmd: umount /tmp/cert-backup
+  delegate_to: "{{ _cert_master }}"
+  become: true
+  when: nfs_mount is succeeded
+  changed_when: true
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Remove cert backup mount point on master
+  ansible.builtin.file:
+    path: /tmp/cert-backup
+    state: absent
+  delegate_to: "{{ _cert_master }}"
+  become: true
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Find fetched cert files on runner
+  ansible.builtin.find:
+    paths: /tmp/cert-restore
+    patterns: "*.yaml"
+  register: cert_local_files
+  when:
+    - nfs_mount is succeeded
+    - cert_backup_files.matched > 0
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Extract namespaces from backup filenames
+  ansible.builtin.set_fact:
+    cert_backup_namespaces:
+      "{{ cert_local_files.files | map(attribute='path') | map('basename') | map('regex_replace', '--.*$', '') | unique
+      | list }}"
+  when:
+    - cert_local_files is defined
+    - cert_local_files.files | default([]) | length > 0
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Ensure target namespaces exist
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Namespace
+    name: "{{ item }}"
+    state: present
+  loop: "{{ cert_backup_namespaces }}"
+  when:
+    - cert_backup_namespaces is defined
+    - cert_backup_namespaces | length > 0
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Restore cert secrets from backup
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ item.path }}"
+  loop: "{{ cert_local_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when:
+    - cert_local_files is defined
+    - cert_local_files.files | default([]) | length > 0
+  ignore_errors: true
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Remove fetched cert files from runner
+  ansible.builtin.file:
+    path: /tmp/cert-restore
+    state: absent
+  tags:
+    - bootstrap
+    - restore-certs
+
+- name: Cert backup restore skipped (no NFS backup found)
+  ansible.builtin.debug:
+    msg: "No cert backup NFS share found — skipping restore (expected on first deploy)"
+  when: nfs_mount is failed
+  tags:
+    - bootstrap
+    - restore-certs

@@ -54,16 +54,34 @@
         secret:
           create: false
 
+# Workaround: ArgoCD creates ssoClientApp once at startup before its configmap
+# informer syncs. The OIDC issuer is empty at that point and the in-process
+# graceful restart does not recreate the SSO client. A rollout restart forces a
+# fresh NewServer() after the configmap is cached, giving SSO the correct issuer.
+- name: Restart ArgoCD server to pick up OIDC config
+  kubernetes.core.k8s:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: argocd
+    name: argocd-server
+    definition:
+      spec:
+        template:
+          metadata:
+            annotations:
+              kubectl.kubernetes.io/restartedAt: "{{ ansible_date_time.iso8601 }}"
+
 - name: Wait for ArgoCD server to be ready
   kubernetes.core.k8s_info:
     kind: Deployment
     namespace: argocd
     label_selectors:
       - "app.kubernetes.io/name=argocd-server"
-  register: argocd_pods
+  register: argocd_server
   until: >
-    argocd_pods.resources | length > 0 and argocd_pods.resources | map(attribute='status.availableReplicas') |
-    select('defined') | list | length == argocd_pods.resources | length
+    argocd_server.resources | length > 0 and
+    argocd_server.resources[0].status.updatedReplicas | default(0) == argocd_server.resources[0].spec.replicas and
+    argocd_server.resources[0].status.availableReplicas | default(0) == argocd_server.resources[0].spec.replicas
   retries: 30
   delay: 10
 

@@ -23,7 +23,6 @@
   tags:
     - kube-vip
 
-# --- Control Plane DaemonSet (master-only, manages API server VIP) ---
 - name: Generate Kube-Vip Control Plane DaemonSet
   ansible.builtin.command: >-
     ctr run --rm --net-host
@@ -44,7 +43,6 @@
   tags:
     - kube-vip
 
-# --- Services DaemonSet (all nodes, manages LoadBalancer VIPs) ---
 - name: Generate Kube-Vip Services DaemonSet
   ansible.builtin.command: >-
     ctr run --rm --net-host
@@ -62,13 +60,5 @@
     content: "{{ k3s_init_kube_vip_svc_manifest.stdout | regex_replace('kube-vip-ds', 'kube-vip-svc') }}"
     dest: "{{ k3s_manifests_directory }}/kube-vip-svc.yaml"
     mode: "0444"
-  tags:
-    - kube-vip
-
-# --- Clean up old unified DaemonSet manifest ---
-- name: Remove old unified Kube-Vip DaemonSet manifest
-  ansible.builtin.file:
-    path: "{{ k3s_manifests_directory }}/kube-vip-daemonset.yaml"
-    state: absent
   tags:
     - kube-vip

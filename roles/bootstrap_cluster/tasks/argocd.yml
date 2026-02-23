@@ -17,6 +17,7 @@
     # renovate: datasource=helm depName=argo-cd registryUrl=https://argoproj.github.io/argo-helm
     chart_version: "9.4.4"
     update_repo_cache: true
+    wait: true
     values:
       controller:
         replicas: 1

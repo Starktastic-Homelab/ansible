@@ -69,7 +69,7 @@
         template:
           metadata:
             annotations:
-              kubectl.kubernetes.io/restartedAt: "{{ ansible_date_time.iso8601 }}"
+              kubectl.kubernetes.io/restartedAt: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
 
 - name: Wait for ArgoCD server to be ready
   kubernetes.core.k8s_info:

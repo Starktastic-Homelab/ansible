@@ -23,22 +23,42 @@
   tags:
     - kube-vip
 
-- name: Generate Kube-Vip DaemonSet
+- name: Generate Kube-Vip Control Plane DaemonSet
   ansible.builtin.command: >-
     ctr run --rm --net-host
       ghcr.io/kube-vip/kube-vip:{{ k3s_init_kube_vip_version }}
-      vip /kube-vip manifest daemonset
-      --interface {{ flannel_iface }} --address {{ vip_address }}
-      --inCluster --taint --controlplane --services --arp --leaderElection
-  register: k3s_init_kube_vip_daemonset_manifest
+      vip-cp /kube-vip manifest daemonset
+      --interface {{ mgmt_iface }} --address {{ vip_address }}
+      --inCluster --taint --controlplane --arp --leaderElection
+  register: k3s_init_kube_vip_cp_manifest
   changed_when: false
   tags:
     - kube-vip
 
-- name: Copy Kube-Vip DaemonSet to manifests directory
+- name: Copy Kube-Vip Control Plane DaemonSet to manifests directory
   ansible.builtin.copy:
-    content: "{{ k3s_init_kube_vip_daemonset_manifest.stdout }}"
-    dest: "{{ k3s_manifests_directory }}/kube-vip-daemonset.yaml"
+    content: "{{ k3s_init_kube_vip_cp_manifest.stdout | regex_replace('kube-vip-ds', 'kube-vip-cp') }}"
+    dest: "{{ k3s_manifests_directory }}/kube-vip-cp.yaml"
+    mode: "0444"
+  tags:
+    - kube-vip
+
+- name: Generate Kube-Vip Services DaemonSet
+  ansible.builtin.command: >-
+    ctr run --rm --net-host
+      ghcr.io/kube-vip/kube-vip:{{ k3s_init_kube_vip_version }}
+      vip-svc /kube-vip manifest daemonset
+      --interface {{ flannel_iface }} --address {{ vip_address }}
+      --inCluster --services --arp --servicesElection
+  register: k3s_init_kube_vip_svc_manifest
+  changed_when: false
+  tags:
+    - kube-vip
+
+- name: Copy Kube-Vip Services DaemonSet to manifests directory
+  ansible.builtin.copy:
+    content: "{{ k3s_init_kube_vip_svc_manifest.stdout | regex_replace('kube-vip-ds', 'kube-vip-svc') }}"
+    dest: "{{ k3s_manifests_directory }}/kube-vip-svc.yaml"
     mode: "0444"
   tags:
     - kube-vip

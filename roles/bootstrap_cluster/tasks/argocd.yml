@@ -79,9 +79,9 @@
       - "app.kubernetes.io/name=argocd-server"
   register: argocd_server
   until: >
-    argocd_server.resources | length > 0 and
-    argocd_server.resources[0].status.updatedReplicas | default(0) == argocd_server.resources[0].spec.replicas and
-    argocd_server.resources[0].status.availableReplicas | default(0) == argocd_server.resources[0].spec.replicas
+    argocd_server.resources | length > 0 and argocd_server.resources[0].status.updatedReplicas | default(0) ==
+    argocd_server.resources[0].spec.replicas and argocd_server.resources[0].status.availableReplicas | default(0) ==
+    argocd_server.resources[0].spec.replicas
   retries: 30
   delay: 10
 

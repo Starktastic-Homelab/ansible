@@ -1,4 +1,15 @@
 ---
+- name: Set sysctl parameters for Kubernetes
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_set: true
+    state: present
+    reload: true
+  loop:
+    - { key: "fs.inotify.max_user_instances", value: "512" }
+    - { key: "fs.inotify.max_user_watches", value: "524288" }
+
 - name: Check if K3s is already installed
   ansible.builtin.stat:
     path: /usr/local/bin/k3s

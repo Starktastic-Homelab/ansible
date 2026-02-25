@@ -5,7 +5,7 @@ ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
 mgmt_iface: eth0
 flannel_iface: eth1
 vip_address: "10.9.9.99"
-vip_service_cidrs: "10.9.9.90/32,10.9.8.90/32,10.9.8.91/32,10.9.8.92/32"
+vip_service_cidrs: "10.9.9.90/32,10.9.8.80/32,10.9.8.90/32,10.9.8.91/32,10.9.8.92/32"
 
 # Domain configuration
 base_domain: "starktastic.net"

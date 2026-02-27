@@ -3,6 +3,7 @@
   ansible.posix.sysctl:
     name: "{{ item.key }}"
     value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/99-kubernetes.conf
     sysctl_set: true
     state: present
     reload: true

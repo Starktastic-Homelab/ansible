@@ -2,9 +2,10 @@
 ansible_user: debian
 ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
 
+mgmt_iface: eth0
 flannel_iface: eth1
 vip_address: "10.9.9.99"
-vip_service_cidrs: "10.9.9.90/32,10.9.8.90/32,10.9.8.91/32,10.9.8.92/32"
+vip_service_cidrs: "10.9.9.90/32,10.9.8.80/32,10.9.8.90/32,10.9.8.91/32,10.9.8.92/32"
 
 # Domain configuration
 base_domain: "starktastic.net"
@@ -20,4 +21,4 @@ nfs_base_path: "/mnt/apps/pv"
 
 # K3s version to install
 # renovate: datasource=github-releases depName=k3s-io/k3s
-k3s_version: "v1.35.0+k3s3"
+k3s_version: "v1.35.1+k3s1"

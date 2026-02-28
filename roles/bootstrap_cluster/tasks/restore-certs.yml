@@ -154,7 +154,7 @@
 
 - name: Cert backup restore skipped (no NFS backup found)
   ansible.builtin.debug:
-    msg: "No cert backup NFS share found — skipping restore (expected on first deploy)"
+    msg: "No cert backup NFS share found - skipping restore (expected on first deploy)"
   when: nfs_mount is failed
   tags:
     - bootstrap

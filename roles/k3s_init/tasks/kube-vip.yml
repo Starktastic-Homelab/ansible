@@ -30,6 +30,7 @@
       vip-cp /kube-vip manifest daemonset
       --interface {{ mgmt_iface }} --address {{ vip_address }}
       --inCluster --taint --controlplane --arp --leaderElection
+      --prometheusHTTPServer :2112
   register: k3s_init_kube_vip_cp_manifest
   changed_when: false
   tags:
@@ -50,6 +51,7 @@
       vip-svc /kube-vip manifest daemonset
       --interface {{ flannel_iface }} --address {{ vip_address }}
       --inCluster --services --arp --servicesElection
+      --prometheusHTTPServer :2113
   register: k3s_init_kube_vip_svc_manifest
   changed_when: false
   tags:

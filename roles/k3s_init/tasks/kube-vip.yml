@@ -52,7 +52,6 @@
       vip-svc /kube-vip manifest daemonset
       --interface {{ flannel_iface }} --address {{ vip_address }}
       --inCluster --services --arp --servicesElection
-      --leaseDuration 30 --leaseRenewDuration 20 --leaseRetry 5
       --prometheusHTTPServer :2113
   register: k3s_init_kube_vip_svc_manifest
   changed_when: false

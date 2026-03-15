@@ -30,7 +30,9 @@
       vip-cp /kube-vip manifest daemonset
       --interface {{ mgmt_iface }} --address {{ vip_address }}
       --inCluster --taint --controlplane --arp --leaderElection
-      --leaseDuration 30 --leaseRenewDuration 20 --leaseRetry 5
+      --leaseDuration {{ k3s_init_kube_vip_lease_duration }}
+      --leaseRenewDuration {{ k3s_init_kube_vip_lease_renew_duration }}
+      --leaseRetry {{ k3s_init_kube_vip_lease_retry }}
       --prometheusHTTPServer :2112
   register: k3s_init_kube_vip_cp_manifest
   changed_when: false
@@ -52,7 +54,6 @@
       vip-svc /kube-vip manifest daemonset
       --interface {{ flannel_iface }} --address {{ vip_address }}
       --inCluster --services --arp --servicesElection
-      --leaseDuration 30 --leaseRenewDuration 20 --leaseRetry 5
       --prometheusHTTPServer :2113
   register: k3s_init_kube_vip_svc_manifest
   changed_when: false

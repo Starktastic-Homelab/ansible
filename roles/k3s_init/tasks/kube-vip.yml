@@ -15,6 +15,25 @@
   tags:
     - kube-vip
 
+- name: Apply Kube-Vip RBAC before DaemonSets to prevent race condition
+  ansible.builtin.command:
+    cmd: k3s kubectl apply -f {{ k3s_manifests_directory }}/kube-vip-rbac.yaml
+  register: kube_vip_rbac_apply
+  changed_when: kube_vip_rbac_apply.stdout is search('created|configured')
+  tags:
+    - kube-vip
+
+- name: Wait for Kube-Vip ClusterRole to be available
+  ansible.builtin.command:
+    cmd: k3s kubectl get clusterrole system:kube-vip-role
+  register: kube_vip_rbac_check
+  until: kube_vip_rbac_check.rc == 0
+  retries: 10
+  delay: 2
+  changed_when: false
+  tags:
+    - kube-vip
+
 - name: Pull Kube-Vip image
   ansible.builtin.command: >-
     ctr image pull ghcr.io/kube-vip/kube-vip:{{ k3s_init_kube_vip_version }}

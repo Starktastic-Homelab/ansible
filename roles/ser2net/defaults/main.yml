@@ -1,0 +1,5 @@
+---
+ser2net_port: 3333
+ser2net_baud_rate: "115200"
+ser2net_serial_device: >-
+  /dev/serial/by-id/usb-Itead_Sonoff_Zigbee_3.0_USB_Dongle_Plus_V2_d0f116b306f4ef118456c41b6d9880ab-if00-port0

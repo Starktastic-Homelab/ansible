@@ -1,0 +1,7 @@
+%YAML 1.1
+---
+connection: &zigbee
+  accepter: tcp,{{ ser2net_port }}
+  connector: serialdev,{{ ser2net_serial_device }},{{ ser2net_baud_rate }}n81,local
+  options:
+    kickolduser: true

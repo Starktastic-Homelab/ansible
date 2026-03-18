@@ -13,6 +13,8 @@ on:
       - 'README.md'
       - 'renovate.json'
       - 'group_vars/proxmox_hosts/**'
+      - 'roles/ser2net/**'
+      - 'ser2net.yml'
 
 jobs:
   provision:

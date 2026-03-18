@@ -3,6 +3,9 @@
 # renovate: datasource=docker depName=ghcr.io/kube-vip/kube-vip
 k3s_init_kube_vip_version: "v1.0.4"
 
+# Image used by the kube-vip-svc initContainer that gates on API/RBAC readiness
+k3s_init_kube_vip_init_image: "busybox:latest"
+
 # Kube-VIP leader election lease tuning (control plane DaemonSet)
 k3s_init_kube_vip_lease_duration: 30
 k3s_init_kube_vip_lease_renew_duration: 20

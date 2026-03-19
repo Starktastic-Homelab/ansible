@@ -1,11 +1,12 @@
 ---
-# All kube-vip manifests are staged outside the k3s auto-deploy directory and
-# applied explicitly via `kubectl apply`.  Placing files in the auto-deploy
-# directory (/var/lib/rancher/k3s/server/manifests/) causes the k3s addon
-# controller to adopt the resulting Kubernetes objects.  When it later
-# reconciles checksums it briefly deletes and recreates them, revoking RBAC
-# and killing the kube-vip-svc DaemonSet permanently (the Go process shuts
-# down its watchers on 403 but the container stays Running — no restart).
+# Kube-VIP control plane manifests are staged outside the k3s auto-deploy
+# directory and applied explicitly via `kubectl apply`.  Placing files in the
+# auto-deploy directory (/var/lib/rancher/k3s/server/manifests/) causes the
+# k3s addon controller to adopt the resulting Kubernetes objects.  When it
+# later reconciles checksums it briefly deletes and recreates them, revoking
+# RBAC and killing the DaemonSet permanently.
+#
+# LoadBalancer service IPs are now managed by MetalLB (deployed via ArgoCD).
 
 - name: Create kube-vip manifests directory
   ansible.builtin.file:
@@ -79,34 +80,5 @@
     cmd: k3s kubectl apply -f {{ k3s_init_kube_vip_manifests_directory }}/kube-vip-cp.yaml
   register: kube_vip_cp_apply
   changed_when: kube_vip_cp_apply.stdout is search('created|configured')
-  tags:
-    - kube-vip
-
-- name: Generate Kube-Vip Services DaemonSet
-  ansible.builtin.command: >-
-    ctr run --rm --net-host
-      ghcr.io/kube-vip/kube-vip:{{ k3s_init_kube_vip_version }}
-      vip-svc /kube-vip manifest daemonset
-      --interface {{ flannel_iface }} --address {{ vip_address }}
-      --inCluster --services --arp --servicesElection
-      --prometheusHTTPServer :2113
-  register: k3s_init_kube_vip_svc_manifest
-  changed_when: false
-  tags:
-    - kube-vip
-
-- name: Save Kube-Vip Services DaemonSet
-  ansible.builtin.copy:
-    content: "{{ k3s_init_kube_vip_svc_manifest.stdout | regex_replace('kube-vip-ds', 'kube-vip-svc') }}"
-    dest: "{{ k3s_init_kube_vip_manifests_directory }}/kube-vip-svc.yaml"
-    mode: "0444"
-  tags:
-    - kube-vip
-
-- name: Apply Kube-Vip Services DaemonSet
-  ansible.builtin.command:
-    cmd: k3s kubectl apply -f {{ k3s_init_kube_vip_manifests_directory }}/kube-vip-svc.yaml
-  register: kube_vip_svc_apply
-  changed_when: kube_vip_svc_apply.stdout is search('created|configured')
   tags:
     - kube-vip

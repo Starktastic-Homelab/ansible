@@ -74,7 +74,7 @@ jobs:
           retention-days: 1
 
   handoff:
-    name: Push secret to Apps repo
+    name: Push kubeconfig to org secret
     needs: provision
     runs-on: ubuntu-latest
     steps:
@@ -83,8 +83,8 @@ jobs:
         with:
           name: kubeconfig
       
-      - name: Update Apps repo secret
+      - name: Update org-wide kubeconfig secret
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_APPS_REPO_SECRET_UPDATER }}
+          GH_TOKEN: ${{ secrets.GH_PAT_ORG_SECRET_MANAGER }}
         run: |
-          gh secret set KUBECONFIG_RAW --repo Starktastic-Homelab/apps --body "$(cat kubeconfig_artifact)"
+          gh secret set KUBECONFIG_RAW --org Starktastic-Homelab --visibility selected --repos apps,terraform --body "$(cat kubeconfig_artifact)"

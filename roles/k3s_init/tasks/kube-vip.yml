@@ -1,7 +1,15 @@
 ---
-- name: Create manifests directory
+# All kube-vip manifests are staged outside the k3s auto-deploy directory and
+# applied explicitly via `kubectl apply`.  Placing files in the auto-deploy
+# directory (/var/lib/rancher/k3s/server/manifests/) causes the k3s addon
+# controller to adopt the resulting Kubernetes objects.  When it later
+# reconciles checksums it briefly deletes and recreates them, revoking RBAC
+# and killing the kube-vip-svc DaemonSet permanently (the Go process shuts
+# down its watchers on 403 but the container stays Running — no restart).
+
+- name: Create kube-vip manifests directory
   ansible.builtin.file:
-    path: "{{ k3s_manifests_directory }}"
+    path: "{{ k3s_init_kube_vip_manifests_directory }}"
     state: directory
     mode: "0700"
   tags:
@@ -10,14 +18,14 @@
 - name: Download Kube-Vip RBAC Manifest
   ansible.builtin.get_url:
     url: https://kube-vip.io/manifests/rbac.yaml
-    dest: "{{ k3s_manifests_directory }}/kube-vip-rbac.yaml"
+    dest: "{{ k3s_init_kube_vip_manifests_directory }}/rbac.yaml"
     mode: "0444"
   tags:
     - kube-vip
 
-- name: Apply Kube-Vip RBAC before DaemonSets to prevent race condition
+- name: Apply Kube-Vip RBAC
   ansible.builtin.command:
-    cmd: k3s kubectl apply -f {{ k3s_manifests_directory }}/kube-vip-rbac.yaml
+    cmd: k3s kubectl apply -f {{ k3s_init_kube_vip_manifests_directory }}/rbac.yaml
   register: kube_vip_rbac_apply
   changed_when: kube_vip_rbac_apply.stdout is search('created|configured')
   tags:
@@ -58,11 +66,19 @@
   tags:
     - kube-vip
 
-- name: Copy Kube-Vip Control Plane DaemonSet to manifests directory
+- name: Save Kube-Vip Control Plane DaemonSet
   ansible.builtin.copy:
     content: "{{ k3s_init_kube_vip_cp_manifest.stdout | regex_replace('kube-vip-ds', 'kube-vip-cp') }}"
-    dest: "{{ k3s_manifests_directory }}/kube-vip-cp.yaml"
+    dest: "{{ k3s_init_kube_vip_manifests_directory }}/kube-vip-cp.yaml"
     mode: "0444"
+  tags:
+    - kube-vip
+
+- name: Apply Kube-Vip Control Plane DaemonSet
+  ansible.builtin.command:
+    cmd: k3s kubectl apply -f {{ k3s_init_kube_vip_manifests_directory }}/kube-vip-cp.yaml
+  register: kube_vip_cp_apply
+  changed_when: kube_vip_cp_apply.stdout is search('created|configured')
   tags:
     - kube-vip
 
@@ -79,38 +95,18 @@
   tags:
     - kube-vip
 
-- name: Inject initContainer into Kube-Vip Services DaemonSet
-  ansible.builtin.set_fact:
-    k3s_init_kube_vip_svc_final: >-
-      {%- set ds = k3s_init_kube_vip_svc_manifest.stdout
-                   | regex_replace('kube-vip-ds', 'kube-vip-svc')
-                   | from_yaml -%}
-      {%- set init = {
-            'spec': { 'template': { 'spec': { 'initContainers': [{
-              'name': 'wait-for-api-and-rbac',
-              'image': k3s_init_kube_vip_init_image,
-              'command': ['sh', '-c', '
-                TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token);
-                until wget -qO- --no-check-certificate
-                  --header "Authorization: Bearer ${TOKEN}"
-                  "https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}/api/v1/services?limit=1"
-                  >/dev/null 2>&1; do
-                  echo "Waiting for API server and RBAC to be ready...";
-                  sleep 3;
-                done;
-                echo "API server ready, RBAC verified";
-              '],
-              'securityContext': { 'capabilities': { 'drop': ['ALL'] } }
-            }] } } }
-          } -%}
-      {{ ds | combine(init, recursive=True) | to_nice_yaml(indent=2) }}
+- name: Save Kube-Vip Services DaemonSet
+  ansible.builtin.copy:
+    content: "{{ k3s_init_kube_vip_svc_manifest.stdout | regex_replace('kube-vip-ds', 'kube-vip-svc') }}"
+    dest: "{{ k3s_init_kube_vip_manifests_directory }}/kube-vip-svc.yaml"
+    mode: "0444"
   tags:
     - kube-vip
 
-- name: Copy Kube-Vip Services DaemonSet to manifests directory
-  ansible.builtin.copy:
-    content: "{{ k3s_init_kube_vip_svc_final }}"
-    dest: "{{ k3s_manifests_directory }}/kube-vip-svc.yaml"
-    mode: "0444"
+- name: Apply Kube-Vip Services DaemonSet
+  ansible.builtin.command:
+    cmd: k3s kubectl apply -f {{ k3s_init_kube_vip_manifests_directory }}/kube-vip-svc.yaml
+  register: kube_vip_svc_apply
+  changed_when: kube_vip_svc_apply.stdout is search('created|configured')
   tags:
     - kube-vip

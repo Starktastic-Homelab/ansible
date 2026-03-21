@@ -61,6 +61,7 @@
       --leaseDuration {{ k3s_init_kube_vip_lease_duration }}
       --leaseRenewDuration {{ k3s_init_kube_vip_lease_renew_duration }}
       --leaseRetry {{ k3s_init_kube_vip_lease_retry }}
+      --preserveVipOnLeadershipLoss
       --prometheusHTTPServer :2112
   register: k3s_init_kube_vip_cp_manifest
   changed_when: false

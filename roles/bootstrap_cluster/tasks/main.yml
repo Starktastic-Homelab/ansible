@@ -1,18 +1,4 @@
 ---
-- name: Configure Kube-Vip service ranges
-  kubernetes.core.k8s:
-    namespace: kube-system
-    definition:
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: kubevip
-      data:
-        cidr-global: "{{ vip_service_cidrs }}"
-  tags:
-    - bootstrap
-    - kube-vip
-
 - name: Pre-seed sealed-secrets master key
   kubernetes.core.k8s:
     state: present

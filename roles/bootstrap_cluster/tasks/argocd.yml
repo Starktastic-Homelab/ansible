@@ -39,6 +39,7 @@
             oidc.authentik.clientSecret: "{{ argocd_oidc_client_secret }}"
         cm:
           url: "{{ argocd_url }}"
+          accounts.homepage: apiKey
           oidc.config: |
             name: Authentik
             issuer: "{{ authentik_url }}/application/o/argo-cd/"
@@ -49,7 +50,9 @@
           policy.default: role:readonly
           scopes: "[groups]"
           policy.csv: |
+            p, role:homepage, applications, get, */*, allow
             g, authentik Admins, role:admin
+            g, homepage, role:homepage
       notifications:
         secret:
           create: false

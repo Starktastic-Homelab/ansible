@@ -357,25 +357,6 @@ ansible-playbook k3s.yml --check              # Dry run
 ansible-playbook k3s.yml --limit masters -vvv # Verbose, specific hosts
 ```
 
-## Pipeline Position
-
-```mermaid
-flowchart LR
-    Packer["📦 Packer\nVM Template"]
-    Terraform["🏗️ Terraform\nInfrastructure"]
-    Ansible["⚙️ Ansible\nK3s Cluster"]
-    Apps["🚀 Apps\nGitOps"]
-
-    Packer -- "manifest.json\nauto-creates PR" --> Terraform
-    Terraform -- "repository_dispatch\non apply" --> Ansible
-    Ansible -- "bootstraps\nArgoCD" --> Apps
-
-    style Packer fill:#4299e1,stroke:#2b6cb0,color:#fff
-    style Terraform fill:#805ad5,stroke:#b794f4,color:#fff
-    style Ansible fill:#48bb78,stroke:#276749,color:#fff
-    style Apps fill:#ed8936,stroke:#dd6b20,color:#fff
-```
-
 ## Troubleshooting
 
 | Issue | Solution |

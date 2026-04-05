@@ -295,8 +295,8 @@ Ansible sits in the middle of the infrastructure pipeline, receiving triggers fr
 
 ```mermaid
 flowchart LR
-    TF(["🏗️ Terraform\nVMs provisioned"]) ==>|repository_dispatch| AN(["⚙️ Ansible\nK3s + Bootstrap"])
-    AN ==>|"ArgoCD App-of-Apps\npoints to Apps repo"| APPS(["☸️ Apps\n60+ services deployed"])
+    TF(["🏗️ Terraform\nVMs provisioned"]) ==>|"repository dispatch"| AN(["⚙️ Ansible\nK3s + Bootstrap"])
+    AN ==>|"App-of-Apps"| APPS(["☸️ Apps\n60+ services deployed"])
     AN -.->|"Kubeconfig uploaded\nto org secret"| GH[(🔐 GitHub Org\nSecrets)]
 
     classDef terraform fill:#7B42BC,stroke:#6A35A3,color:#fff

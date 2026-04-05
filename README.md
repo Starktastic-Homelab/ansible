@@ -205,7 +205,41 @@ ArgoCD is deployed via Helm with:
 
 ### TLS Certificate Recovery
 
-On cluster rebuild, TLS certificates are **recovered from NFS backup** rather than re-issued. This prevents Let's Encrypt rate limiting and ensures services come back online with valid certificates immediately.
+On cluster rebuild, TLS certificates are **recovered from NFS backup** rather than re-issued. This prevents Let's Encrypt rate limiting and ensures services come back online with valid certificates immediately. The restore process orchestrates data across three systems:
+
+```mermaid
+flowchart LR
+    subgraph nfs["TrueNAS NFS Server"]
+        BACKUP[(cert-backup/\n*.yaml)]
+    end
+
+    subgraph master["K3s Master Node"]
+        MNT["/tmp/cert-backup\n(read-only mount)"]
+    end
+
+    subgraph runner["Ansible Runner"]
+        FIND["Find *.yaml files"]
+        FETCH["Fetch to localhost"]
+        PARSE{{"Extract namespace\nfrom filename"}}
+    end
+
+    subgraph k8s["Kubernetes API"]
+        NS["Ensure target\nnamespaces exist"]
+        APPLY(["kubectl apply\neach TLS secret"])
+    end
+
+    BACKUP -.->|"NFS mount"| MNT
+    MNT ==> FIND ==> FETCH
+    FETCH ==> PARSE
+    PARSE ==> NS ==> APPLY
+
+    classDef storage fill:#326CE5,stroke:#2B5FC2,color:#fff
+    classDef gate fill:#E57000,stroke:#CC6300,color:#fff
+    class BACKUP,MNT storage
+    class PARSE gate
+```
+
+On a fresh cluster where no NFS backup exists yet, the restore step **gracefully skips** without failing — certificates will be issued fresh by cert-manager and backed up on the next CronJob run.
 
 ---
 

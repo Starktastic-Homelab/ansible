@@ -14,30 +14,30 @@ This is the third stage of the [Starktastic Homelab](https://github.com/Starktas
 
 ```mermaid
 flowchart TB
-    subgraph trigger["Trigger"]
-        TF["Terraform Apply"] -- "repository_dispatch" --> Deploy
+    subgraph trigger["🎯 Trigger"]
+        TF["🏗️ Terraform Apply"] == "repository_dispatch\ninfrastructure-changed" ==> Deploy
     end
 
-    subgraph Deploy["deploy.yml — K3s Cluster Deployment"]
+    subgraph Deploy["⚙️ deploy.yml — K3s Cluster Deployment"]
         direction TB
-        SSH["Wait for SSH\n(all nodes)"]
-        Init["k3s_init\nFirst control plane\n+ Kube-VIP"]
-        Token["Harvest join token\n& verify VIP"]
-        Masters["k3s_masters\nJoin additional\ncontrol planes"]
-        Workers["k3s_workers\nJoin workers\n+ GPU labels"]
-        Bootstrap["bootstrap_cluster\nSealed-secrets keys\nRestore TLS certs\nArgoCD + OIDC\nApp-of-Apps"]
+        SSH["🔗 Wait for SSH\n(all nodes)\n10s delay, 300s timeout"]
+        Init["🚀 k3s_init\nFirst control plane\n+ Kube-VIP"]
+        Token["🔑 Harvest join token\n& verify VIP 10.9.9.99"]
+        Masters["➕ k3s_masters\nJoin additional\ncontrol planes"]
+        Workers["⚡ k3s_workers\nJoin workers\n+ GPU labels"]
+        Bootstrap["🏗️ bootstrap_cluster\nSealed-secrets keys\nRestore TLS certs\nArgoCD + OIDC\nApp-of-Apps"]
 
         SSH --> Init --> Token --> Masters --> Workers --> Bootstrap
     end
 
-    subgraph result["Cluster Ready"]
-        VIP["K3s API\n10.9.9.99:6443"]
-        Argo["ArgoCD\nsyncing apps repo"]
-        Sealed["Sealed Secrets\nkeys pre-seeded"]
+    subgraph result["✅ Cluster Ready"]
+        VIP["☸️ K3s API\n10.9.9.99:6443"]
+        Argo["🔄 ArgoCD\nsyncing apps repo"]
+        Sealed["🔑 Sealed Secrets\nkeys pre-seeded"]
     end
 
-    Bootstrap --> result
-    Deploy -- "Updates org secret\nKUBECONFIG_RAW" --> GH["GitHub Org"]
+    Bootstrap ==> result
+    Deploy -- "🔑 Updates org secret\nKUBECONFIG_RAW" --> GH["🐙 GitHub Org"]
 
     style trigger fill:#1a1b27,stroke:#805ad5,color:#e2e8f0
     style Deploy fill:#1a1b27,stroke:#48bb78,color:#e2e8f0
@@ -95,32 +95,48 @@ The main playbook executes six plays in sequence:
 
 ```mermaid
 sequenceDiagram
-    participant TF as Terraform
-    participant GH as GitHub Actions
-    participant M1 as Master-01
+    participant TF as 🏗️ Terraform
+    participant GH as 🔄 GitHub Actions
+    participant M1 as 🖥️ Master-01
     participant Mn as Masters[1:]
-    participant W as Workers
-    participant K8s as Cluster
+    participant W as ⚡ Workers
+    participant K8s as ☸️ Cluster
 
+    rect rgb(26,27,39)
+    Note over TF,GH: Trigger
     TF->>GH: repository_dispatch
+    end
+
+    rect rgb(26,27,39)
+    Note over GH,M1: Phase 1 — Init
     GH->>M1: Wait for SSH (10s delay, 300s timeout)
     GH->>M1: k3s_init — install K3s (--cluster-init)
+    Note right of M1: --flannel-iface eth1
+    Note right of M1: --disable traefik,servicelb
+    Note right of M1: --tls-san 10.9.9.99
     M1->>M1: Deploy Kube-VIP DaemonSet (ARP, VIP 10.9.9.99)
     M1-->>GH: /var/lib/rancher/k3s/server/node-token
     GH->>GH: Verify VIP responds at 10.9.9.99:6443
+    end
 
+    rect rgb(26,27,39)
+    Note over GH,W: Phase 2 — Join
     GH->>Mn: k3s_masters — join via VIP (--server https://10.9.9.99:6443)
     GH->>W: k3s_workers — join as agents
     W->>W: Label: node-role.kubernetes.io/worker
     W->>W: Label: intel.feature.node.kubernetes.io/gpu
+    end
 
-    GH->>K8s: Pre-seed sealed-secrets TLS key
-    GH->>K8s: Mount NFS & restore TLS certificates
-    GH->>K8s: Install ArgoCD (Helm) with Authentik OIDC
-    GH->>K8s: Apply App-of-Apps bootstrap Application
+    rect rgb(26,27,39)
+    Note over GH,K8s: Phase 3 — Bootstrap
+    GH->>K8s: 🔑 Pre-seed sealed-secrets TLS key
+    GH->>K8s: 📜 Mount NFS & restore TLS certificates
+    GH->>K8s: 🔄 Install ArgoCD (Helm) with Authentik OIDC
+    GH->>K8s: 🚀 Apply App-of-Apps bootstrap Application
     K8s-->>GH: Cluster fully operational
+    end
 
-    GH->>GH: Upload kubeconfig → org secret KUBECONFIG_RAW
+    GH->>GH: 🔑 Upload kubeconfig → org secret KUBECONFIG_RAW
 ```
 
 **K3s configuration highlights:**
@@ -144,28 +160,105 @@ Targets the Proxmox hypervisor to manage the Intel SR-IOV DKMS driver:
 
 Installs and configures ser2net on the Proxmox host, exposing a USB Zigbee dongle (Sonoff Zigbee 3.0 USB Dongle Plus V2) as a TCP socket on port `3333` — consumed by Zigbee2MQTT running inside the cluster at `10.9.9.20:3333`.
 
+### Kube-VIP High Availability
+
+Kube-VIP runs as a DaemonSet on control plane nodes, using ARP-based leader election to manage a floating virtual IP for the K3s API server:
+
+```mermaid
+flowchart TB
+    subgraph vip["⚡ Kube-VIP DaemonSet"]
+        direction LR
+        Leader["🟢 Leader\nkube-master-01\n──────────\nBinds VIP 10.9.9.99\nResponds to ARP\nServes API traffic"]
+        Standby["⏸️ Standby\n(future masters)\n──────────\nWatch leader\nReady for failover"]
+    end
+
+    subgraph clients["🔗 API Clients"]
+        Kubectl["kubectl\n→ 10.9.9.99:6443"]
+        Workers["Workers join\n→ 10.9.9.99:6443"]
+        CI["CI/CD\n→ 10.9.9.99:6443"]
+    end
+
+    clients == "always via VIP" ==> Leader
+    Leader -. "failover\n(ARP gratuitous)" .-> Standby
+
+    style vip fill:#1a1b27,stroke:#48bb78,color:#e2e8f0
+    style clients fill:#1a1b27,stroke:#4299e1,color:#e2e8f0
+```
+
+### Certificate Restore Flow
+
+During cluster bootstrap, TLS certificates backed up to NFS are restored to avoid Let's Encrypt re-issuance delays:
+
+```mermaid
+sequenceDiagram
+    participant Ansible as ⚙️ Ansible
+    participant NFS as 💾 NFS · 10.9.8.30
+    participant K8s as ☸️ Kubernetes
+
+    rect rgb(26,27,39)
+    Note over Ansible,K8s: 📜 TLS Certificate Restore
+    Ansible->>NFS: Mount /mnt/apps/pv/cert-backup
+    Ansible->>Ansible: Discover backed-up TLS secrets<br/>(filter kubernetes.io/tls type)
+    loop For each certificate
+        Ansible->>K8s: Create namespace if missing
+        Ansible->>K8s: Apply Secret (tls.crt + tls.key)<br/>with cert-manager annotations
+    end
+    Ansible->>NFS: Unmount backup
+    Note over K8s: ✅ All certs available instantly<br/>No Let's Encrypt re-issuance needed
+    end
+```
+
+### ArgoCD Bootstrap Detail
+
+The final bootstrap step installs ArgoCD with Authentik OIDC SSO and creates the App-of-Apps that triggers the full cluster sync:
+
+```mermaid
+flowchart TB
+    subgraph helm["📦 ArgoCD Helm Install"]
+        Install["helm install argocd\nargo/argo-cd"] --> OIDC["Configure Authentik OIDC\n──────────\nclient ID + secret\nissuer URL\ngroup claim mapping"]
+        OIDC --> RBAC["RBAC Policy\n──────────\nArgoCD Admins → admin\nAuthentik groups → roles"]
+    end
+
+    subgraph app["🚀 App-of-Apps"]
+        Bootstrap["Apply cluster-bootstrap\nApplication manifest\n──────────\nPoints to apps repo\nmain branch"]
+    end
+
+    subgraph sync["🔄 Initial Sync Cascade"]
+        AppSets["ArgoCD discovers\nApplicationSets"] --> Phase1["Phase 1: CRDs"]
+        Phase1 --> Phase2["Phase 2: Foundation\ncert-manager · sealed-secrets"]
+        Phase2 --> Phase3["Phase 3: Controllers\nTraefik · Authentik · DBs"]
+        Phase3 --> Phase4["Phase 4: Services\nAll applications"]
+    end
+
+    helm ==> app ==> sync
+
+    style helm fill:#1a1b27,stroke:#805ad5,color:#e2e8f0
+    style app fill:#1a1b27,stroke:#ed8936,color:#e2e8f0
+    style sync fill:#1a1b27,stroke:#48bb78,color:#e2e8f0
+```
+
 ## Roles
 
 ```mermaid
 flowchart LR
-    subgraph k3s["K3s Cluster Roles"]
-        Common["k3s_common\n─────────\nKernel params\nDocker Hub auth\nDownload installer"]
-        Init["k3s_init\n─────────\nInstall K3s\nKube-VIP DaemonSet\nFetch kubeconfig"]
-        Masters["k3s_masters\n─────────\nJoin control planes\nvia VIP"]
-        Workers["k3s_workers\n─────────\nJoin agents\nGPU + worker labels"]
-        Bootstrap["bootstrap_cluster\n─────────\nSealed-secrets keys\nRestore TLS certs\nArgoCD with OIDC\nApp-of-Apps"]
+    subgraph k3s["☸️ K3s Cluster Roles"]
+        Common["k3s_common\n─────────\nKernel params\nDocker Hub auth\nDownload installer\n─────────\n🎯 all_k3s nodes"]
+        Init["k3s_init\n─────────\nInstall K3s\nKube-VIP DaemonSet\nFetch kubeconfig\n─────────\n🎯 master-01 only"]
+        Masters["k3s_masters\n─────────\nJoin control planes\nvia VIP\n─────────\n🎯 masters[1:]"]
+        Workers["k3s_workers\n─────────\nJoin agents\nGPU + worker labels\n─────────\n🎯 workers"]
+        Bootstrap["bootstrap_cluster\n─────────\nSealed-secrets keys\nRestore TLS certs\nArgoCD with OIDC\nApp-of-Apps\n─────────\n🎯 master-01"]
     end
 
-    subgraph host["Proxmox Host Roles"]
-        SRIOV["i915_sriov\n─────────\nKernel validation\nDriver install\nGRUB + sysfs\nReboot"]
-        Ser2net["ser2net\n─────────\nInstall & configure\nZigbee TCP bridge"]
+    subgraph host["🖥️ Proxmox Host Roles"]
+        SRIOV["⚡ i915_sriov\n─────────\nKernel validation\nDriver install\nGRUB + sysfs\nReboot\n─────────\n🎯 pve (10.9.9.20)"]
+        Ser2net["📡 ser2net\n─────────\nInstall & configure\nZigbee TCP bridge\n─────────\n🎯 pve (10.9.9.20)"]
     end
 
     Common --> Init
     Common --> Masters
     Common --> Workers
-    Init --> Masters
-    Init --> Workers
+    Init -- "token" --> Masters
+    Init -- "token" --> Workers
     Workers --> Bootstrap
 
     style k3s fill:#1a1b27,stroke:#48bb78,color:#e2e8f0
@@ -244,20 +337,20 @@ The i915 SR-IOV driver version must match between the Proxmox host (creates virt
 
 ```mermaid
 flowchart LR
-    subgraph pve["Proxmox Host"]
-        Driver["i915-sriov-dkms"] --> VFs["7 Virtual\nFunctions"]
+    subgraph pve["🖥️ Proxmox Host"]
+        Driver["⚡ i915-sriov-dkms"] -- "sysfs: sriov_numvfs=7" --> VFs["🎮 7 Virtual\nFunctions"]
     end
 
-    subgraph vms["K3s Worker VMs"]
-        VM1["Worker-01\nVM Driver"] --> VFs
-        VM2["Worker-02\nVM Driver"] --> VFs
+    subgraph vms["☸️ K3s Worker VMs"]
+        VM1["🖥️ Worker-01\nVM Driver"] --> VFs
+        VM2["🖥️ Worker-02\nVM Driver"] --> VFs
     end
 
-    subgraph intel["Intel GPU Operator"]
-        Operator["Device Plugin"] --> Pods["Up to 20 pods\nper VF"]
+    subgraph intel["⚡ Intel GPU Operator"]
+        Operator["Device Plugin\nsharedDevNum: 20"] -- "schedules" --> Pods["📦 Up to 20 pods\nper VF\n140 total capacity"]
     end
 
-    VFs --> Operator
+    VFs == "PCI passthrough" ==> Operator
 
     style pve fill:#e53e3e,stroke:#c53030,color:#fff
     style vms fill:#4299e1,stroke:#2b6cb0,color:#fff
@@ -272,37 +365,37 @@ Once SR-IOV is configured, the Intel GPU Operator manages how pods share the phy
 
 ```mermaid
 flowchart TB
-    subgraph host["Proxmox Host"]
-        iGPU["Intel iGPU\nPhysical Function"]
-        DKMS["i915-sriov-dkms"]
+    subgraph host["🖥️ Proxmox Host"]
+        iGPU["⚡ Intel iGPU\nPhysical Function"]
+        DKMS["📦 i915-sriov-dkms"]
         iGPU --> DKMS
         DKMS --> VF1["VF 0"]
         DKMS --> VF2["VF 1"]
         DKMS --> VFn["VF 2–6"]
     end
 
-    subgraph k8s["Kubernetes Cluster"]
+    subgraph k8s["☸️ Kubernetes Cluster"]
         direction TB
-        subgraph operator["Intel Device Plugin Operator"]
+        subgraph operator["⚡ Intel Device Plugin Operator"]
             DP["GpuDevicePlugin CR\nsharedDevNum: 20\nnodeSelector: gpu=true"]
         end
 
-        subgraph w1["kube-worker-01"]
+        subgraph w1["🖥️ kube-worker-01 (20 slots/VF)"]
             DP1["Device Plugin Pod\nexposes gpu.intel.com/i915"]
-            Pod1["Jellyfin\ngpu: 1"]
-            Pod2["Immich ML\ngpu: 1"]
-            Pod3["Frigate\ngpu: 1"]
+            Pod1["🎬 Jellyfin\ngpu: 1"]
+            Pod2["🖼️ Immich ML\ngpu: 1"]
+            Pod3["📷 Frigate\ngpu: 1"]
         end
 
-        subgraph w2["kube-worker-02"]
+        subgraph w2["🖥️ kube-worker-02 (20 slots/VF)"]
             DP2["Device Plugin Pod\nexposes gpu.intel.com/i915"]
-            Pod4["Plex\ngpu: 1"]
-            Pod5["Tdarr\ngpu: 1"]
+            Pod4["🎬 Plex\ngpu: 1"]
+            Pod5["🎬 Tdarr\ngpu: 1"]
         end
     end
 
-    VF1 -- "PCI passthrough" --> w1
-    VF2 -- "PCI passthrough" --> w2
+    VF1 == "PCI passthrough" ==> w1
+    VF2 == "PCI passthrough" ==> w2
     DP --> DP1 & DP2
     DP1 -. "schedules\nup to 20 pods" .-> Pod1 & Pod2 & Pod3
     DP2 -. "schedules\nup to 20 pods" .-> Pod4 & Pod5

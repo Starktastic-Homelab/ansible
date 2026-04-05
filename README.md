@@ -1,334 +1,284 @@
-# Homelab Ansible
+<div align="center">
 
-[![K3s Deploy](https://github.com/Starktastic-Homelab/ansible/actions/workflows/deploy.yml/badge.svg)](https://github.com/Starktastic-Homelab/ansible/actions/workflows/deploy.yml)
-[![SR-IOV Upgrade](https://github.com/Starktastic-Homelab/ansible/actions/workflows/i915-sriov-upgrade.yml/badge.svg)](https://github.com/Starktastic-Homelab/ansible/actions/workflows/i915-sriov-upgrade.yml)
-![Ansible](https://img.shields.io/badge/Ansible-13.x-EE0000?logo=ansible&logoColor=white)
-![K3s](https://img.shields.io/badge/K3s-Lightweight_Kubernetes-FFC61C?logo=k3s&logoColor=white)
-![Proxmox](https://img.shields.io/badge/Proxmox-VE-E57000?logo=proxmox&logoColor=white)
+# ⚙️ Ansible — Cluster Configuration
 
-Ansible playbooks for deploying a K3s Kubernetes cluster with Kube-VIP HA, ArgoCD GitOps, Authentik SSO, and sealed-secrets — plus Intel SR-IOV GPU driver management on Proxmox hosts and a Zigbee serial gateway.
+**Zero-touch K3s provisioning with HA, GPU virtualization, and GitOps bootstrap**
+
+[![Ansible](https://img.shields.io/badge/Ansible-EE0000?style=for-the-badge&logo=ansible&logoColor=white)](https://www.ansible.com/)
+[![K3s](https://img.shields.io/badge/K3s-FFC61C?style=for-the-badge&logo=k3s&logoColor=black)](https://k3s.io/)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-326CE5?style=for-the-badge&logo=kubernetes&logoColor=white)](https://kubernetes.io/)
+[![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+
+*Transforms bare Debian VMs into a production-grade Kubernetes cluster with a single playbook run*
+
+</div>
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Deployment Pipeline](#deployment-pipeline)
+- [Roles](#roles)
+- [Inventory \& Discovery](#inventory--discovery)
+- [Key Features](#key-features)
+- [Additional Playbooks](#additional-playbooks)
+- [CI/CD Automation](#cicd-automation)
+- [Cross-Repo Integration](#cross-repo-integration)
+- [Prerequisites](#prerequisites)
+- [Usage](#usage)
+- [License \& Contributing](#license--contributing)
+
+---
 
 ## Overview
 
-This is the third stage of the [Starktastic Homelab](https://github.com/Starktastic-Homelab) pipeline. Triggered automatically by [Terraform](https://github.com/Starktastic-Homelab/terraform) after VMs are provisioned, it transforms bare Debian VMs into a fully bootstrapped K3s cluster — complete with a virtual IP for API server HA, pre-seeded sealed-secrets keys, restored TLS certificates from NFS backup, and ArgoCD installed with Authentik OIDC single sign-on. It also manages Intel SR-IOV GPU drivers on the Proxmox hypervisor and a ser2net Zigbee bridge.
+This repository takes freshly provisioned Debian VMs (from Terraform) and transforms them into a fully operational K3s Kubernetes cluster. The main `k3s.yml` playbook executes a 6-play pipeline that:
 
-```mermaid
-flowchart TB
-    subgraph trigger["Trigger"]
-        TF["Terraform Apply"] -- "repository_dispatch" --> Deploy
-    end
+1. Waits for VMs to become reachable via SSH
+2. Initializes the first control plane node with embedded etcd
+3. Deploys **Kube-VIP** for a highly available virtual IP
+4. Joins additional masters and workers to the cluster
+5. Labels worker nodes with GPU capabilities
+6. Bootstraps the cluster with **Sealed Secrets**, **TLS certificate recovery**, and **ArgoCD** with SSO
 
-    subgraph Deploy["deploy.yml — K3s Cluster Deployment"]
-        direction TB
-        SSH["Wait for SSH\n(all nodes)"]
-        Init["k3s_init\nFirst control plane\n+ Kube-VIP"]
-        Token["Harvest join token\n& verify VIP"]
-        Masters["k3s_masters\nJoin additional\ncontrol planes"]
-        Workers["k3s_workers\nJoin workers\n+ GPU labels"]
-        Bootstrap["bootstrap_cluster\nSealed-secrets keys\nRestore TLS certs\nArgoCD + OIDC\nApp-of-Apps"]
+Beyond K3s, dedicated playbooks manage **Intel i915 SR-IOV GPU drivers** on the Proxmox host and a **ser2net bridge** for Zigbee home automation hardware.
 
-        SSH --> Init --> Token --> Masters --> Workers --> Bootstrap
-    end
+---
 
-    subgraph result["Cluster Ready"]
-        VIP["K3s API\n10.9.9.99:6443"]
-        Argo["ArgoCD\nsyncing apps repo"]
-        Sealed["Sealed Secrets\nkeys pre-seeded"]
-    end
+## Deployment Pipeline
 
-    Bootstrap --> result
-    Deploy -- "Updates org secret\nKUBECONFIG_RAW" --> GH["GitHub Org"]
-
-    style trigger fill:#1a1b27,stroke:#805ad5,color:#e2e8f0
-    style Deploy fill:#1a1b27,stroke:#48bb78,color:#e2e8f0
-    style result fill:#1a1b27,stroke:#4299e1,color:#e2e8f0
-    style GH fill:#2d3748,stroke:#a0aec0,color:#e2e8f0
-```
-
-## Features
-
-- **Multi-Stage K3s Deployment** — Init → token harvest → VIP verification → join masters → join workers → bootstrap
-- **Kube-VIP HA** — ARP-based virtual IP (`10.9.9.99`) for API server high availability with leader election
-- **ArgoCD + OIDC** — GitOps controller with Authentik SSO, group-based RBAC, and App-of-Apps bootstrap
-- **Sealed Secrets** — Pre-seeded TLS keys so encrypted secrets in the apps repo decrypt correctly from day one
-- **TLS Certificate Restore** — Mounts NFS backup and restores Let's Encrypt certificates to avoid re-issuance
-- **Intel SR-IOV** — Manages GPU driver lifecycle on Proxmox hosts with kernel validation and coordinated reboots
-- **Zigbee Gateway** — ser2net role exposes USB Zigbee dongle as TCP socket for remote access
-- **Dynamic Inventory** — Auto-discovers K3s nodes via Proxmox VM tags (`k3s`, `master`, `worker`)
-- **Kubeconfig Handoff** — Uploads cluster kubeconfig as an org-level GitHub secret for downstream CI/CD
-- **Renovate Managed** — K3s, Kube-VIP, ArgoCD chart, and SR-IOV driver versions auto-updated
-
-## Repository Structure
-
-```
-ansible/
-├── k3s.yml                    # Main playbook — full cluster deployment
-├── i915-sriov.yml             # Intel SR-IOV driver upgrade on Proxmox host
-├── ser2net.yml                # Zigbee serial-to-network bridge on Proxmox host
-├── ansible.cfg                # Config — vault password file path
-├── requirements.txt           # Python deps (ansible, proxmoxer, kubernetes)
-├── inventory/
-│   ├── proxmox.yml            # Dynamic inventory — discovers VMs by tag
-│   └── hosts.yml              # Static inventory — Proxmox hypervisor
-├── group_vars/
-│   ├── all/
-│   │   ├── vars.yml           # Cluster config (VIP, domains, NFS, k3s version)
-│   │   └── secrets.yml        # Vault-encrypted secrets (sealed-secrets, OIDC, Docker Hub)
-│   └── proxmox_hosts/
-│       ├── vars.yml           # Proxmox host credentials
-│       └── i915_sriov.yml     # SR-IOV driver version (Renovate-managed)
-└── roles/
-    ├── k3s_common/            # Shared setup — kernel params, registries, install script
-    ├── k3s_init/              # First master — K3s init + Kube-VIP + kubeconfig
-    ├── k3s_masters/           # Additional masters — join via VIP
-    ├── k3s_workers/           # Workers — join + label (worker, gpu)
-    ├── bootstrap_cluster/     # Post-cluster — sealed-secrets, certs, ArgoCD, App-of-Apps
-    ├── i915_sriov/            # GPU driver — validate, install, GRUB, sysfs, reboot
-    └── ser2net/               # Zigbee bridge — install, configure, start service
-```
-
-## Playbooks
-
-### `k3s.yml` — Cluster Deployment
-
-The main playbook executes six plays in sequence:
+The main `k3s.yml` playbook orchestrates cluster creation through six sequential plays:
 
 ```mermaid
 sequenceDiagram
-    participant TF as Terraform
-    participant GH as GitHub Actions
-    participant M1 as Master-01
-    participant Mn as Masters[1:]
+    participant Runner as CI Runner
+    participant M0 as Master-01
+    participant M1 as Master-N
     participant W as Workers
-    participant K8s as Cluster
+    participant Cluster as K3s Cluster
 
-    TF->>GH: repository_dispatch
-    GH->>M1: Wait for SSH (10s delay, 300s timeout)
-    GH->>M1: k3s_init — install K3s (--cluster-init)
-    M1->>M1: Deploy Kube-VIP DaemonSet (ARP, VIP 10.9.9.99)
-    M1-->>GH: /var/lib/rancher/k3s/server/node-token
-    GH->>GH: Verify VIP responds at 10.9.9.99:6443
+    rect rgb(60, 60, 60)
+    Note over Runner, W: Play 1 — Wait for SSH
+    Runner->>M0: SSH probe (10s delay, 300s timeout)
+    Runner->>M1: SSH probe
+    Runner->>W: SSH probe
+    end
 
-    GH->>Mn: k3s_masters — join via VIP (--server https://10.9.9.99:6443)
-    GH->>W: k3s_workers — join as agents
-    W->>W: Label: node-role.kubernetes.io/worker
-    W->>W: Label: intel.feature.node.kubernetes.io/gpu
+    rect rgb(123, 66, 188)
+    Note over M0: Play 2 — Initialize First Master
+    Runner->>M0: Role: k3s_init
+    M0->>M0: Install K3s (--cluster-init)
+    M0->>M0: Deploy Kube-VIP DaemonSet
+    M0->>M0: Advertise VIP (10.9.9.99)
+    end
 
-    GH->>K8s: Pre-seed sealed-secrets TLS key
-    GH->>K8s: Mount NFS & restore TLS certificates
-    GH->>K8s: Install ArgoCD (Helm) with Authentik OIDC
-    GH->>K8s: Apply App-of-Apps bootstrap Application
-    K8s-->>GH: Cluster fully operational
+    rect rgb(50, 108, 229)
+    Note over M0: Play 3 — Harvest Token
+    M0-->>Runner: node-token
+    Runner->>Runner: Set global fact
+    Runner->>Cluster: Verify VIP responds (6443)
+    end
 
-    GH->>GH: Upload kubeconfig → org secret KUBECONFIG_RAW
+    rect rgb(123, 66, 188)
+    Note over M1: Play 4 — Join Additional Masters
+    Runner->>M1: Role: k3s_masters
+    M1->>Cluster: Join via VIP
+    end
+
+    rect rgb(50, 108, 229)
+    Note over W: Play 5 — Join Workers
+    Runner->>W: Role: k3s_workers
+    W->>Cluster: Join as agents
+    Runner->>Cluster: Label nodes (worker + GPU)
+    end
+
+    rect rgb(238, 0, 0)
+    Note over Runner: Play 6 — Bootstrap
+    Runner->>Cluster: Pre-seed Sealed Secrets key
+    Runner->>Cluster: Mount NFS → Restore TLS certs
+    Runner->>Cluster: Install ArgoCD (Helm + OIDC)
+    Runner->>Cluster: Apply App-of-Apps bootstrap
+    end
 ```
 
-**K3s configuration highlights:**
-- `--cluster-init` — Embedded etcd for HA-ready control plane
-- `--flannel-iface eth1` — Pod traffic on the services network
-- `--disable traefik --disable servicelb` — Replaced by dedicated Traefik + MetalLB in apps repo
-- `--tls-san 10.9.9.99` — VIP included in API server certificate
-
-### `i915-sriov.yml` — GPU Driver Upgrade
-
-Targets the Proxmox hypervisor to manage the Intel SR-IOV DKMS driver:
-
-1. Validates kernel version is in supported range (6.12 – 6.19)
-2. Compares installed vs target driver version
-3. Downloads and installs the new `.deb` package
-4. Ensures GRUB params: `intel_iommu=on i915.enable_guc=3 i915.max_vfs=7 module_blacklist=xe`
-5. Configures sysfsutils to create 7 virtual functions on boot
-6. Schedules a delayed reboot (60s) to allow the CI workflow to complete
-
-### `ser2net.yml` — Zigbee Gateway
-
-Installs and configures ser2net on the Proxmox host, exposing a USB Zigbee dongle (Sonoff Zigbee 3.0 USB Dongle Plus V2) as a TCP socket on port `3333` — consumed by Zigbee2MQTT running inside the cluster at `10.9.9.20:3333`.
+---
 
 ## Roles
 
+Seven roles cover the full lifecycle from bare VM to GitOps-ready cluster:
+
+| Role | Target | Purpose |
+|------|--------|---------|
+| **k3s_common** | All K3s nodes | Kernel tuning (inotify), Docker Hub auth, K3s binary download |
+| **k3s_init** | First master | K3s `--cluster-init`, Kube-VIP DaemonSet, kubeconfig extraction |
+| **k3s_masters** | Additional masters | Join control plane via VIP, wait for API readiness |
+| **k3s_workers** | Worker nodes | Join as agents, apply `worker` + `gpu` node labels |
+| **bootstrap_cluster** | CI runner (localhost) | Sealed Secrets key, TLS cert restore from NFS, ArgoCD + OIDC setup, App-of-Apps |
+| **i915_sriov** | Proxmox host | Intel GPU SR-IOV driver lifecycle (install, upgrade, GRUB, sysfs VF config) |
+| **ser2net** | Proxmox host | Expose USB Zigbee dongle as TCP socket for cluster consumption |
+
+### Role Dependency Chain
+
 ```mermaid
 flowchart LR
-    subgraph k3s["K3s Cluster Roles"]
-        Common["k3s_common\n─────────\nKernel params\nDocker Hub auth\nDownload installer"]
-        Init["k3s_init\n─────────\nInstall K3s\nKube-VIP DaemonSet\nFetch kubeconfig"]
-        Masters["k3s_masters\n─────────\nJoin control planes\nvia VIP"]
-        Workers["k3s_workers\n─────────\nJoin agents\nGPU + worker labels"]
-        Bootstrap["bootstrap_cluster\n─────────\nSealed-secrets keys\nRestore TLS certs\nArgoCD with OIDC\nApp-of-Apps"]
-    end
+    KC[k3s_common] --> KI[k3s_init]
+    KC --> KM[k3s_masters]
+    KC --> KW[k3s_workers]
+    KI --> KM
+    KM --> KW
+    KW --> BC[bootstrap_cluster]
 
-    subgraph host["Proxmox Host Roles"]
-        SRIOV["i915_sriov\n─────────\nKernel validation\nDriver install\nGRUB + sysfs\nReboot"]
-        Ser2net["ser2net\n─────────\nInstall & configure\nZigbee TCP bridge"]
-    end
+    I915[i915_sriov] ~~~ SER[ser2net]
 
-    Common --> Init
-    Common --> Masters
-    Common --> Workers
-    Init --> Masters
-    Init --> Workers
-    Workers --> Bootstrap
-
-    style k3s fill:#1a1b27,stroke:#48bb78,color:#e2e8f0
-    style host fill:#1a1b27,stroke:#e53e3e,color:#e2e8f0
+    style KC fill:#3C3C3C,color:#fff
+    style KI fill:#7B42BC,color:#fff
+    style BC fill:#EE0000,color:#fff
+    style I915 fill:#E57000,color:#fff
+    style SER fill:#326CE5,color:#fff
 ```
 
-| Role | Description |
-|------|-------------|
-| **k3s_common** | Sets kernel params (`inotify`), deploys Docker Hub registry auth, downloads K3s install script |
-| **k3s_init** | Installs K3s with `--cluster-init`, deploys Kube-VIP DaemonSet via containerd, fetches kubeconfig |
-| **k3s_masters** | Joins additional control plane nodes to the cluster via the VIP |
-| **k3s_workers** | Joins worker nodes as agents, labels them with `worker` and `gpu` roles |
-| **bootstrap_cluster** | Pre-seeds sealed-secrets key, restores TLS certs from NFS, installs ArgoCD with OIDC, applies the App-of-Apps |
-| **i915_sriov** | Validates kernel compatibility, installs/upgrades SR-IOV DKMS driver, configures GRUB and sysfs, reboots |
-| **ser2net** | Installs ser2net, deploys config template, enables systemd service |
+---
 
-## Dynamic Inventory
+## Inventory & Discovery
 
-The `community.proxmox.proxmox` inventory plugin discovers K3s VMs by their Proxmox tags and extracts IP addresses from cloud-init config:
+### Dynamic Inventory (Proxmox API)
 
-| Ansible Group | Required Tags | Description |
-|---------------|---------------|-------------|
+VMs are discovered automatically via the `community.proxmox.proxmox` inventory plugin, using **Proxmox tags** set by Terraform:
+
+| Ansible Group | Tag Filter | Description |
+|--------------|------------|-------------|
 | `all_k3s` | `k3s` | All Kubernetes nodes |
 | `masters` | `k3s` + `master` | Control plane nodes |
-| `workers` | `k3s` + `worker` | Worker nodes |
+| `workers` | `k3s` + `worker` | Worker nodes (GPU-labeled) |
 
-The static `hosts.yml` defines the Proxmox hypervisor itself (`pve` at `10.9.9.20`) for the SR-IOV and ser2net playbooks.
+IP addresses are extracted from cloud-init configuration (`proxmox_ipconfig0`), eliminating any hardcoded host lists.
 
-## Configuration
+### Static Inventory
 
-### Key Variables (`group_vars/all/vars.yml`)
+The Proxmox hypervisor itself is in a static inventory for host-level operations (GPU drivers, ser2net):
 
-| Variable | Value | Description |
-|----------|-------|-------------|
-| `vip_address` | `10.9.9.99` | Virtual IP for K3s API server (Kube-VIP) |
-| `mgmt_iface` | `eth0` | Management NIC (Kube-VIP binding) |
-| `flannel_iface` | `eth1` | Services NIC (Flannel CNI overlay) |
-| `base_domain` | `starktastic.net` | Base domain for all services |
-| `internal_domain` | `internal.starktastic.net` | Internal-only services domain |
-| `argocd_url` | `https://argocd.internal.starktastic.net` | ArgoCD dashboard URL |
-| `authentik_url` | `https://auth.starktastic.net` | Authentik SSO issuer |
-| `nfs_server` | `10.9.8.30` | TrueNAS NFS server |
-| `k3s_version` | Renovate-managed | K3s release (pinned, auto-updated) |
+```yaml
+proxmox_hosts:
+  hosts:
+    pve:
+      ansible_host: 10.9.9.20
+      ansible_user: root
+```
 
-### Encrypted Secrets (`group_vars/all/secrets.yml`)
+---
 
-Vault-encrypted file containing:
+## Key Features
 
-- **Sealed-secrets** TLS key and certificate (base64)
-- **ArgoCD** admin password hash
-- **ArgoCD** OIDC client ID and secret (Authentik)
-- **Docker Hub** username and token (registry auth)
+### High Availability — Kube-VIP
 
-## CI/CD
+The cluster API is fronted by a **virtual IP (10.9.9.99)** managed by Kube-VIP running as a DaemonSet on control plane nodes. ARP-based leader election ensures seamless failover — all clients and workers connect through the VIP, never directly to a master node.
 
-| Workflow | Trigger | Description |
-|----------|---------|-------------|
-| **deploy.yml** | `repository_dispatch` from Terraform, push to `main`, or manual | Runs `k3s.yml` → uploads kubeconfig → updates org secret |
-| **i915-sriov-upgrade.yml** | Push modifying `i915_sriov.yml`, or manual with version override | Runs `i915-sriov.yml` on Proxmox host |
-| **ser2net.yml** | Push modifying ser2net role files, or manual | Runs `ser2net.yml` on Proxmox host |
-| **validate.yml** | Pull requests | Ansible-lint + syntax check |
-| **format.yml** | Pull requests | Code formatting check |
+### Intel i915 SR-IOV — GPU Virtualization
 
-### Required Secrets
+The `i915_sriov` role manages the full GPU driver lifecycle on the Proxmox host:
 
-| Secret | Purpose |
-|--------|---------|
-| `SSH_PRIVATE_KEY` | SSH access to VMs and Proxmox host |
-| `ANSIBLE_VAULT_PASSWORD` | Decrypts `secrets.yml` |
-| `PROXMOX_API_URL` / `PROXMOX_API_TOKEN_*` | Dynamic inventory via Proxmox API |
-| `GH_PAT_ORG_SECRET_MANAGER` | Updates org-level `KUBECONFIG_RAW` secret |
+- **Kernel validation** against a supported range
+- **DKMS driver** install/upgrade from GitHub releases
+- **GRUB parameters**: `intel_iommu=on i915.enable_guc=3 i915.max_vfs=7 module_blacklist=xe`
+- **sysfs configuration** to create 7 virtual functions on boot
+- **Coordinated versioning** — the driver version is synced across this repo and the Packer repo via Renovate
 
-## Intel SR-IOV Driver Coordination
+### Sealed Secrets Bootstrap
 
-The i915 SR-IOV driver version must match between the Proxmox host (creates virtual functions) and the VM template (consumes them). Renovate opens PRs in both Ansible and Packer repos simultaneously.
+The bootstrap role **pre-seeds the Sealed Secrets TLS keypair** before any workloads deploy. This enables a "secrets-in-git" workflow — encrypted SealedSecret manifests can be committed to the Apps repo and will decrypt correctly from day zero.
+
+### ArgoCD with SSO
+
+ArgoCD is deployed via Helm with:
+
+- **Authentik OIDC integration** for single sign-on
+- **Progressive syncs** enabled for phased rollout support
+- **RBAC** with Authentik group mapping (Admins → admin role)
+- **App-of-Apps bootstrap** pointing to the Apps repo, triggering full cluster reconciliation
+
+### TLS Certificate Recovery
+
+On cluster rebuild, TLS certificates are **recovered from NFS backup** rather than re-issued. This prevents Let's Encrypt rate limiting and ensures services come back online with valid certificates immediately.
+
+---
+
+## Additional Playbooks
+
+| Playbook | Target | Purpose |
+|----------|--------|---------|
+| `i915-sriov.yml` | Proxmox host | Install/upgrade Intel SR-IOV GPU driver |
+| `ser2net.yml` | Proxmox host | Configure TCP bridge for USB Zigbee dongle (port 3333) |
+
+---
+
+## CI/CD Automation
+
+Five workflows cover deployment, validation, and specialized hardware management:
+
+```mermaid
+flowchart TD
+    subgraph "Triggered by Terraform"
+        DISPATCH["repository_dispatch\ninfrastructure-changed"] --> DEPLOY["deploy.yml\nRun k3s.yml playbook"]
+        DEPLOY --> KUBECONFIG["Upload kubeconfig\nto org-wide secret"]
+    end
+
+    subgraph "PR Phase"
+        PR[Pull Request] --> LINT["validate.yml\nansible-lint + syntax-check"]
+        PR --> FMT["format.yml\nPrettier formatting"]
+    end
+
+    subgraph "Specialized"
+        DRV_CHANGE["i915_sriov.yml change"] --> I915["i915-sriov-upgrade.yml\nGPU driver upgrade + reboot"]
+        SER_CHANGE["ser2net role change"] --> SER["ser2net.yml\nZigbee gateway deploy"]
+    end
+
+    style DEPLOY fill:#EE0000,color:#fff
+    style DISPATCH fill:#7B42BC,color:#fff
+```
+
+| Workflow | Trigger | Purpose |
+|----------|---------|---------|
+| **deploy** | Terraform dispatch / push to main | Full K3s deployment + kubeconfig upload |
+| **validate** | PR | `ansible-lint` (production profile) + syntax check |
+| **format** | PR | Prettier YAML/JSON formatting |
+| **i915-sriov-upgrade** | i915 config change / manual | GPU driver lifecycle on Proxmox host |
+| **ser2net** | ser2net role change / manual | Zigbee serial bridge configuration |
+
+---
+
+## Cross-Repo Integration
+
+Ansible sits in the middle of the infrastructure pipeline, receiving triggers from Terraform and bootstrapping the Apps deployment:
 
 ```mermaid
 flowchart LR
-    subgraph pve["Proxmox Host"]
-        Driver["i915-sriov-dkms"] --> VFs["7 Virtual\nFunctions"]
-    end
+    TF["🏗️ Terraform\nVMs provisioned"] -->|repository_dispatch| AN["⚙️ Ansible\nK3s + Bootstrap"]
+    AN -->|"ArgoCD App-of-Apps\npoints to Apps repo"| APPS["☸️ Apps\n60+ services deployed"]
+    AN -->|"Kubeconfig uploaded\nto org secret"| GH["🔐 GitHub Org\nSecrets"]
 
-    subgraph vms["K3s Worker VMs"]
-        VM1["Worker-01\nVM Driver"] --> VFs
-        VM2["Worker-02\nVM Driver"] --> VFs
-    end
-
-    subgraph intel["Intel GPU Operator"]
-        Operator["Device Plugin"] --> Pods["Up to 20 pods\nper VF"]
-    end
-
-    VFs --> Operator
-
-    style pve fill:#e53e3e,stroke:#c53030,color:#fff
-    style vms fill:#4299e1,stroke:#2b6cb0,color:#fff
-    style intel fill:#48bb78,stroke:#276749,color:#fff
+    style TF fill:#7B42BC,color:#fff
+    style AN fill:#EE0000,color:#fff
+    style APPS fill:#326CE5,color:#fff
 ```
 
-**Merge order**: Ansible PR first (upgrades host, reboots) → Packer PR second (builds matching VM template). The Packer repo's `check-host-driver.yml` workflow blocks merge until the host is updated.
+The handoff chain:
+1. **Terraform apply** completes → sends `infrastructure-changed` dispatch event
+2. **Ansible deploy** workflow runs the `k3s.yml` playbook
+3. **ArgoCD** is installed and pointed at the Apps repo via App-of-Apps
+4. **Kubeconfig** is uploaded to the GitHub org secrets for use by the Apps CI workflows
 
-### GPU Virtual Function Runtime Model
+---
 
-Once SR-IOV is configured, the Intel GPU Operator manages how pods share the physical GPU at runtime. Each virtual function can be shared across up to 20 pods simultaneously — enabling hardware-accelerated transcoding, inference, and compute workloads without dedicated GPU assignment.
+## Prerequisites
 
-```mermaid
-flowchart TB
-    subgraph host["Proxmox Host"]
-        iGPU["Intel iGPU\nPhysical Function"]
-        DKMS["i915-sriov-dkms"]
-        iGPU --> DKMS
-        DKMS --> VF1["VF 0"]
-        DKMS --> VF2["VF 1"]
-        DKMS --> VFn["VF 2–6"]
-    end
+- **Python** ≥ 3.11 with `ansible`, `proxmoxer`, `kubernetes` packages
+- **Helm** (for ArgoCD deployment)
+- **Network access** to Proxmox API and K3s node SSH
+- **Ansible Vault** password file (`.vault_pass`) for encrypted secrets
+- **Proxmox API token** for dynamic inventory
 
-    subgraph k8s["Kubernetes Cluster"]
-        direction TB
-        subgraph operator["Intel Device Plugin Operator"]
-            DP["GpuDevicePlugin CR\nsharedDevNum: 20\nnodeSelector: gpu=true"]
-        end
-
-        subgraph w1["kube-worker-01"]
-            DP1["Device Plugin Pod\nexposes gpu.intel.com/i915"]
-            Pod1["Jellyfin\ngpu: 1"]
-            Pod2["Immich ML\ngpu: 1"]
-            Pod3["Frigate\ngpu: 1"]
-        end
-
-        subgraph w2["kube-worker-02"]
-            DP2["Device Plugin Pod\nexposes gpu.intel.com/i915"]
-            Pod4["Plex\ngpu: 1"]
-            Pod5["Tdarr\ngpu: 1"]
-        end
-    end
-
-    VF1 -- "PCI passthrough" --> w1
-    VF2 -- "PCI passthrough" --> w2
-    DP --> DP1 & DP2
-    DP1 -. "schedules\nup to 20 pods" .-> Pod1 & Pod2 & Pod3
-    DP2 -. "schedules\nup to 20 pods" .-> Pod4 & Pod5
-
-    style host fill:#1a1b27,stroke:#e53e3e,color:#e2e8f0
-    style k8s fill:#1a1b27,stroke:#4299e1,color:#e2e8f0
-    style operator fill:#2d3748,stroke:#48bb78,color:#e2e8f0
-    style w1 fill:#2d3748,stroke:#805ad5,color:#e2e8f0
-    style w2 fill:#2d3748,stroke:#805ad5,color:#e2e8f0
-```
-
-Pods request GPU access with a single resource field — the scheduler and device plugin handle the rest:
-
-```yaml
-resources:
-  limits:
-    gpu.intel.com/i915: 1    # Allocated a shared slice of a VF
-```
-
-| Layer | Component | Configuration |
-|-------|-----------|---------------|
-| **Host** | GRUB | `intel_iommu=on i915.enable_guc=3 i915.max_vfs=7 module_blacklist=xe` |
-| **Host** | sysfs | `sriov_numvfs = 7` (created on boot) |
-| **VM** | Proxmox | PCI passthrough of VF to each worker |
-| **K8s** | Node label | `intel.feature.node.kubernetes.io/gpu: "true"` |
-| **K8s** | Device Plugin | `sharedDevNum: 20` — 20 pods per VF, 140 total capacity |
+---
 
 ## Usage
 
@@ -336,47 +286,20 @@ resources:
 # Install Python dependencies
 pip install -r requirements.txt
 
-# Deploy full cluster
-ansible-playbook k3s.yml
+# Deploy K3s cluster
+ansible-playbook -i inventory/ k3s.yml
 
-# Target specific phases
-ansible-playbook k3s.yml --tags init          # First master only
-ansible-playbook k3s.yml --tags workers       # Worker nodes only
-ansible-playbook k3s.yml --tags bootstrap     # ArgoCD + secrets only
-ansible-playbook k3s.yml --tags argocd        # ArgoCD reinstall only
+# Upgrade GPU driver on Proxmox host
+ansible-playbook -i inventory/ i915-sriov.yml
 
-# Upgrade SR-IOV driver on Proxmox host
-ansible-playbook i915-sriov.yml
-
-# Deploy Zigbee bridge
-ansible-playbook ser2net.yml
-
-# Development
-ansible-playbook --syntax-check k3s.yml
-ansible-playbook k3s.yml --check              # Dry run
-ansible-playbook k3s.yml --limit masters -vvv # Verbose, specific hosts
+# Configure Zigbee serial bridge
+ansible-playbook -i inventory/ ser2net.yml
 ```
 
-## Troubleshooting
+> In practice, the `k3s.yml` playbook is triggered automatically by the Terraform pipeline via GitHub Actions `repository_dispatch`.
 
-| Issue | Solution |
-|-------|----------|
-| SSH connection timeout | Verify VMs are running and cloud-init has completed; check Proxmox firewall |
-| K3s install fails | Inspect `/var/log/k3s-install.log` on the target node |
-| Kube-VIP not responding | Verify VIP subnet matches `mgmt_iface`, check ARP responses with `arping` |
-| ArgoCD OIDC login fails | Verify Authentik client credentials in vault; check issuer URL reachable |
-| Sealed-secrets decryption error | Re-seed the key: `ansible-playbook k3s.yml --tags sealed-secrets` |
-| SR-IOV kernel incompatible | Upgrade or pin the Proxmox kernel within the supported range (6.12–6.19) |
-| ser2net connection refused | Verify USB device path; check `systemctl status ser2net` on host |
+---
 
-## Related Repositories
+## License & Contributing
 
-| Repository | Role in Pipeline |
-|------------|-----------------|
-| [packer](https://github.com/Starktastic-Homelab/packer) | Builds the VM template with matching SR-IOV driver |
-| [terraform](https://github.com/Starktastic-Homelab/terraform) | Provisions VMs and triggers this repo via dispatch |
-| [apps](https://github.com/Starktastic-Homelab/apps) | GitOps definitions synced by the ArgoCD instance this repo installs |
-
-## License
-
-MIT
+This is a personal homelab project. Feel free to use it as inspiration for your own infrastructure. If you spot an issue or have a suggestion, [open an issue](../../issues) — contributions and feedback are welcome.

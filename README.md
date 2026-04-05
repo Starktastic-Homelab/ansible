@@ -52,6 +52,7 @@ The main `k3s.yml` playbook orchestrates cluster creation through six sequential
 
 ```mermaid
 sequenceDiagram
+    autonumber
     participant Runner as CI Runner
     participant M0 as Master-01
     participant M1 as Master-N
@@ -122,20 +123,25 @@ Seven roles cover the full lifecycle from bare VM to GitOps-ready cluster:
 
 ```mermaid
 flowchart LR
-    KC[k3s_common] --> KI[k3s_init]
-    KC --> KM[k3s_masters]
-    KC --> KW[k3s_workers]
-    KI --> KM
-    KM --> KW
-    KW --> BC[bootstrap_cluster]
+    KC([k3s_common]) ==> KI[[k3s_init]]
+    KC ==> KM[[k3s_masters]]
+    KC ==> KW[[k3s_workers]]
+    KI ==> KM
+    KM ==> KW
+    KW ==> BC{{bootstrap_cluster}}
 
-    I915[i915_sriov] ~~~ SER[ser2net]
+    I915["i915_sriov"] ~~~ SER["ser2net"]
 
-    style KC fill:#3C3C3C,color:#fff
-    style KI fill:#7B42BC,color:#fff
-    style BC fill:#EE0000,color:#fff
-    style I915 fill:#E57000,color:#fff
-    style SER fill:#326CE5,color:#fff
+    classDef common fill:#3C3C3C,stroke:#2D2D2D,color:#fff
+    classDef init fill:#7B42BC,stroke:#6A35A3,color:#fff
+    classDef bootstrap fill:#EE0000,stroke:#CC0000,color:#fff
+    classDef sriov fill:#E57000,stroke:#CC6300,color:#fff
+    classDef ser fill:#326CE5,stroke:#2B5FC2,color:#fff
+    class KC common
+    class KI init
+    class BC bootstrap
+    class I915 sriov
+    class SER ser
 ```
 
 ---
@@ -218,23 +224,25 @@ Five workflows cover deployment, validation, and specialized hardware management
 
 ```mermaid
 flowchart TD
-    subgraph "Triggered by Terraform"
-        DISPATCH["repository_dispatch\ninfrastructure-changed"] --> DEPLOY["deploy.yml\nRun k3s.yml playbook"]
-        DEPLOY --> KUBECONFIG["Upload kubeconfig\nto org-wide secret"]
+    subgraph triggered["Triggered by Terraform"]
+        DISPATCH{{repository_dispatch\ninfrastructure-changed}} ==> DEPLOY[deploy.yml\nRun k3s.yml playbook]
+        DEPLOY ==> KUBECONFIG>Upload kubeconfig\nto org-wide secret]
     end
 
-    subgraph "PR Phase"
-        PR[Pull Request] --> LINT["validate.yml\nansible-lint + syntax-check"]
-        PR --> FMT["format.yml\nPrettier formatting"]
+    subgraph pr["PR Phase"]
+        PR([Pull Request]) --> LINT[validate.yml\nansible-lint + syntax-check]
+        PR --> FMT[format.yml\nPrettier formatting]
     end
 
-    subgraph "Specialized"
-        DRV_CHANGE["i915_sriov.yml change"] --> I915["i915-sriov-upgrade.yml\nGPU driver upgrade + reboot"]
-        SER_CHANGE["ser2net role change"] --> SER["ser2net.yml\nZigbee gateway deploy"]
+    subgraph special["Specialized"]
+        DRV_CHANGE["i915_sriov.yml change"] --> I915[i915-sriov-upgrade.yml\nGPU driver upgrade + reboot]
+        SER_CHANGE["ser2net role change"] --> SER[ser2net.yml\nZigbee gateway deploy]
     end
 
-    style DEPLOY fill:#EE0000,color:#fff
-    style DISPATCH fill:#7B42BC,color:#fff
+    classDef deploy fill:#EE0000,stroke:#CC0000,color:#fff
+    classDef dispatch fill:#7B42BC,stroke:#6A35A3,color:#fff
+    class DEPLOY deploy
+    class DISPATCH dispatch
 ```
 
 | Workflow | Trigger | Purpose |
@@ -253,13 +261,16 @@ Ansible sits in the middle of the infrastructure pipeline, receiving triggers fr
 
 ```mermaid
 flowchart LR
-    TF["🏗️ Terraform\nVMs provisioned"] -->|repository_dispatch| AN["⚙️ Ansible\nK3s + Bootstrap"]
-    AN -->|"ArgoCD App-of-Apps\npoints to Apps repo"| APPS["☸️ Apps\n60+ services deployed"]
-    AN -->|"Kubeconfig uploaded\nto org secret"| GH["🔐 GitHub Org\nSecrets"]
+    TF(["🏗️ Terraform\nVMs provisioned"]) ==>|repository_dispatch| AN(["⚙️ Ansible\nK3s + Bootstrap"])
+    AN ==>|"ArgoCD App-of-Apps\npoints to Apps repo"| APPS(["☸️ Apps\n60+ services deployed"])
+    AN -.->|"Kubeconfig uploaded\nto org secret"| GH[(🔐 GitHub Org\nSecrets)]
 
-    style TF fill:#7B42BC,color:#fff
-    style AN fill:#EE0000,color:#fff
-    style APPS fill:#326CE5,color:#fff
+    classDef terraform fill:#7B42BC,stroke:#6A35A3,color:#fff
+    classDef ansible fill:#EE0000,stroke:#CC0000,color:#fff
+    classDef apps fill:#326CE5,stroke:#2B5FC2,color:#fff
+    class TF terraform
+    class AN ansible
+    class APPS apps
 ```
 
 The handoff chain:

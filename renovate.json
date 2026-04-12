@@ -4,6 +4,9 @@
   "ansible": {
     "managerFilePatterns": ["/(^|/)tasks/[^/]+\\.ya?ml$", "/vars\\.ya?ml$"]
   },
+  "ansible-galaxy": {
+    "managerFilePatterns": ["/requirements\\.ya?ml$/"]
+  },
   "customManagers": [
     {
       "description": "Update Ansible variables and GitHub Actions inputs",

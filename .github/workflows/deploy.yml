@@ -13,6 +13,8 @@ on:
       - 'README.md'
       - 'renovate.json'
       - 'group_vars/proxmox_hosts/**'
+      - 'roles/ser2net/**'
+      - 'ser2net.yml'
 
 jobs:
   provision:
@@ -30,7 +32,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Cache Pip Packages
-        uses: actions/cache@v5.0.3
+        uses: actions/cache@v5.0.4
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
@@ -41,7 +43,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Setup Helm
-        uses: azure/setup-helm@v4.3.1
+        uses: azure/setup-helm@v5.0.0
         with:
           # renovate: datasource=github-releases depName=helm/helm
           version: 'v4.1.0'
@@ -72,7 +74,7 @@ jobs:
           retention-days: 1
 
   handoff:
-    name: Push secret to Apps repo
+    name: Push kubeconfig to org secret
     needs: provision
     runs-on: ubuntu-latest
     steps:
@@ -81,8 +83,8 @@ jobs:
         with:
           name: kubeconfig
       
-      - name: Update Apps repo secret
+      - name: Update org-wide kubeconfig secret
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_APPS_REPO_SECRET_UPDATER }}
+          GH_TOKEN: ${{ secrets.GH_PAT_ORG_SECRET_MANAGER }}
         run: |
-          gh secret set KUBECONFIG_RAW --repo Starktastic-Homelab/apps --body "$(cat kubeconfig_artifact)"
+          gh secret set KUBECONFIG_RAW --org Starktastic-Homelab --visibility selected --repos apps,terraform --body "$(cat kubeconfig_artifact)"

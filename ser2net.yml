@@ -1,0 +1,10 @@
+---
+- name: Configure ser2net for Zigbee USB dongle
+  hosts: proxmox_hosts
+  become: true
+  gather_facts: true
+  tags:
+    - ser2net
+    - zigbee
+  roles:
+    - role: ser2net

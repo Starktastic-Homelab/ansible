@@ -1,24 +1,19 @@
-name: Upgrade i915 SR-IOV Driver
+name: Deploy ser2net for Zigbee
 
 on:
   push:
     branches:
       - main
     paths:
-      - 'group_vars/proxmox_hosts/i915_sriov.yml'
+      - "roles/ser2net/**"
+      - "ser2net.yml"
 
   workflow_dispatch:
-    inputs:
-      i915_sriov_version:
-        description: 'i915 SR-IOV driver version to install (e.g., 2026.02.04). Leave empty to use version from group_vars.'
-        required: false
-        type: string
 
 jobs:
-  upgrade-driver:
-    name: Upgrade i915 SR-IOV on Proxmox
+  deploy-ser2net:
+    name: Deploy ser2net on Proxmox
     runs-on: self-hosted
-    continue-on-error: true
     container:
       image: python:trixie
 
@@ -43,16 +38,8 @@ jobs:
       - name: Create Ansible Vault password file
         run: echo "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > .vault_pass
 
-      - name: Get version from group_vars
-        id: get-version
+      - name: Run ser2net playbook
         run: |
-          VERSION=$(grep -oP 'i915_sriov_version:\s*"\K[0-9.]+' group_vars/proxmox_hosts/i915_sriov.yml)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Run i915 SR-IOV upgrade playbook
-        run: |
-          VERSION="${{ inputs.i915_sriov_version || steps.get-version.outputs.version }}"
           ansible-playbook -i inventory/hosts.yml \
             --vault-password-file .vault_pass \
-            -e "i915_sriov_version=$VERSION" \
-            i915-sriov.yml
+            ser2net.yml

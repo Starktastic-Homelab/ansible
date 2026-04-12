@@ -3,5 +3,12 @@
 # renovate: datasource=docker depName=ghcr.io/kube-vip/kube-vip
 k3s_init_kube_vip_version: "v1.0.4"
 
-# Directory for K3s server manifests
-k3s_manifests_directory: /var/lib/rancher/k3s/server/manifests
+# Kube-VIP leader election lease tuning (control plane DaemonSet)
+k3s_init_kube_vip_lease_duration: 30
+k3s_init_kube_vip_lease_renew_duration: 20
+k3s_init_kube_vip_lease_retry: 5
+
+# Staging directory for kube-vip manifests — intentionally outside the k3s
+# auto-deploy directory (/var/lib/rancher/k3s/server/manifests/) so the addon
+# controller never adopts these resources.
+k3s_init_kube_vip_manifests_directory: /var/lib/rancher/k3s/server/kube-vip

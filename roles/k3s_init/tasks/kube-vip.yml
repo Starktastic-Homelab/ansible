@@ -1,7 +1,16 @@
 ---
-- name: Create manifests directory
+# Kube-VIP control plane manifests are staged outside the k3s auto-deploy
+# directory and applied explicitly via `kubectl apply`.  Placing files in the
+# auto-deploy directory (/var/lib/rancher/k3s/server/manifests/) causes the
+# k3s addon controller to adopt the resulting Kubernetes objects.  When it
+# later reconciles checksums it briefly deletes and recreates them, revoking
+# RBAC and killing the DaemonSet permanently.
+#
+# LoadBalancer service IPs are now managed by MetalLB (deployed via ArgoCD).
+
+- name: Create kube-vip manifests directory
   ansible.builtin.file:
-    path: "{{ k3s_manifests_directory }}"
+    path: "{{ k3s_init_kube_vip_manifests_directory }}"
     state: directory
     mode: "0700"
   tags:
@@ -10,8 +19,27 @@
 - name: Download Kube-Vip RBAC Manifest
   ansible.builtin.get_url:
     url: https://kube-vip.io/manifests/rbac.yaml
-    dest: "{{ k3s_manifests_directory }}/kube-vip-rbac.yaml"
+    dest: "{{ k3s_init_kube_vip_manifests_directory }}/rbac.yaml"
     mode: "0444"
+  tags:
+    - kube-vip
+
+- name: Apply Kube-Vip RBAC
+  ansible.builtin.command:
+    cmd: k3s kubectl apply -f {{ k3s_init_kube_vip_manifests_directory }}/rbac.yaml
+  register: kube_vip_rbac_apply
+  changed_when: kube_vip_rbac_apply.stdout is search('created|configured')
+  tags:
+    - kube-vip
+
+- name: Wait for Kube-Vip ClusterRole to be available
+  ansible.builtin.command:
+    cmd: k3s kubectl get clusterrole system:kube-vip-role
+  register: kube_vip_rbac_check
+  until: kube_vip_rbac_check.rc == 0
+  retries: 10
+  delay: 2
+  changed_when: false
   tags:
     - kube-vip
 
@@ -30,35 +58,28 @@
       vip-cp /kube-vip manifest daemonset
       --interface {{ mgmt_iface }} --address {{ vip_address }}
       --inCluster --taint --controlplane --arp --leaderElection
+      --leaseDuration {{ k3s_init_kube_vip_lease_duration }}
+      --leaseRenewDuration {{ k3s_init_kube_vip_lease_renew_duration }}
+      --leaseRetry {{ k3s_init_kube_vip_lease_retry }}
+      --preserveVipOnLeadershipLoss
+      --prometheusHTTPServer :2112
   register: k3s_init_kube_vip_cp_manifest
   changed_when: false
   tags:
     - kube-vip
 
-- name: Copy Kube-Vip Control Plane DaemonSet to manifests directory
+- name: Save Kube-Vip Control Plane DaemonSet
   ansible.builtin.copy:
     content: "{{ k3s_init_kube_vip_cp_manifest.stdout | regex_replace('kube-vip-ds', 'kube-vip-cp') }}"
-    dest: "{{ k3s_manifests_directory }}/kube-vip-cp.yaml"
+    dest: "{{ k3s_init_kube_vip_manifests_directory }}/kube-vip-cp.yaml"
     mode: "0444"
   tags:
     - kube-vip
 
-- name: Generate Kube-Vip Services DaemonSet
-  ansible.builtin.command: >-
-    ctr run --rm --net-host
-      ghcr.io/kube-vip/kube-vip:{{ k3s_init_kube_vip_version }}
-      vip-svc /kube-vip manifest daemonset
-      --interface {{ flannel_iface }} --address {{ vip_address }}
-      --inCluster --services --arp --servicesElection
-  register: k3s_init_kube_vip_svc_manifest
-  changed_when: false
-  tags:
-    - kube-vip
-
-- name: Copy Kube-Vip Services DaemonSet to manifests directory
-  ansible.builtin.copy:
-    content: "{{ k3s_init_kube_vip_svc_manifest.stdout | regex_replace('kube-vip-ds', 'kube-vip-svc') }}"
-    dest: "{{ k3s_manifests_directory }}/kube-vip-svc.yaml"
-    mode: "0444"
+- name: Apply Kube-Vip Control Plane DaemonSet
+  ansible.builtin.command:
+    cmd: k3s kubectl apply -f {{ k3s_init_kube_vip_manifests_directory }}/kube-vip-cp.yaml
+  register: kube_vip_cp_apply
+  changed_when: kube_vip_cp_apply.stdout is search('created|configured')
   tags:
     - kube-vip

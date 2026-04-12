@@ -1,0 +1,5 @@
+---
+collections:
+  # renovate: datasource=galaxy-collection depName=kubernetes.core
+  - name: kubernetes.core
+    version: "6.3.0"

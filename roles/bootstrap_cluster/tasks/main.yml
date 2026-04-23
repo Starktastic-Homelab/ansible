@@ -29,6 +29,7 @@
     plugin_path: https://github.com/databus23/helm-diff
     # renovate: datasource=github-releases depName=databus23/helm-diff
     plugin_version: "3.15.6"
+    verify: false
     state: present
   tags:
     - bootstrap

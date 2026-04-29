@@ -15,7 +15,7 @@
     chart_ref: argo/argo-cd
     release_namespace: argocd
     # renovate: datasource=helm depName=argo-cd registryUrl=https://argoproj.github.io/argo-helm
-    chart_version: "9.5.4"
+    chart_version: "9.5.7"
     update_repo_cache: true
     wait: true
     timeout: 10m0s

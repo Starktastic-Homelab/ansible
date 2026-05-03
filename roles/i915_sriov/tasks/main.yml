@@ -46,25 +46,35 @@
       "{{ kernel_list_output.stdout | regex_search('Pinned kernel:\\s*([\\d.]+-\\d+-pve)', '\\1') | first |
       default('none') }}"
 
+- name: Get running kernel version
+  ansible.builtin.command: uname -r
+  register: running_kernel_output
+  changed_when: false
+
+- name: Set target kernel (pinned if available, otherwise running)
+  ansible.builtin.set_fact:
+    target_kernel: "{{ pinned_kernel if pinned_kernel != 'none' else running_kernel_output.stdout | trim }}"
+
 - name: Extract kernel major.minor version
   ansible.builtin.set_fact:
-    pinned_kernel_version: "{{ pinned_kernel | regex_search('^([0-9]+\\.[0-9]+)') }}"
-  when: pinned_kernel != 'none'
+    target_kernel_version: "{{ target_kernel | regex_search('^([0-9]+\\.[0-9]+)') }}"
 
 - name: Display kernel information
   ansible.builtin.debug:
     msg: |
       Pinned kernel: {{ pinned_kernel }}
-      Kernel version: {{ pinned_kernel_version | default('unknown') }}
+      Running kernel: {{ running_kernel_output.stdout | trim }}
+      Target kernel: {{ target_kernel }}
+      Target kernel version: {{ target_kernel_version }}
       Compatible range: {{ i915_kernel_min }} - {{ i915_kernel_max }}
 
 - name: Check kernel compatibility
   ansible.builtin.assert:
     that:
-      - pinned_kernel_version is version(i915_kernel_min, '>=')
-      - pinned_kernel_version is version(i915_kernel_max, '<=')
+      - target_kernel_version is version(i915_kernel_min, '>=')
+      - target_kernel_version is version(i915_kernel_max, '<=')
     fail_msg: |
-      Pinned kernel {{ pinned_kernel }} ({{ pinned_kernel_version }}) is outside compatible range {{ i915_kernel_min }}-{{ i915_kernel_max }}.
+      Target kernel {{ target_kernel }} ({{ target_kernel_version }}) is outside compatible range {{ i915_kernel_min }}-{{ i915_kernel_max }}.
       Please upgrade the kernel manually or adjust the kernel pin.
 
       Available kernels can be listed with: apt list 'pve-kernel-*' --installed
@@ -74,8 +84,12 @@
         3. proxmox-boot-tool kernel pin <version>-pve
         4. proxmox-boot-tool refresh
         5. reboot
-    success_msg: "Kernel {{ pinned_kernel }} is compatible with driver version {{ i915_sriov_version }}"
-  when: pinned_kernel != 'none'
+    success_msg: "Kernel {{ target_kernel }} is compatible with driver version {{ i915_sriov_version }}"
+
+- name: Install kernel headers for target kernel
+  ansible.builtin.apt:
+    name: "pve-headers-{{ target_kernel }}"
+    state: present
 
 # --- Driver installation ---
 
@@ -112,7 +126,7 @@
     state: absent
   when: i915_upgrade_needed
 
-- name: Verify DKMS module is installed for pinned kernel
+- name: Check DKMS module status
   ansible.builtin.command: dkms status
   register: dkms_status
   changed_when: false
@@ -120,6 +134,29 @@
 - name: Display DKMS status
   ansible.builtin.debug:
     msg: "{{ dkms_status.stdout_lines }}"
+
+- name: Rebuild DKMS module for target kernel if not built
+  ansible.builtin.command: "dkms install i915-sriov-dkms/{{ i915_sriov_version }} -k {{ target_kernel }}"
+  when: "target_kernel not in dkms_status.stdout"
+  notify:
+    - initramfs updated
+    - reboot required
+
+- name: Re-check DKMS module status after rebuild
+  ansible.builtin.command: dkms status
+  register: dkms_status_final
+  changed_when: false
+
+- name: Assert DKMS module is installed for target kernel
+  ansible.builtin.assert:
+    that:
+      - "target_kernel in dkms_status_final.stdout"
+      - "'installed' in dkms_status_final.stdout"
+    fail_msg: |
+      DKMS module i915-sriov-dkms/{{ i915_sriov_version }} is NOT installed for kernel {{ target_kernel }}.
+      DKMS status: {{ dkms_status_final.stdout }}
+      Check build logs: /var/lib/dkms/i915-sriov-dkms/{{ i915_sriov_version }}/build/make.log
+    success_msg: "DKMS module is installed for kernel {{ target_kernel }}"
 
 # --- GRUB configuration ---
 

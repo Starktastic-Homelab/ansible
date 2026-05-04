@@ -4,4 +4,4 @@
 # Updated automatically via PR from Packer CI workflow
 
 # renovate: datasource=github-releases depName=strongtz/i915-sriov-dkms
-i915_sriov_version: "2026.05.03"
+i915_sriov_version: "2026.03.05.1"

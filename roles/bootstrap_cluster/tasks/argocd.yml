@@ -9,6 +9,33 @@
     name: argo
     repo_url: "https://argoproj.github.io/argo-helm"
 
+# Workaround: Helm 4 uses server-side apply by default. The ArgoCD controller
+# (field-manager "argocd-controller") claims .data.context and
+# .metadata.labels.app.kubernetes.io/name on argocd-notifications-cm, causing
+# conflicts during helm upgrade. The kubernetes.core.helm module (v6.4.0) has no
+# --force-conflicts support yet (tracked upstream:
+# https://github.com/ansible-collections/kubernetes.core/issues/1038).
+# This pre-task transfers field ownership to "helm" so the upgrade can proceed.
+# Remove once kubernetes.core.helm gains a force_conflicts parameter.
+- name: Transfer field ownership on notifications configmap for Helm 4 SSA
+  kubernetes.core.k8s:
+    state: present
+    api_version: v1
+    kind: ConfigMap
+    namespace: argocd
+    name: argocd-notifications-cm
+    apply: true
+    server_side_apply:
+      field_manager: helm
+      force_conflicts: true
+    definition:
+      metadata:
+        labels:
+          app.kubernetes.io/name: argocd-notifications-cm
+      data:
+        context: ""
+  ignore_errors: true
+
 - name: Install ArgoCD
   kubernetes.core.helm:
     name: argocd
@@ -19,7 +46,6 @@
     update_repo_cache: true
     wait: true
     timeout: 10m0s
-    force: true
     values:
       controller:
         replicas: 1

@@ -1,4 +1,4 @@
 ansible==13.6.0
-requests==2.33.1
+requests==2.34.0
 proxmoxer==2.3.0
 kubernetes==35.0.0

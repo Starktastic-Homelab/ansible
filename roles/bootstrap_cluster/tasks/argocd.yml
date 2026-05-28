@@ -75,7 +75,7 @@
       --timeout 10m0s --force-conflicts -f /tmp/argocd-values.yaml
   vars:
     # renovate: datasource=helm depName=argo-cd registryUrl=https://argoproj.github.io/argo-helm
-    argocd_chart_version: "9.5.15"
+    argocd_chart_version: "9.5.16"
   changed_when: true
 
 - name: Remove ArgoCD values file

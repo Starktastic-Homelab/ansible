@@ -32,6 +32,9 @@
     _argocd_values:
       controller:
         replicas: 1
+        resources:
+          requests:
+            memory: 512Mi
       server:
         replicas: 1
       repoServer:

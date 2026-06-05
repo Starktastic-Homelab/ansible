@@ -71,6 +71,25 @@
         secret:
           create: false
 
+- name: Check ArgoCD release status
+  ansible.builtin.command:
+    cmd: helm status argocd --namespace argocd -o json
+  register: argocd_release_status
+  changed_when: false
+  failed_when: false
+
+# A deploy interrupted mid `helm upgrade` leaves the release in a pending-*
+# state (pending-install/upgrade/rollback), which wedges every subsequent
+# upgrade with "another operation in progress". Roll back to the last good
+# revision so the upgrade below can proceed.
+- name: Recover ArgoCD release stuck in a pending state
+  ansible.builtin.command:
+    cmd: helm rollback argocd --namespace argocd --wait --timeout 5m0s
+  when:
+    - argocd_release_status.rc == 0
+    - (argocd_release_status.stdout | from_json).info.status is search('pending-')
+  changed_when: true
+
 - name: Install ArgoCD
   ansible.builtin.command:
     cmd: >-

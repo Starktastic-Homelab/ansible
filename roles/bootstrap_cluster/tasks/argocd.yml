@@ -17,9 +17,11 @@
 # Workaround: the ArgoCD controller (field-manager "argocd-controller")
 # claims .data.context and .metadata.labels.app.kubernetes.io/name on
 # argocd-notifications-cm. A server-side apply is needed to resolve those
-# field-manager conflicts, so we pass --server-side together with
-# --force-conflicts (Helm 4 defaults to client-side apply, and
-# --force-conflicts is rejected unless --server-side is also set). The
+# field-manager conflicts, so we force it on with --server-side=true and
+# resolve the conflicts with --force-conflicts. Note --server-side takes a
+# value ("true"/"false"/"auto"); its "auto" default inherits the previous
+# release's apply method, which is not reliably server-side, and
+# --force-conflicts is rejected unless server-side apply is enabled. The
 # kubernetes.core.helm module (v6.4.0) has no --force-conflicts support yet
 # (tracked upstream:
 # https://github.com/ansible-collections/kubernetes.core/issues/1038).
@@ -97,7 +99,7 @@
   ansible.builtin.command:
     cmd: >-
       helm upgrade -i argocd argo/argo-cd --namespace argocd --version {{ argocd_chart_version }} --reset-values --wait
-      --timeout 10m0s --server-side --force-conflicts -f /tmp/argocd-values.yaml
+      --timeout 10m0s --server-side=true --force-conflicts -f /tmp/argocd-values.yaml
   vars:
     # renovate: datasource=helm depName=argo-cd registryUrl=https://argoproj.github.io/argo-helm
     argocd_chart_version: "9.5.19"

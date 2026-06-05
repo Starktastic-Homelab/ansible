@@ -16,6 +16,12 @@ on:
       - 'roles/ser2net/**'
       - 'ser2net.yml'
 
+# Serialize deploys: never cancel an in-progress run (a deploy interrupted
+# mid `helm upgrade` leaves the release in a pending-* state). Queue instead.
+concurrency:
+  group: deploy-k3s-cluster
+  cancel-in-progress: false
+
 jobs:
   provision:
     name: Apply Configuration

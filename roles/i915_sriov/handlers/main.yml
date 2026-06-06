@@ -1,11 +1,7 @@
 ---
-- name: Reboot host
-  ansible.builtin.shell: |
-    nohup bash -c 'sleep 60 && reboot' &>/dev/null &
-  listen: reboot required
-  async: 1
-  poll: 0
-
+# Handlers run in the order they are DEFINED here, not the order notified.
+# "Reboot host" MUST stay last so the config handlers (GRUB, initramfs, boot
+# tool) finish before the deferred reboot fires and drops the connection.
 - name: Update GRUB
   ansible.builtin.command: update-grub
   listen: grub updated
@@ -17,3 +13,10 @@
 - name: Refresh boot tool
   ansible.builtin.command: proxmox-boot-tool refresh
   listen: kernel pinned
+
+- name: Reboot host
+  ansible.builtin.shell: |
+    nohup bash -c 'sleep 60 && reboot' &>/dev/null &
+  listen: reboot required
+  async: 1
+  poll: 0

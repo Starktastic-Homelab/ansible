@@ -15,8 +15,11 @@
   listen: kernel pinned
 
 - name: Reboot host
-  ansible.builtin.shell: |
-    nohup bash -c 'sleep 60 && reboot' &>/dev/null &
+  # The GitHub Actions runner that drives this play lives on this Proxmox
+  # node, so ansible.builtin.reboot cannot be used here: waiting for the host
+  # to come back would kill our own runner. Schedule a deferred reboot via
+  # systemd so the play finishes before the host goes down. `sync` flushes
+  # pending initramfs/ESP writes to disk before the reboot fires.
+  ansible.builtin.shell: sync && shutdown -r +1
+  changed_when: true
   listen: reboot required
-  async: 1
-  poll: 0

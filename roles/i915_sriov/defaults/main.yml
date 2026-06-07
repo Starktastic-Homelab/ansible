@@ -9,6 +9,13 @@ i915_max_vfs: 7
 i915_kernel_min: "6.12"
 i915_kernel_max: "6.19"
 
+# Optional: pin the host to a specific kernel.
+# When set, the role builds and verifies the DKMS module for this kernel
+# BEFORE pinning it via proxmox-boot-tool and rebooting into it. The kernel
+# must already be installed and within the i915_kernel_min/max range.
+# Leave empty to keep the currently pinned/running kernel.
+i915_pinned_kernel: "6.17.13-13-pve"
+
 # Required GRUB kernel parameters for the host
 i915_grub_params: "intel_iommu=on i915.enable_guc=3 i915.max_vfs=7 module_blacklist=xe"
 

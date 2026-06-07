@@ -186,6 +186,7 @@ The `i915_sriov` role manages the full GPU driver lifecycle on the Proxmox host:
 
 - **Kernel validation** against a supported range
 - **DKMS driver** install/upgrade from GitHub releases
+- **Optional kernel pinning** — set `i915_pinned_kernel` (e.g. `6.17.13-13-pve`) to have the role build and verify the DKMS module for that kernel *before* pinning it via `proxmox-boot-tool` and rebooting into it
 - **GRUB parameters**: `intel_iommu=on i915.enable_guc=3 i915.max_vfs=7 module_blacklist=xe`
 - **sysfs configuration** to create 7 virtual functions on boot
 - **Coordinated versioning** — the driver version is synced across this repo and the Packer repo via Renovate

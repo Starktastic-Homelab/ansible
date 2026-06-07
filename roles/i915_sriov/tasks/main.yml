@@ -51,9 +51,23 @@
   register: running_kernel_output
   changed_when: false
 
-- name: Set target kernel (pinned if available, otherwise running)
+- name: Set target kernel (explicit pin > current pin > running)
   ansible.builtin.set_fact:
-    target_kernel: "{{ pinned_kernel if pinned_kernel != 'none' else running_kernel_output.stdout | trim }}"
+    target_kernel: >-
+      {{ i915_pinned_kernel if (i915_pinned_kernel | default('') | length > 0)
+         else (pinned_kernel if pinned_kernel != 'none' else running_kernel_output.stdout | trim) }}
+
+- name: Ensure the requested kernel is installed before pinning it
+  ansible.builtin.assert:
+    that:
+      - target_kernel in kernel_list_output.stdout
+    fail_msg: |
+      Requested kernel {{ target_kernel }} is not available to proxmox-boot-tool on this host.
+      Kernels known to proxmox-boot-tool:
+      {{ kernel_list_output.stdout }}
+      Install it first (e.g. apt install proxmox-kernel-{{ target_kernel }}), then re-run.
+    success_msg: "Requested kernel {{ target_kernel }} is installed"
+  when: i915_pinned_kernel | default('') | length > 0
 
 - name: Extract kernel major.minor version
   ansible.builtin.set_fact:
@@ -157,6 +171,18 @@
       DKMS status: {{ dkms_status_final.stdout }}
       Check build logs: /var/lib/dkms/i915-sriov-dkms/{{ i915_sriov_version }}/build/make.log
     success_msg: "DKMS module is installed for kernel {{ target_kernel }}"
+
+# --- Kernel pinning (only when an explicit target kernel is requested) ---
+
+- name: Pin the target kernel for boot
+  ansible.builtin.command: "proxmox-boot-tool kernel pin {{ target_kernel }}"
+  when:
+    - i915_pinned_kernel | default('') | length > 0
+    - pinned_kernel != target_kernel
+  changed_when: true
+  notify:
+    - kernel pinned
+    - reboot required
 
 # --- GRUB configuration ---
 

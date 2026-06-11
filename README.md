@@ -119,7 +119,9 @@ Seven roles cover the full lifecycle from bare VM to GitOps-ready cluster:
 | **i915_sriov** | Proxmox host | Intel GPU SR-IOV driver lifecycle (install, upgrade, GRUB, sysfs VF config) |
 | **ser2net** | Proxmox host | Expose USB Zigbee dongle as TCP socket for cluster consumption |
 
-### Role Dependency Chain
+### Role Execution Order
+
+The diagram below shows the order in which roles run across the `k3s.yml` plays. This sequence is enforced by the playbook's play order — only `k3s_common` is declared as an actual role `meta` dependency; the rest run in sequence because each play targets the next set of hosts.
 
 ```mermaid
 flowchart LR

@@ -7,6 +7,14 @@
   "ansible-galaxy": {
     "managerFilePatterns": ["/requirements\\.ya?ml$/"]
   },
+  "packageRules": [
+    {
+      "description": "Avoid duplicate helm updates: the custom regex manager already tracks the azure/setup-helm version input via the inline renovate comment",
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["helm"],
+      "enabled": false
+    }
+  ],
   "customManagers": [
     {
       "description": "Update Ansible variables and GitHub Actions inputs",

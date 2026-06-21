@@ -65,6 +65,11 @@ diff "$root/id_rsa" "$work/restored/id_rsa" || fail "id_rsa mismatch"
 diff "$root/terraform/terraform.tfvars" "$work/restored/terraform/terraform.tfvars" || fail "tfvars mismatch"
 ok "round-trip diff clean"
 
+# restore staging dir must be private (0700), not world-traversable
+perms="$(stat -c '%a' "$work/restored")"
+[[ "$perms" == "700" ]] || fail "restore staging dir should be 700, got $perms"
+ok "restore staging dir is private"
+
 # --list on restore shows the entries without writing anything
 list="$("$RESTORE" "$arch" --list)"
 grep -q 'ansible/.vault_pass' <<<"$list" || fail "restore --list should show .vault_pass"

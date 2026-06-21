@@ -80,8 +80,8 @@ if [[ "$MODE" == list ]]; then
 fi
 
 target="${INTO:-./restored-secrets-$(date -u +%Y%m%dT%H%M%SZ)}"
-mkdir -p "$target"
 umask 077
+mkdir -p "$target"
 $DECRYPT_CMD "$ARCHIVE" | tar -xzf - -C "$target"
 find "$target" -type f -exec chmod 600 {} +
 log "Restored into $target — review, then copy what you need into place."

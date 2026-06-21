@@ -13,16 +13,14 @@
         INSTALL_K3S_EXEC: >-
           server --server https://{{ vip_address }}:6443 --tls-san {{ vip_address }} --flannel-iface {{ flannel_iface }}
           --node-ip {{ ansible_host }} --disable traefik --disable servicelb
-      when: not k3s_binary.stat.exists
+      when: not k3s_common_k3s_binary.stat.exists
       changed_when: true
-      register: k3s_join_result
 
     - name: Wait for K3s to be ready
       ansible.builtin.wait_for:
         path: /etc/rancher/k3s/k3s.yaml
         state: present
         timeout: 120
-      when: k3s_join_result is changed
 
   rescue:
     - name: K3s master join failed

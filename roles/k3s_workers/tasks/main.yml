@@ -12,16 +12,14 @@
         INSTALL_K3S_VERSION: "{{ k3s_version }}"
         INSTALL_K3S_EXEC: >-
           agent --server https://{{ vip_address }}:6443 --flannel-iface {{ flannel_iface }} --node-ip {{ ansible_host }}
-      when: not k3s_binary.stat.exists
+      when: not k3s_common_k3s_binary.stat.exists
       changed_when: true
-      register: k3s_worker_join_result
 
     - name: Wait for K3s agent to be ready
       ansible.builtin.wait_for:
         path: /var/lib/rancher/k3s/agent/kubelet.kubeconfig
         state: present
         timeout: 120
-      when: k3s_worker_join_result is changed
 
   rescue:
     - name: K3s worker join failed

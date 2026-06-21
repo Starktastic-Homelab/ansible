@@ -4,14 +4,17 @@
 # tool) finish before the deferred reboot fires and drops the connection.
 - name: Update GRUB
   ansible.builtin.command: update-grub
+  changed_when: true
   listen: grub updated
 
 - name: Update initramfs
   ansible.builtin.command: update-initramfs -u -k all
+  changed_when: true
   listen: initramfs updated
 
 - name: Refresh boot tool
   ansible.builtin.command: proxmox-boot-tool refresh
+  changed_when: true
   listen: kernel pinned
 
 - name: Reboot host

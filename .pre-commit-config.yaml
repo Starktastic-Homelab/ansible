@@ -1,0 +1,30 @@
+# See https://pre-commit.com for usage. Mirrors the checks run in CI
+# (format.yml + validate.yml) so issues are caught before pushing.
+# Hook versions are kept up to date by Renovate (`:enablePreCommit`).
+minimum_pre_commit_version: "3.0.0"
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-json
+      - id: check-added-large-files
+
+  - repo: https://github.com/rbubley/mirrors-prettier
+    rev: v3.8.4
+    hooks:
+      - id: prettier
+        files: \.(ya?ml|json)$
+
+  # Uses the locally installed ansible-lint (as CI does via `pip install
+  # ansible-lint`) rather than an isolated env, avoiding interpreter
+  # resolution issues and matching the CI invocation exactly.
+  - repo: local
+    hooks:
+      - id: ansible-lint
+        name: ansible-lint
+        entry: ansible-lint --offline
+        language: system
+        pass_filenames: false
+        always_run: true

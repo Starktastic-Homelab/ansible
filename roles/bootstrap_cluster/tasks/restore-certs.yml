@@ -1,7 +1,7 @@
 ---
 - name: Set master delegation target
   ansible.builtin.set_fact:
-    _cert_master: "{{ groups['masters'][0] }}"
+    bootstrap_cluster_cert_master: "{{ groups['masters'][0] }}"
   tags:
     - bootstrap
     - restore-certs
@@ -11,22 +11,25 @@
     path: /tmp/cert-backup
     state: directory
     mode: "0755"
-  delegate_to: "{{ _cert_master }}"
+  delegate_to: "{{ bootstrap_cluster_cert_master }}"
   become: true
   tags:
     - bootstrap
     - restore-certs
 
-- name: Mount cert backup NFS share on master
+# Deliberate transient mount used purely as a probe: its failure (no backup
+# share on first deploy) drives the skip logic below, so the declarative
+# ansible.posix.mount module is the wrong tool here.
+- name: Mount cert backup NFS share on master # noqa: command-instead-of-module
   ansible.builtin.command:
     cmd:
       mount -t nfs -o ro,noatime,nfsvers=4.1 {{ nfs_server }}:{{ nfs_base_path }}/cert-backup/cert-backup
       /tmp/cert-backup
-  delegate_to: "{{ _cert_master }}"
+  delegate_to: "{{ bootstrap_cluster_cert_master }}"
   become: true
-  register: nfs_mount
+  register: bootstrap_cluster_nfs_mount
   ignore_errors: true
-  changed_when: nfs_mount.rc == 0
+  changed_when: bootstrap_cluster_nfs_mount.rc == 0
   tags:
     - bootstrap
     - restore-certs
@@ -35,20 +38,20 @@
   ansible.builtin.find:
     paths: /tmp/cert-backup
     patterns: "*.yaml"
-  delegate_to: "{{ _cert_master }}"
+  delegate_to: "{{ bootstrap_cluster_cert_master }}"
   become: true
-  register: cert_backup_files
-  when: nfs_mount is succeeded
+  register: bootstrap_cluster_cert_backup_files
+  when: bootstrap_cluster_nfs_mount is succeeded
   tags:
     - bootstrap
     - restore-certs
 
 - name: Display found backup files
   ansible.builtin.debug:
-    msg: "Found cert backups: {{ cert_backup_files.files | map(attribute='path') | list }}"
+    msg: "Found cert backups: {{ bootstrap_cluster_cert_backup_files.files | map(attribute='path') | list }}"
   when:
-    - nfs_mount is succeeded
-    - cert_backup_files.matched > 0
+    - bootstrap_cluster_nfs_mount is succeeded
+    - bootstrap_cluster_cert_backup_files.matched > 0
   tags:
     - bootstrap
     - restore-certs
@@ -58,14 +61,14 @@
     src: "{{ item.path }}"
     dest: /tmp/cert-restore/
     flat: true
-  delegate_to: "{{ _cert_master }}"
+  delegate_to: "{{ bootstrap_cluster_cert_master }}"
   become: true
-  loop: "{{ cert_backup_files.files }}"
+  loop: "{{ bootstrap_cluster_cert_backup_files.files }}"
   loop_control:
     label: "{{ item.path | basename }}"
   when:
-    - nfs_mount is succeeded
-    - cert_backup_files.matched > 0
+    - bootstrap_cluster_nfs_mount is succeeded
+    - bootstrap_cluster_cert_backup_files.matched > 0
   tags:
     - bootstrap
     - restore-certs
@@ -73,9 +76,9 @@
 - name: Unmount cert backup NFS share on master
   ansible.builtin.command:
     cmd: umount /tmp/cert-backup
-  delegate_to: "{{ _cert_master }}"
+  delegate_to: "{{ bootstrap_cluster_cert_master }}"
   become: true
-  when: nfs_mount is succeeded
+  when: bootstrap_cluster_nfs_mount is succeeded
   changed_when: true
   tags:
     - bootstrap
@@ -85,7 +88,7 @@
   ansible.builtin.file:
     path: /tmp/cert-backup
     state: absent
-  delegate_to: "{{ _cert_master }}"
+  delegate_to: "{{ bootstrap_cluster_cert_master }}"
   become: true
   tags:
     - bootstrap
@@ -95,22 +98,22 @@
   ansible.builtin.find:
     paths: /tmp/cert-restore
     patterns: "*.yaml"
-  register: cert_local_files
+  register: bootstrap_cluster_cert_local_files
   when:
-    - nfs_mount is succeeded
-    - cert_backup_files.matched > 0
+    - bootstrap_cluster_nfs_mount is succeeded
+    - bootstrap_cluster_cert_backup_files.matched > 0
   tags:
     - bootstrap
     - restore-certs
 
 - name: Extract namespaces from backup filenames
   ansible.builtin.set_fact:
-    cert_backup_namespaces:
-      "{{ cert_local_files.files | map(attribute='path') | map('basename') | map('regex_replace', '--.*$', '') | unique
-      | list }}"
+    bootstrap_cluster_cert_backup_namespaces:
+      "{{ bootstrap_cluster_cert_local_files.files | map(attribute='path') | map('basename') | map('regex_replace',
+      '--.*$', '') | unique | list }}"
   when:
-    - cert_local_files is defined
-    - cert_local_files.files | default([]) | length > 0
+    - bootstrap_cluster_cert_local_files is defined
+    - bootstrap_cluster_cert_local_files.files | default([]) | length > 0
   tags:
     - bootstrap
     - restore-certs
@@ -121,10 +124,10 @@
     kind: Namespace
     name: "{{ item }}"
     state: present
-  loop: "{{ cert_backup_namespaces }}"
+  loop: "{{ bootstrap_cluster_cert_backup_namespaces }}"
   when:
-    - cert_backup_namespaces is defined
-    - cert_backup_namespaces | length > 0
+    - bootstrap_cluster_cert_backup_namespaces is defined
+    - bootstrap_cluster_cert_backup_namespaces | length > 0
   tags:
     - bootstrap
     - restore-certs
@@ -133,13 +136,13 @@
   kubernetes.core.k8s:
     state: present
     src: "{{ item.path }}"
-  loop: "{{ cert_local_files.files }}"
+  loop: "{{ bootstrap_cluster_cert_local_files.files }}"
   loop_control:
     label: "{{ item.path | basename }}"
   when:
-    - cert_local_files is defined
-    - cert_local_files.files | default([]) | length > 0
-  ignore_errors: true
+    - bootstrap_cluster_cert_local_files is defined
+    - bootstrap_cluster_cert_local_files.files | default([]) | length > 0
+  failed_when: false
   tags:
     - bootstrap
     - restore-certs
@@ -155,7 +158,7 @@
 - name: Cert backup restore skipped (no NFS backup found)
   ansible.builtin.debug:
     msg: "No cert backup NFS share found - skipping restore (expected on first deploy)"
-  when: nfs_mount is failed
+  when: bootstrap_cluster_nfs_mount is failed
   tags:
     - bootstrap
     - restore-certs

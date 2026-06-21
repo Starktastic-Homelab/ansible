@@ -79,7 +79,7 @@
 - name: Check ArgoCD release status
   ansible.builtin.command:
     cmd: helm status argocd --namespace argocd -o json
-  register: argocd_release_status
+  register: bootstrap_cluster_argocd_release_status
   changed_when: false
   failed_when: false
 
@@ -91,8 +91,8 @@
   ansible.builtin.command:
     cmd: helm rollback argocd --namespace argocd --wait --timeout 5m0s
   when:
-    - argocd_release_status.rc == 0
-    - (argocd_release_status.stdout | from_json).info.status is search('pending-')
+    - bootstrap_cluster_argocd_release_status.rc == 0
+    - (bootstrap_cluster_argocd_release_status.stdout | from_json).info.status is search('pending-')
   changed_when: true
 
 - name: Install ArgoCD
@@ -133,11 +133,13 @@
     namespace: argocd
     label_selectors:
       - "app.kubernetes.io/name=argocd-server"
-  register: argocd_server
+  register: bootstrap_cluster_argocd_server
   until: >
-    argocd_server.resources | length > 0 and argocd_server.resources[0].status.updatedReplicas | default(0) ==
-    argocd_server.resources[0].spec.replicas and argocd_server.resources[0].status.availableReplicas | default(0) ==
-    argocd_server.resources[0].spec.replicas
+    bootstrap_cluster_argocd_server.resources | length > 0 and
+    bootstrap_cluster_argocd_server.resources[0].status.updatedReplicas | default(0) ==
+    bootstrap_cluster_argocd_server.resources[0].spec.replicas and
+    bootstrap_cluster_argocd_server.resources[0].status.availableReplicas | default(0) ==
+    bootstrap_cluster_argocd_server.resources[0].spec.replicas
   retries: 30
   delay: 10
 

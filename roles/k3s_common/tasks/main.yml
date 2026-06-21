@@ -30,11 +30,11 @@
 - name: Check if K3s is already installed
   ansible.builtin.stat:
     path: /usr/local/bin/k3s
-  register: k3s_binary
+  register: k3s_common_k3s_binary
 
 - name: Download K3s install script
   ansible.builtin.get_url:
     url: https://get.k3s.io
     dest: /tmp/k3s-install.sh
     mode: "0755"
-  when: not k3s_binary.stat.exists
+  when: not k3s_common_k3s_binary.stat.exists

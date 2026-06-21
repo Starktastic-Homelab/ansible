@@ -27,16 +27,16 @@
 - name: Apply Kube-Vip RBAC
   ansible.builtin.command:
     cmd: k3s kubectl apply -f {{ k3s_init_kube_vip_manifests_directory }}/rbac.yaml
-  register: kube_vip_rbac_apply
-  changed_when: kube_vip_rbac_apply.stdout is search('created|configured')
+  register: k3s_init_kube_vip_rbac_apply
+  changed_when: k3s_init_kube_vip_rbac_apply.stdout is search('created|configured')
   tags:
     - kube-vip
 
 - name: Wait for Kube-Vip ClusterRole to be available
   ansible.builtin.command:
     cmd: k3s kubectl get clusterrole system:kube-vip-role
-  register: kube_vip_rbac_check
-  until: kube_vip_rbac_check.rc == 0
+  register: k3s_init_kube_vip_rbac_check
+  until: k3s_init_kube_vip_rbac_check.rc == 0
   retries: 10
   delay: 2
   changed_when: false
@@ -79,7 +79,7 @@
 - name: Apply Kube-Vip Control Plane DaemonSet
   ansible.builtin.command:
     cmd: k3s kubectl apply -f {{ k3s_init_kube_vip_manifests_directory }}/kube-vip-cp.yaml
-  register: kube_vip_cp_apply
-  changed_when: kube_vip_cp_apply.stdout is search('created|configured')
+  register: k3s_init_kube_vip_cp_apply
+  changed_when: k3s_init_kube_vip_cp_apply.stdout is search('created|configured')
   tags:
     - kube-vip

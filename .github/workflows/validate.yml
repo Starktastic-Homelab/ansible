@@ -26,6 +26,11 @@ jobs:
       - name: Install ansible-lint
         run: pip install ansible-lint
 
+      # ansible.cfg sets vault_password_file; ansible-lint's syntax-check needs
+      # the file to exist. A dummy password is fine — decryption isn't required.
+      - name: Create dummy Ansible Vault password file
+        run: echo "dummy" > .vault_pass
+
       - name: Run ansible-lint
         run: |
           set +e

@@ -5,4 +5,4 @@ collections:
     version: "6.4.0"
   # renovate: datasource=galaxy-collection depName=ansible.posix
   - name: ansible.posix
-    version: "2.2.0"
+    version: "2.2.1"

@@ -2,7 +2,7 @@
 collections:
   # renovate: datasource=galaxy-collection depName=kubernetes.core
   - name: kubernetes.core
-    version: "6.4.0"
+    version: "6.5.0"
   # renovate: datasource=galaxy-collection depName=ansible.posix
   - name: ansible.posix
     version: "2.2.1"

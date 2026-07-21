@@ -13,7 +13,7 @@ jobs:
     name: Ansible Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Cache Pip Packages
         uses: actions/cache@v6.1.0
@@ -61,7 +61,7 @@ jobs:
     container:
       image: python:trixie
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Ansible and requirements
         run: pip install -r requirements.txt

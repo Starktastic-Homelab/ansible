@@ -93,8 +93,7 @@
 - name: Recover ArgoCD release stuck in a pending state
   ansible.builtin.command:
     cmd: >-
-      helm rollback argocd --namespace argocd --wait --timeout 5m0s
-      --server-side=true --force-conflicts
+      helm rollback argocd --namespace argocd --wait --timeout 5m0s --server-side=true --force-conflicts
   when:
     - bootstrap_cluster_argocd_release_status.rc == 0
     - (bootstrap_cluster_argocd_release_status.stdout | from_json).info.status is search('pending-')

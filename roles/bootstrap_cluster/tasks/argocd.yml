@@ -86,10 +86,15 @@
 # A deploy interrupted mid `helm upgrade` leaves the release in a pending-*
 # state (pending-install/upgrade/rollback), which wedges every subsequent
 # upgrade with "another operation in progress". Roll back to the last good
-# revision so the upgrade below can proceed.
+# revision so the upgrade below can proceed. Needs the same
+# --server-side/--force-conflicts treatment as the upgrade below: the rollback
+# re-applies the same manifests and hits the identical argocd-controller
+# field-manager conflict on argocd-notifications-cm.
 - name: Recover ArgoCD release stuck in a pending state
   ansible.builtin.command:
-    cmd: helm rollback argocd --namespace argocd --wait --timeout 5m0s
+    cmd: >-
+      helm rollback argocd --namespace argocd --wait --timeout 5m0s
+      --server-side=true --force-conflicts
   when:
     - bootstrap_cluster_argocd_release_status.rc == 0
     - (bootstrap_cluster_argocd_release_status.stdout | from_json).info.status is search('pending-')

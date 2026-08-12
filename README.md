@@ -186,12 +186,49 @@ The cluster API is fronted by a **virtual IP (10.9.9.99)** managed by Kube-VIP r
 
 The `i915_sriov` role manages the full GPU driver lifecycle on the Proxmox host:
 
-- **Kernel validation** against a supported range
+- **Upstream compatibility validation** — before anything destructive, `scripts/i915_compat.py` checks the *exact* driver release against the target kernel using upstream release metadata; unknown or unsupported combinations abort the play with the host untouched
 - **DKMS driver** install/upgrade from GitHub releases
-- **Optional kernel pinning** — set `i915_pinned_kernel` (e.g. `6.17.13-13-pve`) to have the role build and verify the DKMS module for that kernel *before* pinning it via `proxmox-boot-tool` and rebooting into it
+- **Kernel pinning** — `i915_sriov_pinned_kernel` (e.g. `6.17.13-13-pve`) is the authoritative desired host kernel; the role builds and verifies the DKMS module for it *before* pinning it via `proxmox-boot-tool` and rebooting into it
 - **GRUB parameters**: `intel_iommu=on i915.enable_guc=3 i915.max_vfs=7 module_blacklist=xe`
 - **sysfs configuration** to create 7 virtual functions on boot
-- **Coordinated versioning** — the driver version is synced across this repo and the Packer repo via Renovate
+
+#### Host and guest driver versions differ on purpose
+
+The Proxmox host (PF) and the Packer VM images (VF) run **different**
+`i915-sriov-dkms` releases, because upstream maintains parallel lines and
+states the two sides need not match:
+
+| Side | Kernel | Driver | Upstream range |
+|------|--------|--------|----------------|
+| **Host** (this repo) | 6.17.13-13-pve | `2026.08.12.1` | 6.17 – 7.1 |
+| **Guest** (packer repo) | 6.12 (Debian 13) | `2026.03.05.6` | 6.12 – 6.19 |
+
+Three axes are validated, all from upstream data for the exact tags — never
+from version ordering, equality or a curated allowlist:
+
+1. host driver ↔ host kernel (release notes of the tag)
+2. guest driver ↔ guest kernel (release notes of the tag)
+3. PF ↔ VF IOV ABI — `IOV_VERSION_{BASE,LATEST}_{MAJOR,MINOR}` from each tag's
+   `gt/iov/abi/iov_version_abi.h`, replayed through the upstream handshake
+
+`scripts/i915_compat.py` (stdlib only, shared verbatim with the packer repo)
+implements this and **fails closed**: a missing tag, unparsable release notes,
+a missing ABI header or a network failure all exit non-zero instead of
+approving an unverified combination.
+
+```bash
+python3 scripts/i915_compat.py \
+  --host-version 2026.08.12.1 --host-kernel 6.17.13-13-pve \
+  --guest-version 2026.03.05.6 --guest-kernel 6.12
+# exit 0 = compatible · 1 = incompatible · 2 = cannot be established
+```
+
+Renovate is free to propose newer host releases, but the `i915-compat`
+workflow re-runs the same check against the pinned kernel (and the guest state
+on the packer repo's `main`) and blocks the PR with a sticky report if the
+combination is not proven safe. Moving the guest to a newer release line is a
+packer-repo change; the host only needs a driver whose range covers
+`i915_sriov_pinned_kernel`.
 
 ### Sealed Secrets Bootstrap
 
@@ -257,7 +294,7 @@ On a fresh cluster where no NFS backup exists yet, the restore step **gracefully
 
 ## CI/CD Automation
 
-Five workflows cover deployment, validation, and specialized hardware management:
+Six workflows cover deployment, validation, and specialized hardware management:
 
 ```mermaid
 flowchart TD
@@ -269,6 +306,7 @@ flowchart TD
     subgraph pr["PR Phase"]
         PR([Pull Request]) --> LINT[validate.yml\nansible-lint + syntax-check]
         PR --> FMT[format.yml\nPrettier formatting]
+        PR --> CMP{{i915-compat.yml\nHost ↔ guest driver compatibility}}
     end
 
     subgraph special["Specialized"]
@@ -278,8 +316,10 @@ flowchart TD
 
     classDef deploy fill:#EE0000,stroke:#CC0000,color:#fff
     classDef dispatch fill:#7B42BC,stroke:#6A35A3,color:#fff
+    classDef gatecheck fill:#E57000,stroke:#CC6300,color:#fff
     class DEPLOY deploy
     class DISPATCH dispatch
+    class CMP gatecheck
 ```
 
 | Workflow | Trigger | Purpose |
@@ -288,6 +328,7 @@ flowchart TD
 | **validate** | PR | `ansible-lint` (production profile) + syntax check |
 | **format** | PR | Prettier YAML/JSON formatting |
 | **i915-sriov-upgrade** | i915 config change / manual | GPU driver lifecycle on Proxmox host |
+| **i915-compat** | PR (i915 config/role changes) | Blocks merge unless upstream data proves the host ↔ guest driver combination works |
 | **ser2net** | ser2net role change / manual | Zigbee serial bridge configuration |
 
 ---

@@ -1,0 +1,99 @@
+name: i915 SR-IOV Compatibility
+
+# Renovate may propose any newer i915-sriov-dkms release; "newer" is not the
+# same as "safe for this host". This check validates, against upstream data
+# only:
+#   1. the host release supports the pinned Proxmox kernel (this repo)
+#   2. the guest release supports the guest kernel series (packer repo, main)
+#   3. the two releases can negotiate a common PF/VF IOV ABI
+# Anything unknown (missing tag, unparsable release notes, network failure)
+# fails closed.
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'group_vars/proxmox_hosts/i915_sriov.yml'
+      - 'roles/i915_sriov/**'
+      - 'scripts/i915_compat.py'
+      - 'scripts/tests/test_i915_compat.py'
+      - '.github/workflows/i915-compat.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    name: Validate host/guest driver compatibility
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v7.0.1
+
+      - name: Test the compatibility tool
+        run: python3 scripts/tests/test_i915_compat.py
+
+      - name: Read host configuration from this PR
+        id: host
+        run: |
+          set -euo pipefail
+          DRIVER=$(grep -oP '^i915_sriov_version:\s*"\K[0-9][0-9.]*' group_vars/proxmox_hosts/i915_sriov.yml || true)
+          KERNEL=$(grep -oP '^i915_sriov_pinned_kernel:\s*"\K[0-9][0-9A-Za-z.+-]*' roles/i915_sriov/defaults/main.yml || true)
+          if [[ -z "$DRIVER" || -z "$KERNEL" ]]; then
+            echo "::error::Could not read i915_sriov_version / i915_sriov_pinned_kernel (failing closed)"
+            exit 1
+          fi
+          echo "driver=$DRIVER" >> "$GITHUB_OUTPUT"
+          echo "kernel=$KERNEL" >> "$GITHUB_OUTPUT"
+          echo "Host: driver $DRIVER on kernel $KERNEL"
+
+      - name: Read guest configuration from packer main
+        id: guest
+        run: |
+          set -euo pipefail
+          VARS=$(curl -fsSL "https://raw.githubusercontent.com/Starktastic-Homelab/packer/main/debian.auto.pkrvars.hcl" || true)
+          DRIVER=$(grep -oP '^i915_sriov_version\s*=\s*"\K[0-9][0-9.]*' <<<"$VARS" || true)
+          KERNEL=$(grep -oP '^i915_sriov_kernel_series\s*=\s*"\K[0-9]+\.[0-9]+' <<<"$VARS" || true)
+          if [[ -z "$DRIVER" || -z "$KERNEL" ]]; then
+            echo "::error::Could not read the guest driver/kernel series from the packer repo (failing closed)"
+            exit 1
+          fi
+          echo "driver=$DRIVER" >> "$GITHUB_OUTPUT"
+          echo "kernel=$KERNEL" >> "$GITHUB_OUTPUT"
+          echo "Guest: driver $DRIVER on kernel series $KERNEL"
+
+      - name: Check compatibility against upstream
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HOST_DRIVER: ${{ steps.host.outputs.driver }}
+          HOST_KERNEL: ${{ steps.host.outputs.kernel }}
+          GUEST_DRIVER: ${{ steps.guest.outputs.driver }}
+          GUEST_KERNEL: ${{ steps.guest.outputs.kernel }}
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python3 scripts/i915_compat.py \
+            --host-version "$HOST_DRIVER" \
+            --host-kernel "$HOST_KERNEL" \
+            --guest-version "$GUEST_DRIVER" \
+            --guest-kernel "$GUEST_KERNEL" \
+            --markdown report.md | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Report on the pull request
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v3.0.5
+        with:
+          header: i915-driver-check
+          path: report.md
+
+      - name: Fail if the combination is not proven compatible
+        if: steps.check.outcome == 'failure'
+        run: |
+          echo "::error::i915-sriov-dkms host/guest combination is not proven compatible — see the PR comment"
+          exit 1

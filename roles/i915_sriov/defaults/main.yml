@@ -4,16 +4,17 @@
 # Number of virtual functions to create (max 7 for Intel UHD)
 i915_sriov_max_vfs: 7
 
-# Kernel compatibility range for current driver version
+# Kernel compatibility is not configured here: it comes from the upstream
+# release metadata of the exact i915_sriov_version, checked by
+# scripts/i915_compat.py before anything destructive happens.
 # See: https://github.com/strongtz/i915-sriov-dkms
-i915_sriov_kernel_min: "6.12"
-i915_sriov_kernel_max: "6.19"
 
-# Optional: pin the host to a specific kernel.
-# When set, the role builds and verifies the DKMS module for this kernel
-# BEFORE pinning it via proxmox-boot-tool and rebooting into it. The kernel
-# must already be installed and within the i915_sriov_kernel_min/max range.
-# Leave empty to keep the currently pinned/running kernel.
+# Pin the host to a specific kernel. This is the authoritative desired host
+# kernel: the role builds and verifies the DKMS module for it BEFORE pinning it
+# via proxmox-boot-tool and rebooting into it, and CI validates the driver
+# release against it. The kernel must already be installed.
+# Leave empty to keep the currently pinned/running kernel (CI can then no
+# longer validate the host axis and will fail closed).
 i915_sriov_pinned_kernel: "6.17.13-13-pve"
 
 # Required GRUB kernel parameters for the host

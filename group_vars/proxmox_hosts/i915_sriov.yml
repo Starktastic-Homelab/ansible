@@ -1,7 +1,13 @@
 ---
-# i915 SR-IOV DKMS driver version for Proxmox host
-# This should match the version installed in VM images (packer)
-# Updated automatically via PR from Packer CI workflow
+# i915 SR-IOV DKMS driver version for the Proxmox host (PF).
+#
+# This does NOT have to match the version baked into the VM images (packer).
+# Upstream ships parallel release lines and states the host and guest are not
+# required to run the same module version. What must hold is that this release
+# supports i915_sriov_pinned_kernel (see roles/i915_sriov/defaults/main.yml)
+# and that it can negotiate a common PF/VF IOV ABI with the guest release —
+# both are validated against upstream metadata by scripts/i915_compat.py, in
+# CI and again on the host before any driver/kernel transition.
 
 # renovate: datasource=github-releases depName=strongtz/i915-sriov-dkms
-i915_sriov_version: "2026.03.05.2"
+i915_sriov_version: "2026.08.12.1"

@@ -1,4 +1,24 @@
 ---
+# ponytail: two replicas, not a DaemonSet. k3s ships CoreDNS as a Deployment
+# whose manifest omits "replicas", so this patch survives the k3s restarts that
+# rewrite /var/lib/rancher/k3s/server/manifests/coredns.yaml -- no need to take
+# the manifest over. Its topologySpreadConstraints already pin maxSkew 1 on
+# kubernetes.io/hostname with DoNotSchedule, so the two land on separate nodes
+# unaided. A DaemonSet would mean owning CoreDNS outright and is the answer to
+# a QPS problem this cluster does not have.
+- name: Give CoreDNS a second replica
+  kubernetes.core.k8s:
+    state: patched
+    kind: Deployment
+    name: coredns
+    namespace: kube-system
+    definition:
+      spec:
+        replicas: 2
+  tags:
+    - bootstrap
+    - coredns
+
 - name: Pre-seed sealed-secrets master key
   kubernetes.core.k8s:
     state: present

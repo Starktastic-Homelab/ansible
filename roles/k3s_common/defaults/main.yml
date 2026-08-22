@@ -1,8 +1,9 @@
 ---
 # Resolver handed to kubelet via --resolv-conf, and therefore inherited by every
 # ClusterFirst pod. Deliberately NOT the node's own /etc/resolv.conf, which adds
-# "search mgmt.arpa" (from netplan, reinforced by radvd DNSSL) and an IPv6 ULA
-# nameserver that pods cannot reach over the IPv4-only flannel network.
+# "search mgmt.arpa". The node needs that suffix (short names like "jetkvm"
+# resolve through it); pods never do, and inheriting it makes every lookup of a
+# name with fewer than 5 dots try <name>.mgmt.arpa against AdGuard first.
 k3s_common_resolv_conf: /etc/k3s-resolv.conf
 
 # AdGuard Home on OPNsense. Same address the nodes already resolve through, so

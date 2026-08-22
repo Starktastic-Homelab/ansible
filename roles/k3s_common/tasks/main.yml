@@ -29,8 +29,9 @@
 
 # ponytail: a one-line resolv.conf is the whole fix. Pods keep the stock
 # ClusterFirst search list and ndots:5; they just stop inheriting the node's
-# "search mgmt.arpa", which resolved nothing for them and turned every
-# cluster-internal lookup into an extra NXDOMAIN forwarded to AdGuard.
+# "search mgmt.arpa". Any name with fewer than 5 dots -- every external
+# hostname a pod resolves -- currently tries <name>.mgmt.arpa against AdGuard
+# before the real name, costing a wasted NXDOMAIN and a firewall round-trip.
 - name: Provide kubelet a pod-safe resolver
   ansible.builtin.copy:
     content: "nameserver {{ k3s_common_upstream_dns }}\n"

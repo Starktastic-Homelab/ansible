@@ -49,9 +49,8 @@
   ansible.builtin.assert:
     that: k3s_common_nameservers | length > 0
     fail_msg: >-
-      No nameserver in {{ k3s_common_node_resolv_conf }}. Writing an empty
-      {{ k3s_common_resolv_conf }} would leave CoreDNS with no upstream and
-      break every external name in the cluster.
+      No nameserver in {{ k3s_common_node_resolv_conf }}. Writing an empty {{ k3s_common_resolv_conf }} would leave
+      CoreDNS with no upstream and break every external name in the cluster.
 
 - name: Provide kubelet a pod-safe resolver
   ansible.builtin.copy:

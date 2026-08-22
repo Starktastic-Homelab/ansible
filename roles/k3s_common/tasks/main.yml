@@ -27,6 +27,31 @@
     group: root
     mode: "0600"
 
+# ponytail: a one-line resolv.conf is the whole fix. Pods keep the stock
+# ClusterFirst search list and ndots:5; they just stop inheriting the node's
+# "search mgmt.arpa", which resolved nothing for them and turned every
+# cluster-internal lookup into an extra NXDOMAIN forwarded to AdGuard.
+- name: Provide kubelet a pod-safe resolver
+  ansible.builtin.copy:
+    content: "nameserver {{ k3s_common_upstream_dns }}\n"
+    dest: "{{ k3s_common_resolv_conf }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart k3s
+
+- name: Point kubelet at the pod-safe resolver
+  ansible.builtin.copy:
+    content: |
+      ---
+      kubelet-arg:
+        - "resolv-conf={{ k3s_common_resolv_conf }}"
+    dest: /etc/rancher/k3s/config.yaml
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart k3s
+
 - name: Check if K3s is already installed
   ansible.builtin.stat:
     path: /usr/local/bin/k3s

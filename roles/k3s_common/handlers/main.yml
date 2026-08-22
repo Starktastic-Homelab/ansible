@@ -1,0 +1,11 @@
+---
+# Kubelet reads --resolv-conf once at startup and only stamps it into pods
+# created afterwards, so an already-running node needs a restart to pick it up.
+# throttle: 1 rolls the restart node by node: CoreDNS runs a single replica, so
+# restarting every node together would take cluster DNS down with it.
+- name: Restart k3s
+  ansible.builtin.systemd:
+    name: "{{ 'k3s' if 'masters' in group_names else 'k3s-agent' }}"
+    state: restarted
+  throttle: 1
+  when: k3s_common_k3s_binary.stat.exists | default(false)

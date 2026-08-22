@@ -1,11 +1,11 @@
 ---
-# Resolver handed to kubelet via --resolv-conf, and therefore inherited by every
-# ClusterFirst pod. Deliberately NOT the node's own /etc/resolv.conf, which adds
-# "search mgmt.arpa". The node needs that suffix (short names like "jetkvm"
-# resolve through it); pods never do, and inheriting it makes every lookup of a
-# name with fewer than 5 dots try <name>.mgmt.arpa against AdGuard first.
-k3s_common_resolv_conf: /etc/k3s-resolv.conf
+# Where systemd-resolved publishes the resolver cloud-init configured on this
+# node. Deliberately NOT /etc/resolv.conf, which is the 127.0.0.53 stub.
+k3s_common_node_resolv_conf: /run/systemd/resolve/resolv.conf
 
-# AdGuard Home on OPNsense. Same address the nodes already resolve through, so
-# this changes which suffixes pods try, not who ultimately answers them.
-k3s_common_upstream_dns: "10.9.9.1"
+# Generated copy of the above with its "search" line dropped, handed to kubelet
+# via --resolv-conf and therefore inherited by every ClusterFirst pod. The node
+# needs "search mgmt.arpa" (short names like "jetkvm" resolve through it); pods
+# never do, and inheriting it makes every lookup of a name with fewer than 5
+# dots try <name>.mgmt.arpa against AdGuard first.
+k3s_common_resolv_conf: /etc/k3s-resolv.conf

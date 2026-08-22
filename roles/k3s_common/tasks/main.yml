@@ -27,14 +27,35 @@
     group: root
     mode: "0600"
 
-# ponytail: a one-line resolv.conf is the whole fix. Pods keep the stock
-# ClusterFirst search list and ndots:5; they just stop inheriting the node's
-# "search mgmt.arpa". Any name with fewer than 5 dots -- every external
-# hostname a pod resolves -- currently tries <name>.mgmt.arpa against AdGuard
-# before the real name, costing a wasted NXDOMAIN and a firewall round-trip.
+# ponytail: copy the node's own resolver and drop its "search" line -- that is
+# the whole fix, and it hardcodes no address. Terraform sets the nameserver via
+# cloud-init, netplan hands it to systemd-resolved, and this reads it back out.
+# Pods keep the stock ClusterFirst search list and ndots:5; they just stop
+# inheriting "search mgmt.arpa". Any name with fewer than 5 dots -- every
+# external hostname a pod resolves -- currently tries <name>.mgmt.arpa against
+# AdGuard before the real name, costing a wasted NXDOMAIN and a round-trip.
+- name: Read the resolver cloud-init configured on this node
+  ansible.builtin.slurp:
+    src: "{{ k3s_common_node_resolv_conf }}"
+  register: k3s_common_node_resolv
+
+- name: Extract its nameservers
+  ansible.builtin.set_fact:
+    k3s_common_nameservers: >-
+      {{ k3s_common_node_resolv.content | b64decode
+         | regex_findall('(?m)^nameserver[ \t]+\S+') }}
+
+- name: Refuse to write an empty resolver
+  ansible.builtin.assert:
+    that: k3s_common_nameservers | length > 0
+    fail_msg: >-
+      No nameserver in {{ k3s_common_node_resolv_conf }}. Writing an empty
+      {{ k3s_common_resolv_conf }} would leave CoreDNS with no upstream and
+      break every external name in the cluster.
+
 - name: Provide kubelet a pod-safe resolver
   ansible.builtin.copy:
-    content: "nameserver {{ k3s_common_upstream_dns }}\n"
+    content: "{{ k3s_common_nameservers | join('\n') }}\n"
     dest: "{{ k3s_common_resolv_conf }}"
     owner: root
     group: root

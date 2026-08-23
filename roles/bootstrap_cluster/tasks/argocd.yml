@@ -1,40 +1,48 @@
-- name: Create ArgoCD namespace
-  kubernetes.core.k8s:
-    api_version: v1
-    name: argocd
-    kind: Namespace
-
 - name: Add ArgoCD helm repo
   kubernetes.core.helm_repository:
     name: argo
     repo_url: "https://argoproj.github.io/argo-helm"
 
-- name: Update helm repo cache
+- name: Check ArgoCD release status
   ansible.builtin.command:
-    cmd: helm repo update argo
+    cmd: helm status argocd --namespace argocd -o json
+  register: bootstrap_cluster_argocd_release_status
   changed_when: false
+  failed_when: false
 
-# Workaround: the ArgoCD controller (field-manager "argocd-controller")
-# claims .data.context and .metadata.labels.app.kubernetes.io/name on
-# argocd-notifications-cm. A server-side apply is needed to resolve those
-# field-manager conflicts, so we force it on with --server-side=true and
-# resolve the conflicts with --force-conflicts. Note --server-side takes a
-# value ("true"/"false"/"auto"); its "auto" default inherits the previous
-# release's apply method, which is not reliably server-side, and
-# --force-conflicts is rejected unless server-side apply is enabled. The
-# kubernetes.core.helm module (v6.4.0) has no --force-conflicts support yet
-# (tracked upstream:
-# https://github.com/ansible-collections/kubernetes.core/issues/1038).
-# Use helm CLI directly so we can pass these flags.
-# Remove once kubernetes.core.helm gains a force_conflicts parameter.
-- name: Template ArgoCD values
-  ansible.builtin.copy:
-    content: "{{ _argocd_values | to_nice_yaml(indent=2) }}"
-    dest: /tmp/argocd-values.yaml
-    mode: "0600"
-  no_log: true
-  vars:
-    _argocd_values:
+# A deploy interrupted mid `helm upgrade` leaves the release in a pending-*
+# state (pending-install/upgrade/rollback), which wedges every subsequent
+# upgrade with "another operation in progress". Roll back to the last good
+# revision so the install below can proceed. Needs the same
+# --server-side/--force-conflicts treatment as the install below: the rollback
+# re-applies the same manifests and hits the identical argocd-controller
+# field-manager conflict on argocd-notifications-cm.
+- name: Recover ArgoCD release stuck in a pending state
+  ansible.builtin.command:
+    cmd: >-
+      helm rollback argocd --namespace argocd --wait --timeout 5m0s --server-side=true --force-conflicts
+  when:
+    - bootstrap_cluster_argocd_release_status.rc == 0
+    - (bootstrap_cluster_argocd_release_status.stdout | from_json).info.status is search('pending-')
+  changed_when: true
+
+- name: Install ArgoCD
+  kubernetes.core.helm:
+    name: argocd
+    chart_ref: argo/argo-cd
+    # renovate: datasource=helm depName=argo-cd registryUrl=https://argoproj.github.io/argo-helm
+    chart_version: "10.4.0"
+    release_namespace: argocd
+    create_namespace: true
+    update_repo_cache: true
+    wait: true
+    wait_timeout: 10m0s
+    # The ArgoCD controller (field-manager "argocd-controller") claims
+    # .data.context and .metadata.labels.app.kubernetes.io/name on
+    # argocd-notifications-cm, so a client-side apply dies on those conflicts.
+    server_side: "true"
+    force_conflicts: true
+    release_values:
       controller:
         replicas: 1
         resources:
@@ -75,50 +83,17 @@
       notifications:
         secret:
           create: false
-
-- name: Check ArgoCD release status
-  ansible.builtin.command:
-    cmd: helm status argocd --namespace argocd -o json
-  register: bootstrap_cluster_argocd_release_status
-  changed_when: false
-  failed_when: false
-
-# A deploy interrupted mid `helm upgrade` leaves the release in a pending-*
-# state (pending-install/upgrade/rollback), which wedges every subsequent
-# upgrade with "another operation in progress". Roll back to the last good
-# revision so the upgrade below can proceed. Needs the same
-# --server-side/--force-conflicts treatment as the upgrade below: the rollback
-# re-applies the same manifests and hits the identical argocd-controller
-# field-manager conflict on argocd-notifications-cm.
-- name: Recover ArgoCD release stuck in a pending state
-  ansible.builtin.command:
-    cmd: >-
-      helm rollback argocd --namespace argocd --wait --timeout 5m0s --server-side=true --force-conflicts
-  when:
-    - bootstrap_cluster_argocd_release_status.rc == 0
-    - (bootstrap_cluster_argocd_release_status.stdout | from_json).info.status is search('pending-')
-  changed_when: true
-
-- name: Install ArgoCD
-  ansible.builtin.command:
-    cmd: >-
-      helm upgrade -i argocd argo/argo-cd --namespace argocd --version {{ argocd_chart_version }} --reset-values --wait
-      --timeout 10m0s --server-side=true --force-conflicts -f /tmp/argocd-values.yaml
-  vars:
-    # renovate: datasource=helm depName=argo-cd registryUrl=https://argoproj.github.io/argo-helm
-    argocd_chart_version: "10.4.0"
-  changed_when: true
-
-- name: Remove ArgoCD values file
-  ansible.builtin.file:
-    path: /tmp/argocd-values.yaml
-    state: absent
+  # release_values carries the admin password hash and the OIDC client secret.
+  no_log: true
+  register: bootstrap_cluster_argocd
 
 # Workaround: ArgoCD creates ssoClientApp once at startup before its configmap
 # informer syncs. The OIDC issuer is empty at that point and the in-process
 # graceful restart does not recreate the SSO client. A rollout restart forces a
 # fresh NewServer() after the configmap is cached, giving SSO the correct issuer.
-- name: Restart ArgoCD server to pick up OIDC config
+# Only a run that actually touched the release can hit that race, so gate on the
+# helm result -- an unchanged release is already serving the right issuer.
+- name: Restart ArgoCD server to pick up OIDC config # noqa: no-handler
   kubernetes.core.k8s:
     api_version: apps/v1
     kind: Deployment
@@ -130,6 +105,7 @@
           metadata:
             annotations:
               kubectl.kubernetes.io/restartedAt: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+  when: bootstrap_cluster_argocd is changed
 
 - name: Wait for ArgoCD server to be ready
   kubernetes.core.k8s_info:
@@ -140,6 +116,8 @@
   register: bootstrap_cluster_argocd_server
   until: >
     bootstrap_cluster_argocd_server.resources | length > 0 and
+    bootstrap_cluster_argocd_server.resources[0].status.observedGeneration | default(0) ==
+    bootstrap_cluster_argocd_server.resources[0].metadata.generation and
     bootstrap_cluster_argocd_server.resources[0].status.updatedReplicas | default(0) ==
     bootstrap_cluster_argocd_server.resources[0].spec.replicas and
     bootstrap_cluster_argocd_server.resources[0].status.availableReplicas | default(0) ==

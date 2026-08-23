@@ -39,7 +39,12 @@ jobs:
       - name: Run ansible-lint
         run: |
           set +e
-          OUTPUT=$(ansible-lint --offline --force-color . 2>&1)
+          # No path argument. Passing `.` makes ansible-lint treat the repo root
+          # as a single lintable: it only picks up root-level files and never
+          # descends into roles/, so a role with a blatant violation still
+          # reports "Passed". Argless invocation uses git-based project
+          # discovery and lints everything. Do not re-add the `.`.
+          OUTPUT=$(ansible-lint --offline --force-color 2>&1)
           EXIT_CODE=$?
           set -e
 

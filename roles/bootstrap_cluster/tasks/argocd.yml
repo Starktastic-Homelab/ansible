@@ -80,7 +80,15 @@
             p, role:homepage, applications, get, */*, allow
             g, authentik Admins, role:admin
             g, homepage, role:homepage
+      # argocd-notifications-cm and -secret both belong to the apps repo:
+      # infra-configs declares every key of the ConfigMap, and letting the chart
+      # render its own copy makes helm and argocd-controller fight over
+      # .data.context -- helm wins via --force-conflicts and leaves the chart
+      # placeholder argocdUrl (https://argocd.example.com) live, breaking the
+      # "Open ArgoCD" link in every ntfy notification.
       notifications:
+        cm:
+          create: false
         secret:
           create: false
   # release_values carries the admin password hash and the OIDC client secret.

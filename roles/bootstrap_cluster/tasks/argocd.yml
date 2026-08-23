@@ -61,6 +61,13 @@
           applicationsetcontroller.enable.progressive.syncs: "true"
         secret:
           argocdServerAdminPassword: "{{ argocd_admin_password_hash }}"
+          # The chart defaults this to `now`, so every render differs, helm-diff
+          # always reports a change, and every run cuts a real release revision
+          # and rolls argocd-server. It also invalidates live admin API tokens,
+          # which ArgoCD rejects when issued before admin.passwordMtime.
+          # Pinned to the value already in the cluster; bump it only when
+          # rotating argocd_admin_password_hash.
+          argocdServerAdminPasswordMtime: "2026-08-23T12:26:14Z"
           extra:
             oidc.authentik.clientID: "{{ argocd_oidc_client_id }}"
             oidc.authentik.clientSecret: "{{ argocd_oidc_client_secret }}"

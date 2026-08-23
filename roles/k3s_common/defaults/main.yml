@@ -1,0 +1,11 @@
+---
+# Where systemd-resolved publishes the resolver cloud-init configured on this
+# node. Deliberately NOT /etc/resolv.conf, which is the 127.0.0.53 stub.
+k3s_common_node_resolv_conf: /run/systemd/resolve/resolv.conf
+
+# Generated copy of the above with its "search" line dropped, handed to kubelet
+# via --resolv-conf and therefore inherited by every ClusterFirst pod. The node
+# needs "search mgmt.arpa" (short names like "jetkvm" resolve through it); pods
+# never do, and inheriting it makes every lookup of a name with fewer than 5
+# dots try <name>.mgmt.arpa against AdGuard first.
+k3s_common_resolv_conf: /etc/k3s-resolv.conf

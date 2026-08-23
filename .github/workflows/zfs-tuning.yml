@@ -1,0 +1,46 @@
+name: Apply ZFS Tuning
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "roles/zfs_tuning/**"
+      - "group_vars/proxmox_hosts/zfs.yml"
+      - "zfs-tuning.yml"
+
+  workflow_dispatch:
+
+jobs:
+  zfs-tuning:
+    name: Apply ZFS dataset properties on Proxmox
+    runs-on: self-hosted
+    container:
+      image: python:trixie
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Cache Pip Packages
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install Ansible and requirements
+        run: pip install -r requirements.txt
+
+      - name: Install sshpass for password auth
+        run: apt-get update && apt-get install -y sshpass
+
+      - name: Create Ansible Vault password file
+        run: echo "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > .vault_pass
+
+      - name: Run ZFS tuning playbook
+        run: |
+          ansible-playbook -i inventory/hosts.yml \
+            --vault-password-file .vault_pass \
+            zfs-tuning.yml

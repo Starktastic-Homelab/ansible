@@ -1,0 +1,10 @@
+---
+- name: Apply ZFS dataset tuning on Proxmox hosts
+  hosts: proxmox_hosts
+  become: true
+  gather_facts: true
+  tags:
+    - zfs
+    - storage
+  roles:
+    - role: zfs_tuning

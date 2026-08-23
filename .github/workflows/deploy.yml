@@ -15,6 +15,8 @@ on:
       - 'group_vars/proxmox_hosts/**'
       - 'roles/ser2net/**'
       - 'ser2net.yml'
+      - 'roles/zfs_tuning/**'
+      - 'zfs-tuning.yml'
 
 # Serialize deploys: never cancel an in-progress run (a deploy interrupted
 # mid `helm upgrade` leaves the release in a pending-* state). Queue instead.

@@ -1,0 +1,23 @@
+---
+# ponytail: ansible.builtin.command rather than community.general.zfs. One
+# property on one dataset does not justify adding a whole collection to
+# requirements.yml. Swap to the module if ZFS management ever grows here.
+
+- name: Read current ZFS property values
+  ansible.builtin.command:
+    cmd: "zfs get -H -o value {{ item.property }} {{ item.dataset }}"
+  register: zfs_tuning_current
+  changed_when: false
+  check_mode: false
+  loop: "{{ zfs_tuning_properties }}"
+  loop_control:
+    label: "{{ item.dataset }} {{ item.property }}"
+
+- name: Apply ZFS properties that differ from desired state
+  ansible.builtin.command:
+    cmd: "zfs set {{ item.item.property }}={{ item.item.value }} {{ item.item.dataset }}"
+  loop: "{{ zfs_tuning_current.results }}"
+  loop_control:
+    label: "{{ item.item.dataset }} {{ item.item.property }}={{ item.item.value }}"
+  when: item.stdout | trim != item.item.value | string
+  changed_when: true

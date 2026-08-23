@@ -107,7 +107,7 @@ sequenceDiagram
 
 ## Roles
 
-Seven roles cover the full lifecycle from bare VM to GitOps-ready cluster:
+Eight roles cover the full lifecycle from bare VM to GitOps-ready cluster:
 
 | Role | Target | Purpose |
 |------|--------|---------|
@@ -118,6 +118,7 @@ Seven roles cover the full lifecycle from bare VM to GitOps-ready cluster:
 | **bootstrap_cluster** | CI runner (localhost) | Sealed Secrets key, TLS cert restore from NFS, ArgoCD + OIDC setup, App-of-Apps |
 | **i915_sriov** | Proxmox host | Intel GPU SR-IOV driver lifecycle (install, upgrade, GRUB, sysfs VF config) |
 | **ser2net** | Proxmox host | Expose USB Zigbee dongle as TCP socket for cluster consumption |
+| **zfs_tuning** | Proxmox host | Apply declared ZFS dataset properties (etcd sync-write tuning) |
 
 ### Role Execution Order
 
@@ -230,6 +231,34 @@ combination is not proven safe. Moving the guest to a newer release line is a
 packer-repo change; the host only needs a driver whose range covers
 `i915_sriov_pinned_kernel`.
 
+### ZFS Sync Tuning — etcd Write Latency
+
+kube-master-01 is the single control-plane node, so its OS disk (`vm-pool/vm-200-disk-0`) carries etcd. `vm-pool` is a single-vdev consumer NVMe with **no SLOG and no power-loss protection**, so every ZIL commit queues behind normal pool I/O — `zpool iostat -vl` showed the drive servicing writes in ~970µs while sync commits waited **~24ms** in the queue.
+
+That latency reached etcd directly, and k3s exited whenever the controller-manager, scheduler or cloud-controller-manager lost their 5s leader-election lease — **29 times in 15 days**, each a full API outage.
+
+Measured over identical 60s windows:
+
+| `sync` | WAL fsync mean | syncs/60s |
+|--------|----------------|-----------|
+| `standard` | 4.55 ms | 182 |
+| `disabled` | **0.572 ms** | 186 |
+
+`zfs-tuning.yml` applies `sync=disabled` to that dataset from the desired state declared in [`group_vars/proxmox_hosts/zfs.yml`](group_vars/proxmox_hosts/zfs.yml), which carries the full rationale. The `zfs-tuning` workflow runs it on any change to that state, or on demand. The role reads each property before setting it, so a run that matches reality reports `ok`, not `changed`.
+
+> [!WARNING]
+> This is a **deliberate, temporary durability trade**, not a permanent state. ZFS acknowledges sync writes from memory, so the pool stays consistent but a host kernel panic can lose the last ~5s of etcd writes. A UPS covers power loss; it does not cover a panic.
+>
+> The real fix is a SLOG with power-loss protection (e.g. Intel Optane P1600X 58GB, ~10µs sync latency, non-destructive and removable). A consumer NVMe with DRAM is **not** a substitute — DRAM speeds up mapping tables, only PLP makes `fsync` fast. Once installed:
+>
+> ```bash
+> zpool add vm-pool log /dev/disk/by-id/<slog-device>
+> ```
+>
+> then set `value: standard` in the group_var, re-run the playbook, and re-measure before calling it done.
+
+Terraform owns these zvols, so a VM rebuild creates a fresh dataset that inherits the pool default — **re-run this playbook after any rebuild of VM 200**.
+
 ### Sealed Secrets Bootstrap
 
 The bootstrap role **pre-seeds the Sealed Secrets TLS keypair** before any workloads deploy. This enables a "secrets-in-git" workflow — encrypted SealedSecret manifests can be committed to the Apps repo and will decrypt correctly from day zero.
@@ -289,12 +318,13 @@ On a fresh cluster where no NFS backup exists yet, the restore step **gracefully
 |----------|--------|---------|
 | `i915-sriov.yml` | Proxmox host | Install/upgrade Intel SR-IOV GPU driver |
 | `ser2net.yml` | Proxmox host | Configure TCP bridge for USB Zigbee dongle (port 3333) |
+| `zfs-tuning.yml` | Proxmox host | Apply ZFS dataset properties (etcd sync-write tuning) |
 
 ---
 
 ## CI/CD Automation
 
-Six workflows cover deployment, validation, and specialized hardware management:
+Seven workflows cover deployment, validation, and specialized hardware management:
 
 ```mermaid
 flowchart TD
@@ -312,6 +342,7 @@ flowchart TD
     subgraph special["Specialized"]
         DRV_CHANGE["i915_sriov.yml change"] --> I915[i915-sriov-upgrade.yml\nGPU driver upgrade + reboot]
         SER_CHANGE["ser2net role change"] --> SER[ser2net.yml\nZigbee gateway deploy]
+        ZFS_CHANGE["zfs_tuning role change"] --> ZFS[zfs-tuning.yml\nZFS dataset properties]
     end
 
     classDef deploy fill:#EE0000,stroke:#CC0000,color:#fff
@@ -330,6 +361,7 @@ flowchart TD
 | **i915-sriov-upgrade** | i915 config change / manual | GPU driver lifecycle on Proxmox host |
 | **i915-compat** | PR (i915 config/role changes) | Blocks merge unless upstream data proves the host ↔ guest driver combination works |
 | **ser2net** | ser2net role change / manual | Zigbee serial bridge configuration |
+| **zfs-tuning** | ZFS config change / manual | Applies declared ZFS dataset properties on the Proxmox host |
 
 ---
 
@@ -383,6 +415,9 @@ ansible-playbook -i inventory/ i915-sriov.yml
 
 # Configure Zigbee serial bridge
 ansible-playbook -i inventory/ ser2net.yml
+
+# Apply ZFS dataset tuning on the Proxmox host
+ansible-playbook -i inventory/ zfs-tuning.yml
 ```
 
 > In practice, the `k3s.yml` playbook is triggered automatically by the Terraform pipeline via GitHub Actions `repository_dispatch`.

@@ -1,0 +1,8 @@
+---
+# ZFS tuning defaults.
+#
+# Deliberately empty: the authoritative property list lives in
+# group_vars/proxmox_hosts/zfs.yml, so changing a value is a reviewable git
+# change rather than an undocumented `zfs set` on the host. An empty list makes
+# the role a no-op if it is ever applied to a host without that group_var.
+zfs_tuning_properties: []

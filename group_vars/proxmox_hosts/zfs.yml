@@ -1,0 +1,60 @@
+---
+# ZFS dataset properties applied to the Proxmox host by `zfs-tuning.yml`.
+#
+# This file is the authoritative desired state. Changing a value here and
+# re-running the playbook is the supported way to change it — do not `zfs set`
+# on the host directly, or the two will drift silently.
+#
+# ---------------------------------------------------------------------------
+# vm-pool/vm-200-disk-0  —  sync=disabled
+# ---------------------------------------------------------------------------
+# VM 200 is kube-master-01, the single control-plane node, so this zvol carries
+# etcd. etcd fsyncs every write to its WAL before acknowledging, which makes it
+# the most sync-write-sensitive workload on the pool.
+#
+# vm-pool is a single-vdev NVMe (Lexar NM790, no power-loss protection) with no
+# separate log device, so every ZIL commit queues behind normal pool I/O on the
+# same vdev. Measured with `zpool iostat -vl vm-pool`, the device itself was
+# never the bottleneck — the queue was:
+#
+#     write disk_wait   ~970us      (the drive servicing the write)
+#     write syncq_wait  ~24ms       (ZIL commits waiting on the pool)
+#
+# The effect on etcd, measured over identical 60s windows on 2026-08-23:
+#
+#     sync=standard     WAL fsync 4.55ms mean, 182 syncs/60s
+#     sync=disabled     WAL fsync 0.572ms mean, 186 syncs/60s   (8.0x faster)
+#
+# etcd wants WAL fsync p99 under 10ms. At 4.55ms mean the p99 was 16-32ms, and
+# k3s exited whenever kube-controller-manager, kube-scheduler or the cloud
+# controller manager lost their 5s leader-election lease — 29 times in the
+# 15 days before this was applied, each one a full API outage.
+#
+# THE TRADE: with sync=disabled, ZFS acknowledges sync writes from memory. The
+# pool stays consistent no matter what, but a host kernel panic can lose the
+# last ~5s of etcd writes. A UPS covers the power-loss case; it does not cover
+# a panic. This is accepted deliberately as a bridge, not as a permanent state.
+#
+# THE FIX, AND HOW TO REVERT
+# The correct solution is a SLOG with power-loss protection, which moves ZIL
+# commits off the pool vdev and gives back full durability. An Intel Optane
+# P1600X 58GB (~$30-50) is the usual choice: ~10us sync latency, real PLP, and
+# it is non-destructive and removable. A consumer NVMe with DRAM is NOT a
+# substitute — DRAM speeds up mapping tables, only PLP makes fsync fast.
+#
+# Once a SLOG is installed on the host:
+#
+#     zpool add vm-pool log /dev/disk/by-id/<slog-device>
+#
+# then set `value: standard` below and re-run `zfs-tuning.yml`. Re-measure to
+# confirm fsync stayed low before considering it done; expect roughly 1ms,
+# since 0.572ms is this VM's floor (virtio round-trip + cache=none O_DIRECT
+# write + a 16K volblocksize read-modify-write).
+#
+# NOTE: terraform owns these zvols (terraform/modules/vm/main.tf). Rebuilding
+# VM 200 creates a fresh zvol that inherits the pool default (sync=standard),
+# so re-run this playbook after any VM rebuild.
+zfs_tuning_properties:
+  - dataset: vm-pool/vm-200-disk-0
+    property: sync
+    value: disabled

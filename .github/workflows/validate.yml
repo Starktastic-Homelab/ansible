@@ -90,7 +90,7 @@ jobs:
           OUTPUT=$(ansible-playbook -i inventory/proxmox.yml \
             --vault-password-file .vault_pass \
             --private-key private_key.pem \
-            --syntax-check k3s.yml ser2net.yml 2>&1)
+            --syntax-check k3s.yml ser2net.yml zfs-tuning.yml 2>&1)
           EXIT_CODE=$?
           set -e
 

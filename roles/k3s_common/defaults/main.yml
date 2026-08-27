@@ -9,3 +9,33 @@ k3s_common_node_resolv_conf: /run/systemd/resolve/resolv.conf
 # never do, and inheriting it makes every lookup of a name with fewer than 5
 # dots try <name>.mgmt.arpa against AdGuard first.
 k3s_common_resolv_conf: /etc/k3s-resolv.conf
+
+# Leader election tuning for the control-plane controllers k3s runs in-process.
+#
+# etcd on this hardware stalls: the master's disk averages ~7.4ms per write and
+# peaks near 15ms, against the <10ms etcd wants, which produced 1680
+# "waiting for ReadIndex response took too long" warnings in a single day.
+# A stall long enough to outlast the stock 10s renew deadline makes
+# kube-cloud-controller-manager log "leaderelection lost" and exit, and because
+# k3s hosts it in the server process, the entire k3s server exits 1 with it.
+# systemd then restarts everything. That happened 60 times in 24h (61
+# "leaderelection lost" events), and each one takes the apiserver away long
+# enough to kill every component that depends on it: kube-vip, kube-state-
+# metrics, nfs-provisioner, intel-device-plugins and cert-manager were all
+# restarting in lockstep with it.
+#
+# 45s of renew deadline outlasts the stalls. The cost is that a genuinely dead
+# control-plane node holds these leases up to 60s before another master can
+# take over, which is free on a single-master cluster.
+#
+# Applied to all three in-process controllers, not just the one that logged the
+# fatal: cloud-controller-manager lost its lease 77 times in a day,
+# kube-controller-manager 51 and kube-scheduler 41, and they share the process
+# they would take down with them.
+#
+# ponytail: this treats the stall, not the disk. Faster storage for the master
+# is the real fix; until then the control plane should bend rather than exit.
+k3s_common_leader_elect_args:
+  - leader-elect-lease-duration=60s
+  - leader-elect-renew-deadline=45s
+  - leader-elect-retry-period=10s

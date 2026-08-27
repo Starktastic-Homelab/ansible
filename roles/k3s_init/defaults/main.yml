@@ -4,9 +4,26 @@
 k3s_init_kube_vip_version: "v1.0.4"
 
 # Kube-VIP leader election lease tuning (control plane DaemonSet)
-k3s_init_kube_vip_lease_duration: 30
-k3s_init_kube_vip_lease_renew_duration: 20
-k3s_init_kube_vip_lease_retry: 5
+#
+# kube-vip exits when it loses the leader lease, so any lease renewal that
+# outlasts the renew deadline costs a VIP flap and a restart. The apiserver is
+# fast at rest (leases PUT p99 ~25ms, stable over 48h) but a GitOps sync that
+# rewrites many pod templates bursts it to ~4.8s p99 with tail requests hitting
+# the 10s apiserver timeout. At 20s the renew deadline was losing that race on
+# roughly every sync: 69 restarts in 4 days.
+#
+# 45s of renewal covers a burst plus retries. The cost is that a genuine
+# control-plane failure takes up to lease_duration (60s) to move the VIP
+# instead of 30s, which is a fine trade for a homelab that currently has one
+# master and therefore nowhere to fail over to.
+#
+# ponytail: leader election is pointless with a single master and dropping it
+# would end the flapping outright, but the Proxmox inventory builds `masters`
+# from VM tags, so a second master can appear without touching this file and
+# two nodes ARPing the same VIP is a much worse failure than a slow failover.
+k3s_init_kube_vip_lease_duration: 60
+k3s_init_kube_vip_lease_renew_duration: 45
+k3s_init_kube_vip_lease_retry: 10
 
 # Staging directory for kube-vip manifests — intentionally outside the k3s
 # auto-deploy directory (/var/lib/rancher/k3s/server/manifests/) so the addon

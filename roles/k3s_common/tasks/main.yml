@@ -61,12 +61,26 @@
     mode: "0644"
   notify: Restart k3s
 
-- name: Point kubelet at the pod-safe resolver
+- name: Write the K3s node config
   ansible.builtin.copy:
     content: |
       ---
       kubelet-arg:
         - "resolv-conf={{ k3s_common_resolv_conf }}"
+      {% if 'masters' in group_names %}
+      kube-controller-manager-arg:
+      {% for arg in k3s_common_leader_elect_args %}
+        - "{{ arg }}"
+      {% endfor %}
+      kube-cloud-controller-manager-arg:
+      {% for arg in k3s_common_leader_elect_args %}
+        - "{{ arg }}"
+      {% endfor %}
+      kube-scheduler-arg:
+      {% for arg in k3s_common_leader_elect_args %}
+        - "{{ arg }}"
+      {% endfor %}
+      {% endif %}
     dest: /etc/rancher/k3s/config.yaml
     owner: root
     group: root

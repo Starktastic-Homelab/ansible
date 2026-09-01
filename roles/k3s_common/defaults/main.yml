@@ -35,7 +35,11 @@ k3s_common_resolv_conf: /etc/k3s-resolv.conf
 #
 # ponytail: this treats the stall, not the disk. Faster storage for the master
 # is the real fix; until then the control plane should bend rather than exit.
+k3s_common_leader_elect_lease_duration: 60s
+k3s_common_leader_elect_renew_deadline: 45s
+k3s_common_leader_elect_retry_period: 10s
+
 k3s_common_leader_elect_args:
-  - leader-elect-lease-duration=60s
-  - leader-elect-renew-deadline=45s
-  - leader-elect-retry-period=10s
+  - leader-elect-lease-duration={{ k3s_common_leader_elect_lease_duration }}
+  - leader-elect-renew-deadline={{ k3s_common_leader_elect_renew_deadline }}
+  - leader-elect-retry-period={{ k3s_common_leader_elect_retry_period }}

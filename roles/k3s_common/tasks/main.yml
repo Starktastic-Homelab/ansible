@@ -87,6 +87,19 @@
     mode: "0644"
   notify: Restart k3s
 
+- name: Configure K3s internal leader election
+  ansible.builtin.copy:
+    content: |
+      CATTLE_ELECTION_LEASE_DURATION={{ k3s_common_leader_elect_lease_duration }}
+      CATTLE_ELECTION_RENEW_DEADLINE={{ k3s_common_leader_elect_renew_deadline }}
+      CATTLE_ELECTION_RETRY_PERIOD={{ k3s_common_leader_elect_retry_period }}
+    dest: /etc/default/k3s
+    owner: root
+    group: root
+    mode: "0644"
+  when: "'masters' in group_names"
+  notify: Restart k3s
+
 - name: Check if K3s is already installed
   ansible.builtin.stat:
     path: /usr/local/bin/k3s

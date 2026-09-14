@@ -29,6 +29,15 @@
       tags:
         - always
 
+    - name: Wait for the pinned canary SSH connection
+      ansible.builtin.wait_for_connection:
+        connect_timeout: 5
+        sleep: 5
+        timeout: 300
+      check_mode: false
+      tags:
+        - always
+
     - name: Read the actual VM hostname without privilege escalation
       ansible.builtin.command:
         argv:

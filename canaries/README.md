@@ -28,6 +28,12 @@ sessions exist. An unchanged IQN does not restart `iscsid` or log sessions out.
 Choose a unique IQN **once per logical node**, persist it in the fixture, and
 reuse it when recreating that node; never bake it into a shared image.
 
+After controller-side validation, the play waits up to 300 seconds for the
+actual Ansible SSH/Python connection before reading the hostname or escalating
+privileges. Each connection attempt is bounded to 5 seconds, with 5 seconds
+between attempts. The caller's pinned host key and strict SSH options remain
+required; a guest boot-completion marker alone is not transport readiness.
+
 ## Explicit caller contract
 
 Create a canonical absolute state directory, owned by the invoking user with

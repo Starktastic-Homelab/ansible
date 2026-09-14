@@ -108,6 +108,25 @@ class CanaryTests(unittest.TestCase):
         registry = next(t for t in common if "ansible.builtin.template" in t)
         self.assertEqual(registry["when"], "k3s_common_registry_auth_enabled | bool")
 
+    def test_connection_readiness_is_bounded_after_guards_before_bootstrap(self):
+        tasks = self.play["pre_tasks"]
+        waits = [(index, task) for index, task in enumerate(tasks)
+                 if "ansible.builtin.wait_for_connection" in task]
+        self.assertEqual(len(waits), 1, "A boot marker is not an end-to-end SSH readiness check")
+        index, wait = waits[0]
+        self.assertEqual(wait["ansible.builtin.wait_for_connection"],
+                         {"connect_timeout": 5, "sleep": 5, "timeout": 300})
+        self.assertIs(wait.get("become", self.play["become"]), False)
+        self.assertIs(wait["check_mode"], False)
+        self.assertIn("always", wait["tags"])
+        self.assertLess(
+            next(i for i, task in enumerate(tasks)
+                 if task.get("ansible.builtin.import_tasks") == "tasks/preflight.yml"),
+            index,
+        )
+        self.assertLess(index, next(i for i, task in enumerate(tasks)
+                                   if task["name"] == "Read the actual VM hostname without privilege escalation"))
+
     def test_configuration_disables_implicit_inventory_and_vault_loading(self):
         config = configparser.ConfigParser()
         config.read(CANARIES / "ansible.cfg")

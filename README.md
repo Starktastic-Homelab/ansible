@@ -289,6 +289,7 @@ On a fresh cluster where no NFS backup exists yet, the restore step **gracefully
 |----------|--------|---------|
 | `i915-sriov.yml` | Proxmox host | Install/upgrade Intel SR-IOV GPU driver |
 | `ser2net.yml` | Proxmox host | Configure TCP bridge for USB Zigbee dongle (port 3333) |
+| [`canaries/iscsi-rebuild.yml`](canaries/README.md) | One disposable canary VM | Isolated K3s/iSCSI rebuild preparation; no production inventory, VIP or bootstrap |
 
 ---
 

@@ -1,0 +1,55 @@
+---
+- name: Read only this canary cluster's new kubeconfig
+  ansible.builtin.slurp:
+    src: /etc/rancher/k3s/k3s.yaml
+  register: canary_kubeconfig_slurp
+  no_log: true
+
+- name: Verify the fetched kubeconfig has only the local K3s endpoint
+  ansible.builtin.assert:
+    that:
+      - (canary_kubeconfig_slurp.content | b64decode | from_yaml).clusters | length == 1
+      - >-
+        (canary_kubeconfig_slurp.content | b64decode | from_yaml).clusters[0].cluster.server == 'https://127.0.0.1:6443'
+    fail_msg: Refusing to export an unexpected kubeconfig instead of the new single-node canary cluster.
+  no_log: true
+
+- name: Write the new canary kubeconfig only to its private state directory
+  ansible.builtin.copy:
+    content: >-
+      {{ canary_kubeconfig_slurp.content | b64decode
+         | replace('https://127.0.0.1:6443', 'https://' ~ ansible_host ~ ':6443') }}
+    dest: "{{ canary_state_dir }}/kubeconfig"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  no_log: true
+  diff: false
+
+- name: Read the disposable VM machine ID
+  ansible.builtin.slurp:
+    src: /etc/machine-id
+  register: canary_machine_id
+
+- name: Read the disposable VM boot ID
+  ansible.builtin.slurp:
+    src: /proc/sys/kernel/random/boot_id
+  register: canary_boot_id
+
+- name: Validate the public disposable VM identities
+  ansible.builtin.assert:
+    that:
+      - canary_machine_id.content | b64decode | trim is match('^[0-9a-f]{32}$')
+      - canary_boot_id.content | b64decode | trim is match('^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$')
+    fail_msg: The disposable VM did not provide valid machine and boot IDs for the rebuild proof.
+
+- name: Record the public disposable VM identities
+  ansible.builtin.copy:
+    content: |
+      {{ {'fixture_id': canary_fixture_id, 'node_name': canary_node_name,
+          'machine_id': canary_machine_id.content | b64decode | trim,
+          'boot_id': canary_boot_id.content | b64decode | trim} | to_nice_json }}
+    dest: "{{ canary_state_dir }}/node-identity.json"
+    mode: "0600"
+  delegate_to: localhost
+  become: false

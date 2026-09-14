@@ -1,0 +1,104 @@
+---
+- name: Reject an empty or non-isolated inventory before remote host selection
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Require exactly one disposable target even when the group is empty
+      ansible.builtin.assert:
+        that:
+          - groups.get('iscsi_canary', []) | length == 1
+          - groups.get('all', []) | sort == groups['iscsi_canary'] | sort
+        fail_msg: Pass one explicit synthetic inventory containing exactly one iscsi_canary host and no other nodes.
+      tags:
+        - always
+
+- name: Initialize only the disposable iSCSI rebuild canary
+  hosts: iscsi_canary
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    vip_address: "{{ ansible_host }}"
+    k3s_common_registry_auth_enabled: false
+
+  pre_tasks:
+    - name: Validate the isolated caller and output directory
+      ansible.builtin.import_tasks: tasks/preflight.yml
+      tags:
+        - always
+
+    - name: Read the actual VM hostname without privilege escalation
+      ansible.builtin.command:
+        argv:
+          - hostname
+      register: canary_actual_hostname
+      changed_when: false
+      check_mode: false
+      tags:
+        - always
+
+    - name: Verify disposable VM hostname
+      ansible.builtin.assert:
+        that:
+          - canary_actual_hostname.stdout == canary_node_name
+          - canary_actual_hostname.stdout.startswith('iscsi-rebuild-canary-')
+        fail_msg: Refusing to modify a VM whose actual hostname is not this disposable canary.
+      tags:
+        - always
+
+  tasks:
+    - name: Prepare only the verified canary VM
+      become: true
+      block:
+        - name: Prepare the logical canary iSCSI initiator
+          ansible.builtin.import_tasks: tasks/iscsi.yml
+
+        - name: Create the K3s config drop-in directory
+          ansible.builtin.file:
+            path: /etc/rancher/k3s/config.yaml.d
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: Configure isolated canary cluster networks
+          ansible.builtin.copy:
+            content: |
+              ---
+              cluster-cidr: 10.242.0.0/16
+              service-cidr: 10.243.0.0/16
+              cluster-dns: 10.243.0.10
+            dest: /etc/rancher/k3s/config.yaml.d/10-iscsi-canary.yaml
+            owner: root
+            group: root
+            mode: "0644"
+          notify: Restart k3s
+
+        # This entry still runs the k3s_common dependency, never the init role's
+        # kube-vip or controller kubeconfig tasks.
+        - name: Reuse common preparation and only K3s init installation
+          ansible.builtin.import_role:
+            name: k3s_init
+            tasks_from: install
+
+        - name: Apply any pending canary K3s configuration restart
+          ansible.builtin.meta: flush_handlers
+
+        - name: Read the installed canary K3s version
+          ansible.builtin.command:
+            argv:
+              - /usr/local/bin/k3s
+              - --version
+          register: canary_installed_k3s
+          changed_when: false
+
+        - name: Require the explicitly pinned canary K3s version
+          ansible.builtin.assert:
+            that:
+              - canary_installed_k3s.stdout.startswith('k3s version ' ~ k3s_version ~ ' ')
+            fail_msg: The canary must use v1.36.4+k3s1; do not reuse an unrelated existing K3s installation.
+
+        - name: Export only the new canary credentials and VM identities
+          ansible.builtin.import_tasks: tasks/export.yml

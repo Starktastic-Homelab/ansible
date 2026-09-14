@@ -1,0 +1,59 @@
+---
+- name: Install the iSCSI initiator on the disposable VM
+  ansible.builtin.apt:
+    name: open-iscsi
+    state: present
+    update_cache: true
+
+- name: Inspect the current initiator identity file
+  ansible.builtin.stat:
+    path: /etc/iscsi/initiatorname.iscsi
+    get_checksum: false
+  register: canary_initiator_stat
+
+- name: Read the current initiator identity if present
+  ansible.builtin.slurp:
+    src: /etc/iscsi/initiatorname.iscsi
+  register: canary_initiator_file
+  when: canary_initiator_stat.stat.exists
+
+- name: Extract the existing initiator identity
+  ansible.builtin.set_fact:
+    canary_current_iqn: >-
+      {{ canary_initiator_file.content | default('') | b64decode
+         | regex_findall('(?m)^InitiatorName=([^\r\n]+)')
+         | map('trim') | join('\n') }}
+
+- name: Check for existing iSCSI sessions without logging out
+  ansible.builtin.command:
+    argv:
+      - iscsiadm
+      - --mode
+      - session
+  register: canary_iscsi_sessions
+  changed_when: false
+  failed_when: canary_iscsi_sessions.rc not in [0, 21]
+  check_mode: false
+
+- name: Refuse to change an active initiator identity
+  ansible.builtin.assert:
+    that:
+      - canary_current_iqn == canary_iscsi_iqn or canary_iscsi_sessions.rc == 21
+    fail_msg: >-
+      Active iSCSI sessions exist under a different or unknown IQN. Refusing to change identity or stop sessions;
+      recreate a clean disposable VM instead.
+
+- name: Set the caller-supplied stable logical-node initiator IQN
+  ansible.builtin.copy:
+    content: "InitiatorName={{ canary_iscsi_iqn }}\n"
+    dest: /etc/iscsi/initiatorname.iscsi
+    owner: root
+    group: root
+    mode: "0600"
+  when: canary_current_iqn != canary_iscsi_iqn
+
+- name: Enable iscsid and reload only a safely changed identity
+  ansible.builtin.systemd_service:
+    name: iscsid
+    enabled: true
+    state: "{{ 'restarted' if canary_current_iqn != canary_iscsi_iqn else 'started' }}"

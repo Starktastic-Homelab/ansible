@@ -26,6 +26,7 @@
     owner: root
     group: root
     mode: "0600"
+  when: k3s_common_registry_auth_enabled | bool
 
 # ponytail: copy the node's own resolver and drop its "search" line -- that is
 # the whole fix, and it hardcodes no address. Terraform sets the nameserver via

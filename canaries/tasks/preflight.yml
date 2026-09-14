@@ -1,0 +1,121 @@
+---
+- name: Require a complete isolated inventory and configuration
+  ansible.builtin.assert:
+    that:
+      - groups.get('iscsi_canary', []) | length == 1
+      - groups.get('all', []) | sort == groups['iscsi_canary'] | sort
+      - groups.get('masters', []) | sort == groups['iscsi_canary'] | sort
+      - ansible_play_hosts_all | length == 1
+      - ansible_inventory_sources | length == 1
+      - ansible_run_tags | list == ['all']
+      - ansible_skip_tags | length == 0
+      - lookup('ansible.builtin.config', 'VARIABLE_PLUGINS_ENABLED') | reject('equalto', '') | list | length == 0
+      - lookup('ansible.builtin.config', 'DEFAULT_VAULT_PASSWORD_FILE') in [none, '']
+      - lookup('ansible.builtin.config', 'DEFAULT_VAULT_IDENTITY_LIST') | length == 0
+    fail_msg: >-
+      Use canaries/ansible.cfg, one explicit synthetic inventory containing only the iscsi_canary node (also in
+      masters), and the complete playbook without tag selection or vault inputs.
+
+- name: Require explicit canary input types
+  ansible.builtin.assert:
+    that:
+      - canary_fixture_id is defined and canary_fixture_id is string
+      - canary_node_name is defined and canary_node_name is string
+      - canary_iscsi_iqn is defined and canary_iscsi_iqn is string
+      - canary_state_dir is defined and canary_state_dir is string
+      - k3s_version is defined and k3s_version is string
+      - flannel_iface is defined and flannel_iface is string
+      - ansible_host is defined and ansible_host is string
+      - ansible_user is defined and ansible_user is string and ansible_user | length > 0
+      - >-
+        ansible_private_key_file is defined and ansible_private_key_file is string and ansible_private_key_file | length
+        > 0
+    fail_msg: All canary inputs must be supplied explicitly by the isolated fixture runner.
+
+- name: Validate the logical canary identity and network inputs
+  ansible.builtin.assert:
+    that:
+      - canary_fixture_id is match('^[a-z0-9]([a-z0-9-]*[a-z0-9])?\Z')
+      - canary_node_name == 'iscsi-rebuild-canary-' ~ canary_fixture_id
+      - canary_node_name | length <= 63
+      - canary_iscsi_iqn is match('^iqn\.[0-9]{4}-(0[1-9]|1[0-2])\.[a-z0-9]+([.-][a-z0-9]+)*:[a-z0-9:._-]+\Z')
+      - canary_iscsi_iqn | length <= 223
+      - k3s_version == 'v1.36.4+k3s1'
+      - flannel_iface is match('^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,14}\Z')
+      - ansible_host is match('^(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,2})){3}\Z')
+      - ansible_host.split('.') | map('int') | max <= 255
+      - ansible_host.split('.')[0] | int not in [0, 127]
+      - vip_address == ansible_host
+      - not (k3s_common_registry_auth_enabled | bool)
+    fail_msg:
+      Invalid canary identity, IQN, pinned version or IPv4/interface input; production registry auth is forbidden.
+
+- name: Reject ambiguous or production output destinations
+  ansible.builtin.assert:
+    that:
+      - canary_state_dir.startswith('/')
+      - canary_state_dir is not search('[\x00-\x1f\x7f]')
+      - canary_state_dir | normpath == canary_state_dir
+      - canary_state_dir | realpath == canary_state_dir
+      - canary_state_dir != '/'
+      - canary_state_dir != lookup('ansible.builtin.env', 'HOME') | realpath
+      - "'.kube' not in canary_state_dir.split('/')"
+      - >-
+        (canary_state_dir ~ '/kubeconfig') not in (lookup('ansible.builtin.env', 'KUBECONFIG').split(':')
+         | reject('equalto', '') | map('realpath') | list)
+    fail_msg: The state directory must be canonical, dedicated and outside production or active kubeconfig locations.
+
+- name: Read the unprivileged controller user ID
+  ansible.builtin.command:
+    argv:
+      - id
+      - -u
+  delegate_to: localhost
+  become: false
+  register: canary_controller_uid
+  changed_when: false
+  check_mode: false
+
+- name: Inspect the caller-reserved private state directory
+  ansible.builtin.stat:
+    path: "{{ canary_state_dir }}"
+    follow: false
+    get_checksum: false
+    get_mime: false
+  delegate_to: localhost
+  become: false
+  register: canary_state_directory
+
+- name: Require a private state directory owned by the controller user
+  ansible.builtin.assert:
+    that:
+      - canary_state_directory.stat.exists
+      - canary_state_directory.stat.isdir
+      - not canary_state_directory.stat.islnk
+      - canary_state_directory.stat.mode == '0700'
+      - canary_state_directory.stat.uid == canary_controller_uid.stdout | int
+    fail_msg: The caller must create its dedicated state directory with mode 0700 and the current user's ownership.
+
+- name: Inspect output paths without reading existing credentials
+  ansible.builtin.stat:
+    path: "{{ canary_state_dir }}/{{ item }}"
+    follow: false
+    get_checksum: false
+    get_mime: false
+  loop:
+    - kubeconfig
+    - node-identity.json
+  delegate_to: localhost
+  become: false
+  register: canary_output_paths
+
+- name: Refuse linked or foreign output files
+  ansible.builtin.assert:
+    that:
+      - >-
+        not item.stat.exists or (item.stat.isreg and not item.stat.islnk and item.stat.nlink == 1
+         and item.stat.uid == canary_controller_uid.stdout | int)
+    fail_msg: Canary output paths must be absent or ordinary files owned by this user, never symlinks or hard links.
+  loop: "{{ canary_output_paths.results }}"
+  loop_control:
+    label: "{{ item.item }}"

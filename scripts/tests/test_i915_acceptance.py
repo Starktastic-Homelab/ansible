@@ -232,6 +232,12 @@ class TestAcceptance(unittest.TestCase):
 
 
 class TestOrchestration(unittest.TestCase):
+    def test_installation_cache_does_not_walk_private_baseline_artifacts(self):
+        workflow = (SCRIPTS.parent / ".github/workflows/i915-sriov-upgrade.yml").read_text()
+        cache_key = next(line.strip() for line in workflow.splitlines() if line.strip().startswith("key:"))
+        self.assertIn("hashFiles('requirements.txt')", cache_key)
+        self.assertNotIn("**", cache_key)
+
     def test_delegated_machine_reads_do_not_inherit_controller_transport(self):
         playbook = (SCRIPTS.parent / "i915-acceptance.yml").read_text()
         self.assertNotRegex(

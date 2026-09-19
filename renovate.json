@@ -13,6 +13,12 @@
       "matchManagers": ["github-actions"],
       "matchDepNames": ["helm"],
       "enabled": false
+    },
+    {
+      "description": "Exclude the host GPU regression under investigation; review later driver updates manually",
+      "matchPackageNames": ["strongtz/i915-sriov-dkms"],
+      "allowedVersions": "!/^v?2026\\.09\\.16$/",
+      "automerge": false
     }
   ],
   "customManagers": [

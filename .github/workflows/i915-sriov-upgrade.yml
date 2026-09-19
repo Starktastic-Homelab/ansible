@@ -18,7 +18,6 @@ jobs:
   upgrade-driver:
     name: Upgrade i915 SR-IOV on Proxmox
     runs-on: self-hosted
-    continue-on-error: true
     container:
       image: python:trixie
 

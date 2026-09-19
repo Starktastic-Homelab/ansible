@@ -231,6 +231,15 @@ class TestAcceptance(unittest.TestCase):
             self.assertFalse((root / "acceptance.json").exists())
 
 
+class TestOrchestration(unittest.TestCase):
+    def test_delegated_machine_reads_do_not_inherit_controller_transport(self):
+        playbook = (SCRIPTS.parent / "i915-acceptance.yml").read_text()
+        self.assertNotRegex(
+            playbook, r"(?m)^  connection:\s+local(?:\s|$)",
+            "Play-level local transport also affects delegated hosts; use implicit localhost instead.",
+        )
+
+
 class TestGpuProbeFailure(unittest.TestCase):
     def setUp(self):
         self.script = SCRIPTS / "i915_gpu_probe.sh"

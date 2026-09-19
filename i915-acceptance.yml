@@ -1,7 +1,6 @@
 ---
 - name: Capture or validate the installed i915 stack without changing drivers
   hosts: localhost
-  connection: local
   gather_facts: false
   become: false
   vars:

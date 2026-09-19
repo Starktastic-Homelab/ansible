@@ -82,11 +82,10 @@
       Target kernel: {{ i915_sriov_target_kernel }}
       Target kernel version: {{ i915_sriov_target_kernel_version }}
 
-# Compatibility comes from the upstream release notes of the exact tag, not
-# from a range configured in this repo. Runs before headers, package install
-# and kernel pinning, so an unsupported (or unverifiable) combination aborts
-# while the host is still in its current working state.
-- name: Check the driver release against the target kernel (upstream metadata)
+# Reject known runtime regressions and unsupported or unverifiable metadata
+# before headers, package installation or kernel pinning. This is not a live
+# hardware test; post-reboot acceptance remains a separate operation.
+- name: Check driver metadata and known-bad policy before host changes
   ansible.builtin.script:
     cmd: >-
       {{ playbook_dir }}/scripts/i915_compat.py --host-version {{ i915_sriov_version | quote }} --host-kernel {{
@@ -95,18 +94,19 @@
   changed_when: false
   failed_when: false
 
-- name: Check kernel compatibility
+- name: Require the driver metadata and policy gate to pass
   ansible.builtin.assert:
     that:
       - i915_sriov_compat.rc == 0
     fail_msg: |
       {{ i915_sriov_compat.stdout | default('') }}
       {{ i915_sriov_compat.stderr | default('') }}
-      i915-sriov-dkms {{ i915_sriov_version }} is not confirmed compatible with kernel
+      i915-sriov-dkms {{ i915_sriov_version }} did not pass the metadata/policy gate for kernel
       {{ i915_sriov_target_kernel }} (checker exit {{ i915_sriov_compat.rc }};
-      1 = upstream says unsupported, 2 = compatibility could not be established).
+      1 = unsupported or blocked by runtime-regression policy, 2 = metadata could not be established).
       Nothing has been changed on this host. Pick a driver release whose upstream
-      release notes cover this kernel series, or adjust i915_sriov_pinned_kernel.
+      release notes cover this kernel series and that is not blocked by runtime-regression policy.
+      Passing this gate does not replace post-reboot hardware acceptance.
     success_msg: "{{ i915_sriov_compat.stdout | default('') }}"
 
 - name: Install kernel headers for target kernel

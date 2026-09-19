@@ -1,32 +1,41 @@
-name: i915 SR-IOV Compatibility
+name: i915 SR-IOV Validation
 
 # Renovate may propose any newer i915-sriov-dkms release; "newer" is not the
 # same as "safe for this host". This check validates, against upstream data
-# only:
+# plus known-bad runtime exclusions:
 #   1. the host release supports the pinned Proxmox kernel (this repo)
 #   2. the guest release supports the guest kernel series (packer repo, main)
 #   3. the two releases can negotiate a common PF/VF IOV ABI
 # Anything unknown (missing tag, unparsable release notes, network failure)
-# fails closed.
+# fails closed. Passing does not test or approve running hardware.
 
 on:
   pull_request:
     branches:
       - main
-    paths:
-      - 'group_vars/proxmox_hosts/i915_sriov.yml'
-      - 'roles/i915_sriov/**'
-      - 'scripts/i915_compat.py'
-      - 'scripts/tests/test_i915_compat.py'
-      - '.github/workflows/i915-compat.yml'
+    # Required status checks must report on every PR, including non-driver changes.
   workflow_dispatch:
+    inputs:
+      runtime_mode:
+        description: 'Optional installed-hardware validation; never installs a driver or reboots'
+        required: true
+        type: choice
+        options:
+          - none
+          - current-stack
+          - post-reboot
+        default: none
+      installation_run_id:
+        description: 'Successful installation run ID, required for post-reboot mode'
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   compatibility:
-    name: Validate host/guest driver compatibility
+    name: Validate i915 metadata and policy
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -35,8 +44,11 @@ jobs:
       - name: Checkout PR
         uses: actions/checkout@v7.0.1
 
-      - name: Test the compatibility tool
+      - name: Test the metadata and exclusion gate
         run: python3 scripts/tests/test_i915_compat.py
+
+      - name: Test runtime-evidence and GPU-failure guards without hardware
+        run: python3 scripts/tests/test_i915_acceptance.py
 
       - name: Read host configuration from this PR
         id: host
@@ -67,7 +79,7 @@ jobs:
           echo "kernel=$KERNEL" >> "$GITHUB_OUTPUT"
           echo "Guest: driver $DRIVER on kernel series $KERNEL"
 
-      - name: Check compatibility against upstream
+      - name: Check upstream metadata and known-bad policy
         id: check
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -92,8 +104,21 @@ jobs:
           header: i915-driver-check
           path: report.md
 
-      - name: Fail if the combination is not proven compatible
+      - name: Fail if metadata or known-bad policy rejects the combination
         if: steps.check.outcome == 'failure'
         run: |
-          echo "::error::i915-sriov-dkms host/guest combination is not proven compatible — see the PR comment"
+          echo "::error::i915-sriov-dkms metadata/policy gate failed — see the PR comment. Hardware acceptance is separate."
           exit 1
+
+  hardware:
+    name: Explicit installed-hardware validation
+    if: github.event_name == 'workflow_dispatch' && inputs.runtime_mode != 'none'
+    needs: compatibility
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/i915-acceptance.yml
+    with:
+      mode: ${{ inputs.runtime_mode }}
+      installation_run_id: ${{ inputs.installation_run_id }}
+    secrets: inherit

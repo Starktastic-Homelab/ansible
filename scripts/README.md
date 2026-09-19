@@ -5,7 +5,9 @@ Operator scripts for cluster access and disaster recovery.
 | Script                    | Purpose                                                                                                                                    |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `get-kubeconfig.sh`       | Fetch the kubeconfig from a control-plane node over SSH and patch the server IP.                                                           |
-| `i915_compat.py`          | Validate an i915-sriov-dkms host/guest combination (driver ↔ kernel ranges + PF/VF IOV ABI) against upstream data. Fails closed. Shared verbatim with the packer repo; tests in `tests/`. |
+| `i915_compat.py`          | Gate upstream kernel/IOV metadata and local known-bad policy; never claim live hardware acceptance. Fails closed. Shared verbatim with the packer repo; tests in `tests/`. |
+| `i915_acceptance.py`      | Validate nonsecret runtime/boot/probe evidence. Distinguishes current-stack diagnostics from post-reboot acceptance; never installs or reboots. |
+| `i915_gpu_probe.sh`       | Run bounded synthetic H.264, HEVC and HDR VA-API paths as a nonroot diagnostic workload, requiring real encoded frames. |
 | `backup-secrets.sh`       | Bundle the git-ignored crown-jewel secrets, encrypt with an age passphrase, write a timestamped archive to the NAS, prune to the newest N. |
 | `restore-secrets.sh`      | Decrypt and extract a secrets archive into a staging dir (never in-place).                                                                 |
 | `backup-secrets.manifest` | Paths (never contents) that `backup-secrets.sh` backs up.                                                                                  |

@@ -186,7 +186,7 @@ The cluster API is fronted by a **virtual IP (10.9.9.99)** managed by Kube-VIP r
 
 The `i915_sriov` role manages the full GPU driver lifecycle on the Proxmox host:
 
-- **Upstream compatibility validation** — before anything destructive, `scripts/i915_compat.py` checks the *exact* driver release against the target kernel using upstream release metadata; unknown or unsupported combinations abort the play with the host untouched
+- **Metadata and known-bad policy gate** — before anything destructive, `scripts/i915_compat.py` rejects reproduced runtime regressions and checks the exact release's declared kernel support; blocked, unknown or unsupported combinations abort with the host untouched. This does not test hardware
 - **DKMS driver** install/upgrade from GitHub releases
 - **Kernel pinning** — `i915_sriov_pinned_kernel` (e.g. `6.17.13-13-pve`) is the authoritative desired host kernel; the role builds and verifies the DKMS module for it *before* pinning it via `proxmox-boot-tool` and rebooting into it
 - **GRUB parameters**: `intel_iommu=on i915.enable_guc=3 i915.max_vfs=7 module_blacklist=xe`
@@ -214,29 +214,46 @@ from version ordering, equality or a curated allowlist:
 `scripts/i915_compat.py` (stdlib only, shared verbatim with the packer repo)
 implements this and **fails closed**: a missing tag, unparsable release notes,
 a missing ABI header or a network failure all exit non-zero instead of
-approving an unverified combination.
+passing an unverified metadata combination. The independent local exclusion
+for host release `2026.09.16` rejects the reproduced runtime regression even
+though its declared kernel/ABI metadata agrees. This is a small deny list of
+observed failures, not a host/guest compatibility allowlist.
 
 ```bash
 python3 scripts/i915_compat.py \
   --host-version 2026.09.14 --host-kernel 6.17.13-13-pve \
   --guest-version 2026.03.05.7 --guest-kernel 6.12
-# exit 0 = compatible · 1 = incompatible · 2 = cannot be established
+# exit 0 = metadata/policy passed, hardware NOT TESTED
+# exit 1 = unsupported or blocked · 2 = metadata cannot be established
 ```
 
 Renovate is free to propose newer host releases, but the `i915-compat`
 workflow re-runs the same check against the pinned kernel (and the guest state
-on the packer repo's `main`) and blocks the PR with a sticky report if the
-combination is not proven compatible. Moving the guest to a newer release line is a
+on the packer repo's `main`) and fails with a sticky report if metadata or
+known-bad policy rejects it. Every report explicitly says hardware acceptance
+was not tested. A green metadata check is not approval to call an upgrade
+operationally verified. Moving the guest to a newer release line is a
 packer-repo change; the host only needs a driver whose range covers
 `i915_sriov_pinned_kernel`.
 
+The required-check names are versioned in `.github/required-status-checks.json`.
+After the named checks exist and pass, an authorized administrator can apply
+that exact list without replacing other branch protections:
+
+```sh
+gh api --method PATCH \
+  repos/Starktastic-Homelab/ansible/branches/main/protection/required_status_checks \
+  --input .github/required-status-checks.json
+```
+
 #### Host-driver recovery and GPU acceptance
 
-The host pin `2026.09.14` is a controlled rollback candidate for the VA-API
-initialization failures observed on both workers after `2026.09.16`.
-Renovate excludes that suspect release and disables automerge for host-driver
-updates; later releases remain visible for manual review. Kernel/IOV
-compatibility alone does not prove usable hardware encoding.
+The host pin `2026.09.14` restored hardware encoding after the VA-API
+initialization failures observed on both workers with `2026.09.16`.
+Renovate excludes the bad release and disables automerge for host-driver
+updates; the checker also rejects it in CI and before direct Ansible
+installation. Later releases remain visible for manual review. Kernel/IOV
+metadata alone does not prove usable hardware encoding.
 
 **Merge only during an approved Proxmox maintenance window.** A push to
 `main` changing `group_vars/proxmox_hosts/i915_sriov.yml` automatically runs
@@ -285,6 +302,71 @@ mapping, and seeking in Jellyfin, and inspect the new worker boots for GuC
 CT errors. Direct play is not proof. If the rollback does not restore
 encoding, stop and investigate before another driver/kernel change or
 reboot. This recovery does not address the separate SQLite contention.
+
+#### Reproducible runtime acceptance
+
+`i915-acceptance.yml` reads the loaded kernel/module, boot ID and machine ID
+over the existing infrastructure inventory. It then checks that Kubernetes
+reports those same node identities and runs a short GPU Job on **every**
+inventory worker. The jobs use a pinned diagnostic FFmpeg image as UID 1000,
+request the existing `gpu.intel.com/i915` device-plugin resource, and mount no
+application volumes. They do not depend on Jellyfin or Immich deployments.
+
+Each worker must encode at least 30 frames through low-power H.264, low-power
+HEVC, and synthetic HEVC Main10/PQ hardware decoding plus VA-API tone mapping
+and hardware encoding. Exit zero without the required frame evidence is not
+acceptance. Temporary namespaces/jobs and private kubeconfigs are cleaned in
+nested `always` blocks; diagnostic artifacts contain no kubeconfig or SSH/Vault
+credentials.
+
+There are three explicit scopes:
+
+| Mode | Meaning |
+|------|---------|
+| `capture` | Save pre-change identities and the intended target; no GPU probes, installation or reboot. The guest fleet must match its declared target before changing the host. |
+| `current-stack` | Verify the declared target is actually loaded and run the GPU probes. Does **not** claim a reboot occurred or validate an uninstalled candidate. |
+| `post-reboot` | Require the successful installation run's saved baseline, unchanged machine identities, changed boot IDs on the host and all cluster nodes, the frozen target's loaded versions, and every GPU probe. |
+
+The installation workflow captures and uploads `i915-before` **before** changing
+the host. Its successful conclusion means installation/reboot scheduling only.
+The runner itself reboots with Proxmox, so runtime acceptance is a separate,
+explicitly invoked workflow after recovery, not a wait inside installation.
+
+Current-stack diagnostics can also be dispatched through the existing validation
+workflow:
+
+```sh
+gh workflow run i915-compat.yml --repo Starktastic-Homelab/ansible \
+  -f runtime_mode=current-stack
+```
+
+For post-upgrade acceptance, set `INSTALLATION_RUN_ID` to the successful
+`i915-sriov-upgrade.yml` run that saved the baseline:
+
+```sh
+gh workflow run i915-acceptance.yml --repo Starktastic-Homelab/ansible \
+  -f mode=post-reboot -f installation_run_id="$INSTALLATION_RUN_ID"
+```
+
+The workflow verifies the producer run and reuses its frozen target. An expired
+or missing baseline is a failure, not permission to assume fresh boots. A
+no-op installation that did not reboot can receive current-stack diagnostics,
+not post-reboot acceptance. If an emergency prevents baseline capture, use a
+separately approved recovery procedure and document that limitation rather than
+manufacturing before/after evidence.
+
+The diagnostic image is deliberately pinned independently of the application
+catalog. These synthetic probes test the hardware paths, not visual quality,
+application upgrades, seeking, or database/probe stability; retain the real
+application-level playback acceptance above.
+
+Offline guard tests, including stale boots, wrong loaded versions, missing
+workers, command failures and zero-frame false positives:
+
+```sh
+python3 scripts/tests/test_i915_compat.py
+python3 scripts/tests/test_i915_acceptance.py
+```
 
 ### Sealed Secrets Bootstrap
 
@@ -362,7 +444,7 @@ flowchart TD
     subgraph pr["PR Phase"]
         PR([Pull Request]) --> LINT[validate.yml\nansible-lint + syntax-check]
         PR --> FMT[format.yml\nPrettier formatting]
-        PR --> CMP{{i915-compat.yml\nHost ↔ guest driver compatibility}}
+        PR --> CMP{{i915-compat.yml\nMetadata and known-bad policy}}
     end
 
     subgraph special["Specialized"]

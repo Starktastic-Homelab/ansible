@@ -1,4 +1,4 @@
-name: Upgrade i915 SR-IOV Driver
+name: Install i915 SR-IOV Driver (Hardware Acceptance Separate)
 
 on:
   push:
@@ -10,16 +10,21 @@ on:
   workflow_dispatch:
     inputs:
       i915_sriov_version:
-        description: 'i915 SR-IOV driver version to install (e.g., 2026.02.04). Leave empty to use version from group_vars.'
+        description: 'i915 SR-IOV driver version to install (e.g., 2026.09.14). Leave empty to use version from group_vars.'
         required: false
         type: string
 
 jobs:
   upgrade-driver:
-    name: Upgrade i915 SR-IOV on Proxmox
+    name: Install i915 SR-IOV and schedule required reboot
     runs-on: self-hosted
     container:
       image: python:trixie
+    env:
+      PROXMOX_URL: ${{ secrets.PROXMOX_URL }}
+      PROXMOX_USER: ${{ secrets.PROXMOX_USER }}
+      PROXMOX_TOKEN_ID: ${{ secrets.PROXMOX_TOKEN_ID }}
+      PROXMOX_TOKEN_SECRET: ${{ secrets.PROXMOX_TOKEN_SECRET }}
 
     steps:
       - name: Checkout repository
@@ -34,24 +39,80 @@ jobs:
             ${{ runner.os }}-pip-
 
       - name: Install Ansible and requirements
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          ansible-galaxy collection install -r requirements.yml
 
       - name: Install sshpass for password auth
         run: apt-get update && apt-get install -y sshpass
 
-      - name: Create Ansible Vault password file
-        run: echo "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > .vault_pass
+      - name: Prepare private connection credentials
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+        run: |
+          umask 077
+          printf '%s\n' "$SSH_PRIVATE_KEY" > private_key.pem
+          printf '%s\n' "$ANSIBLE_VAULT_PASSWORD" > .vault_pass
 
       - name: Get version from group_vars
         id: get-version
         run: |
           VERSION=$(grep -oP 'i915_sriov_version:\s*"\K[0-9.]+' group_vars/proxmox_hosts/i915_sriov.yml)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Freeze the selected target and reject unsupported metadata
+        env:
+          TARGET_DRIVER: ${{ inputs.i915_sriov_version || steps.get-version.outputs.version }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/i915_acceptance.py target --host-version "$TARGET_DRIVER" --output target.json
+          python3 - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+          target = json.loads(Path("target.json").read_text())["i915_acceptance_expected"]
+          subprocess.run([
+              "python3", "scripts/i915_compat.py",
+              "--host-version", target["host_version"], "--host-kernel", target["host_kernel"],
+              "--guest-version", target["guest_version"], "--guest-kernel", target["guest_kernel_series"],
+          ], check=True)
+          PY
+
+      - name: Capture the actual pre-change machine identities
+        run: |
+          ansible-playbook -i inventory/hosts.yml -i inventory/proxmox.yml \
+            --vault-password-file .vault_pass --private-key private_key.pem \
+            -e @target.json -e i915_acceptance_mode=capture i915-acceptance.yml
+
+      - name: Preserve the baseline before any driver change or reboot
+        uses: actions/upload-artifact@v7
+        with:
+          name: i915-before
+          path: artifacts/i915/before.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Run i915 SR-IOV upgrade playbook
         run: |
-          VERSION="${{ inputs.i915_sriov_version || steps.get-version.outputs.version }}"
+          VERSION=$(python3 -c 'import json; print(json.load(open("target.json"))["i915_acceptance_expected"]["host_version"])')
           ansible-playbook -i inventory/hosts.yml \
             --vault-password-file .vault_pass \
             -e "i915_sriov_version=$VERSION" \
             i915-sriov.yml
+
+      - name: State the installation-only result
+        run: |
+          {
+            echo "## Installation completed; GPU hardware acceptance is pending"
+            echo
+            echo "This runner reboots with Proxmox. Installation and reboot scheduling do not prove the loaded driver or working GPU."
+            echo
+            echo "After recovery, run i915-acceptance.yml in post-reboot mode with installation_run_id=${GITHUB_RUN_ID}."
+            echo "The validator requires fresh host/node boots, exact loaded versions, and H.264/HEVC/HDR hardware probes on every worker."
+            echo "A no-op installation without a reboot can only receive current-stack diagnostics, not fresh-boot acceptance."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove private controller credentials
+        if: always()
+        run: rm -f .vault_pass private_key.pem target.json

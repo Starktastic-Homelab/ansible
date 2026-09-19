@@ -1,2 +1,6 @@
 .vault_pass
 __pycache__/
+private_key.pem
+target.json
+artifacts/i915/
+artifacts/deployment/

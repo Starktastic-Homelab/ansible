@@ -1,0 +1,379 @@
+---
+- name: Capture or validate the installed i915 stack without changing drivers
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    i915_acceptance_artifacts_dir: "{{ playbook_dir }}/artifacts/i915"
+    i915_acceptance_probe_image: "lscr.io/linuxserver/jellyfin:12.1ubu2604-ls50@sha256:51252e7a416e703cdc3cd91e8a54673a2430cc80409be8a38abe511411577b95"
+  tasks:
+    - name: Require an explicit validation mode and declared target
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - i915_acceptance_mode | default('') in ['capture', 'current-stack', 'post-reboot']
+          - i915_acceptance_expected is defined
+          - i915_acceptance_expected is mapping
+          - groups['proxmox_hosts'] | default([]) | length > 0
+          - groups['masters'] | default([]) | length > 0
+          - groups['workers'] | default([]) | length > 0
+          - i915_acceptance_mode != 'post-reboot' or i915_acceptance_baseline | default('') | length > 0
+        fail_msg:
+          "Supply target.json, the complete host/node inventory, and a deployment baseline for post-reboot mode."
+
+    - name: Build the expected machine inventory
+      ansible.builtin.set_fact:
+        i915_acceptance_inventory:
+          hosts: "{{ groups['proxmox_hosts'] }}"
+          masters: "{{ groups['masters'] }}"
+          workers: "{{ groups['workers'] }}"
+        i915_acceptance_machines: {}
+
+    - name: Read kernel and loaded module identities from the actual machines
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json, os, socket
+            from pathlib import Path
+            module = Path("/sys/module/i915/version")
+            print(json.dumps({
+                "node_name": socket.gethostname().split(".")[0],
+                "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+                "machine_id": Path("/etc/machine-id").read_text().strip(),
+                "kernel": os.uname().release,
+                "module": module.read_text().strip() if module.is_file() else "",
+            }))
+      delegate_to: "{{ item }}"
+      become: true
+      loop: "{{ groups['proxmox_hosts'] + groups['masters'] + groups['workers'] }}"
+      register: i915_acceptance_observations
+      changed_when: false
+
+    - name: Assemble selected runtime facts without inventory credentials
+      ansible.builtin.set_fact:
+        i915_acceptance_machines: "{{ i915_acceptance_machines | combine({item.item: item.stdout | from_json}) }}"
+      loop: "{{ i915_acceptance_observations.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Create the validation evidence directory
+      ansible.builtin.file:
+        path: "{{ i915_acceptance_artifacts_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Remove any previous acceptance verdict before evaluating this run
+      ansible.builtin.file:
+        path: "{{ i915_acceptance_artifacts_dir }}/acceptance.json"
+        state: absent
+
+    - name: Save the runtime snapshot
+      ansible.builtin.copy:
+        dest: "{{ i915_acceptance_artifacts_dir }}/runtime.json"
+        mode: "0600"
+        content: |
+          {{ {
+            'schema': 1,
+            'expected': i915_acceptance_expected,
+            'inventory': i915_acceptance_inventory,
+            'machines': i915_acceptance_machines
+          } | to_nice_json }}
+
+    - name: Validate and preserve the pre-change baseline
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/scripts/i915_acceptance.py"
+          - capture
+          - --snapshot
+          - "{{ i915_acceptance_artifacts_dir }}/runtime.json"
+          - --output
+          - "{{ i915_acceptance_artifacts_dir }}/before.json"
+      changed_when: false
+      when: i915_acceptance_mode == 'capture'
+
+    - name: Finish baseline capture without touching the GPU or cluster
+      ansible.builtin.meta: end_play
+      when: i915_acceptance_mode == 'capture'
+
+    - name: Build the acceptance command
+      ansible.builtin.set_fact:
+        i915_acceptance_args: >-
+          {{ ['--snapshot', i915_acceptance_artifacts_dir + '/runtime.json', '--mode', i915_acceptance_mode]
+             + (['--baseline', i915_acceptance_baseline] if i915_acceptance_mode == 'post-reboot' else []) }}
+
+    - name: Reject wrong loaded versions or stale boots before allocating GPU probes
+      ansible.builtin.command:
+        argv: "{{ ['python3', playbook_dir + '/scripts/i915_acceptance.py', 'preflight'] + i915_acceptance_args }}"
+      changed_when: false
+
+    - name: Run temporary GPU probes and always remove their resources
+      block:
+        - name: Read the control-plane kubeconfig without logging credentials
+          ansible.builtin.slurp:
+            src: /etc/rancher/k3s/k3s.yaml
+          delegate_to: "{{ groups['masters'][0] }}"
+          become: true
+          register: i915_acceptance_kubeconfig_raw
+          no_log: true
+
+        - name: Decode the private kubeconfig
+          ansible.builtin.set_fact:
+            i915_acceptance_kubeconfig: "{{ i915_acceptance_kubeconfig_raw.content | b64decode | from_yaml }}"
+          no_log: true
+
+        - name: Require the expected single K3s cluster entry
+          ansible.builtin.assert:
+            that: i915_acceptance_kubeconfig.clusters | length == 1
+          no_log: true
+
+        - name: Address the existing API VIP without changing the default kubeconfig
+          ansible.builtin.set_fact:
+            i915_acceptance_kubeconfig: >-
+              {{ i915_acceptance_kubeconfig | combine({'clusters': [
+                i915_acceptance_kubeconfig.clusters[0] | combine({'cluster':
+                  i915_acceptance_kubeconfig.clusters[0].cluster | combine({'server': 'https://' + vip_address +
+              ':6443'})
+                })
+              ]}) }}
+          no_log: true
+
+        - name: Allocate a private temporary kubeconfig outside published artifacts
+          ansible.builtin.tempfile:
+            state: file
+            prefix: i915-acceptance-
+            suffix: .kubeconfig
+          register: i915_acceptance_kubeconfig_file
+
+        - name: Write the temporary kubeconfig
+          ansible.builtin.copy:
+            dest: "{{ i915_acceptance_kubeconfig_file.path }}"
+            content: "{{ i915_acceptance_kubeconfig | to_nice_yaml }}"
+            mode: "0600"
+          no_log: true
+
+        - name: Wait for the original Kubernetes nodes to become Ready
+          kubernetes.core.k8s_info:
+            kubeconfig: "{{ i915_acceptance_kubeconfig_file.path }}"
+            api_version: v1
+            kind: Node
+            name: "{{ i915_acceptance_machines[item].node_name }}"
+            wait: true
+            wait_timeout: 180
+            wait_condition:
+              type: Ready
+              status: "True"
+          loop: "{{ groups['masters'] + groups['workers'] }}"
+          register: i915_acceptance_nodes
+
+        - name: Reject stale Ready information or a different node behind an inventory name
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - item.resources | length == 1
+              - item.resources[0].status.nodeInfo.bootID == i915_acceptance_machines[item.item].boot_id
+              - item.resources[0].status.nodeInfo.machineID == i915_acceptance_machines[item.item].machine_id
+              - item.resources[0].status.nodeInfo.kernelVersion == i915_acceptance_machines[item.item].kernel
+            fail_msg: "The Kubernetes node does not match the freshly read machine identity: {{ item.item }}"
+          loop: "{{ i915_acceptance_nodes.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+
+        - name: Create an isolated namespace owned by this validation run
+          kubernetes.core.k8s:
+            kubeconfig: "{{ i915_acceptance_kubeconfig_file.path }}"
+            state: present
+            generate_name: i915-validation-
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                labels:
+                  app.kubernetes.io/managed-by: i915-acceptance
+          register: i915_acceptance_namespace
+
+        - name: Record the owned namespace identity for cleanup auditing
+          ansible.builtin.copy:
+            dest: "{{ i915_acceptance_artifacts_dir }}/namespace.json"
+            mode: "0600"
+            content: >-
+              {{ {'name': i915_acceptance_namespace.result.metadata.name,
+                  'uid': i915_acceptance_namespace.result.metadata.uid} | to_nice_json }}
+
+        - name: Provide the versioned synthetic probe
+          kubernetes.core.k8s:
+            kubeconfig: "{{ i915_acceptance_kubeconfig_file.path }}"
+            state: present
+            definition:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: gpu-probe
+                namespace: "{{ i915_acceptance_namespace.result.metadata.name }}"
+              data:
+                i915_gpu_probe.sh: "{{ lookup('ansible.builtin.file', playbook_dir + '/scripts/i915_gpu_probe.sh') }}"
+
+        - name: Run one nonroot probe on every expected GPU worker
+          kubernetes.core.k8s:
+            kubeconfig: "{{ i915_acceptance_kubeconfig_file.path }}"
+            state: present
+            definition:
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                name: "gpu-{{ i915_acceptance_machines[item].node_name }}"
+                namespace: "{{ i915_acceptance_namespace.result.metadata.name }}"
+              spec:
+                backoffLimit: 0
+                activeDeadlineSeconds: 180
+                ttlSecondsAfterFinished: 600
+                template:
+                  metadata:
+                    labels:
+                      app.kubernetes.io/name: i915-acceptance
+                  spec:
+                    restartPolicy: Never
+                    terminationGracePeriodSeconds: 10
+                    automountServiceAccountToken: false
+                    nodeSelector:
+                      kubernetes.io/hostname: "{{ i915_acceptance_machines[item].node_name }}"
+                    securityContext:
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      runAsGroup: 1000
+                      supplementalGroups: [0]
+                      fsGroup: 1000
+                      seccompProfile:
+                        type: RuntimeDefault
+                    containers:
+                      - name: probe
+                        image: "{{ i915_acceptance_probe_image }}"
+                        command: ["/bin/sh", "/probe/i915_gpu_probe.sh"]
+                        env:
+                          - name: I915_NODE_NAME
+                            valueFrom:
+                              fieldRef:
+                                fieldPath: spec.nodeName
+                        securityContext:
+                          allowPrivilegeEscalation: false
+                          capabilities:
+                            drop: ["ALL"]
+                        resources:
+                          requests:
+                            cpu: 100m
+                            memory: 128Mi
+                            gpu.intel.com/i915: "1"
+                          limits:
+                            cpu: "1"
+                            memory: 512Mi
+                            gpu.intel.com/i915: "1"
+                        volumeMounts:
+                          - name: probe
+                            mountPath: /probe
+                            readOnly: true
+                          - name: temporary
+                            mountPath: /tmp
+                    volumes:
+                      - name: probe
+                        configMap:
+                          name: gpu-probe
+                      - name: temporary
+                        emptyDir:
+                          medium: Memory
+                          sizeLimit: 64Mi
+          loop: "{{ groups['workers'] }}"
+
+        - name: Require successful completion from every worker
+          kubernetes.core.k8s_info:
+            kubeconfig: "{{ i915_acceptance_kubeconfig_file.path }}"
+            api_version: batch/v1
+            kind: Job
+            name: "gpu-{{ i915_acceptance_machines[item].node_name }}"
+            namespace: "{{ i915_acceptance_namespace.result.metadata.name }}"
+            wait: true
+            wait_timeout: 210
+            wait_condition:
+              type: Complete
+              status: "True"
+          loop: "{{ groups['workers'] }}"
+
+      always:
+        - name: Preserve diagnostics while guaranteeing resource cleanup
+          block:
+            - name: Read temporary probe pod state for diagnostics
+              kubernetes.core.k8s_info:
+                kubeconfig: "{{ i915_acceptance_kubeconfig_file.path }}"
+                api_version: v1
+                kind: Pod
+                namespace: "{{ i915_acceptance_namespace.result.metadata.name }}"
+              register: i915_acceptance_pods
+              failed_when: false
+              when: i915_acceptance_namespace.result.metadata.name is defined
+
+            - name: Collect available probe logs without hiding missing-log failures
+              kubernetes.core.k8s_log:
+                kubeconfig: "{{ i915_acceptance_kubeconfig_file.path }}"
+                namespace: "{{ i915_acceptance_namespace.result.metadata.name }}"
+                name: "{{ item.metadata.name }}"
+                container: probe
+              loop: "{{ i915_acceptance_pods.resources | default([]) }}"
+              loop_control:
+                label: "{{ item.metadata.name }}"
+              register: i915_acceptance_logs
+              failed_when: false
+
+            - name: Save nonsecret probe diagnostics
+              ansible.builtin.copy:
+                dest: "{{ i915_acceptance_artifacts_dir }}/probe-diagnostics.json"
+                mode: "0600"
+                content: >-
+                  {{ {'pods': i915_acceptance_pods.resources | default([]),
+                      'read_error': i915_acceptance_pods.msg | default('')} | to_nice_json }}
+
+            - name: Save the complete probe logs for strict evidence validation
+              ansible.builtin.copy:
+                dest: "{{ i915_acceptance_artifacts_dir }}/probe-logs.json"
+                mode: "0600"
+                content: |
+                  [
+                  {% for entry in i915_acceptance_logs.results | default([]) %}
+                    {{ entry.log | default('LOG_UNAVAILABLE: ' + (entry.msg | default('no log returned'))) | to_json }}{{ ',' if not loop.last else '' }}
+                  {% endfor %}
+                  ]
+
+          always:
+            - name: Remove temporary cluster access even if namespace cleanup fails
+              block:
+                - name: Remove only this run's temporary namespace and GPU resources
+                  kubernetes.core.k8s:
+                    kubeconfig: "{{ i915_acceptance_kubeconfig_file.path }}"
+                    api_version: v1
+                    kind: Namespace
+                    name: "{{ i915_acceptance_namespace.result.metadata.name }}"
+                    state: absent
+                    wait: true
+                    wait_timeout: 120
+                  when: i915_acceptance_namespace.result.metadata.name is defined
+              always:
+                - name: Remove the private temporary kubeconfig
+                  ansible.builtin.file:
+                    path: "{{ i915_acceptance_kubeconfig_file.path }}"
+                    state: absent
+                  when: i915_acceptance_kubeconfig_file.path is defined
+
+    - name: Require complete frame and identity evidence before reporting hardware acceptance
+      ansible.builtin.command:
+        argv: >-
+          {{ ['python3', playbook_dir + '/scripts/i915_acceptance.py', 'accept']
+             + i915_acceptance_args
+             + ['--probe-logs', i915_acceptance_artifacts_dir + '/probe-logs.json',
+                '--output', i915_acceptance_artifacts_dir + '/acceptance.json'] }}
+      changed_when: false
+      register: i915_acceptance_result
+
+    - name: Report the explicit acceptance scope
+      ansible.builtin.debug:
+        msg: "{{ i915_acceptance_result.stdout }}"

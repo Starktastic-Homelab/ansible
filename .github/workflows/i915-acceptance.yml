@@ -1,0 +1,190 @@
+name: i915 GPU Hardware Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Current-stack diagnostics, or acceptance tied to an installation and fresh boots'
+        required: true
+        type: choice
+        options:
+          - current-stack
+          - post-reboot
+        default: current-stack
+      installation_run_id:
+        description: 'Successful i915-sriov-upgrade run ID; required for post-reboot mode'
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      mode:
+        required: true
+        type: string
+      installation_run_id:
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: i915-hardware-acceptance
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    name: Verify installed GPU hardware
+    runs-on: self-hosted
+    container:
+      image: python:trixie
+    defaults:
+      run:
+        shell: bash
+    env:
+      PROXMOX_URL: ${{ secrets.PROXMOX_URL }}
+      PROXMOX_USER: ${{ secrets.PROXMOX_USER }}
+      PROXMOX_TOKEN_ID: ${{ secrets.PROXMOX_TOKEN_ID }}
+      PROXMOX_TOKEN_SECRET: ${{ secrets.PROXMOX_TOKEN_SECRET }}
+      VALIDATION_MODE: ${{ inputs.mode }}
+      INSTALLATION_RUN_ID: ${{ inputs.installation_run_id }}
+
+    steps:
+      - name: Checkout validation code
+        uses: actions/checkout@v7.0.1
+
+      - name: Validate the requested acceptance scope
+        run: |
+          case "$VALIDATION_MODE" in
+            current-stack) ;;
+            post-reboot)
+              [[ "$INSTALLATION_RUN_ID" =~ ^[0-9]+$ ]] || {
+                echo "::error::Post-reboot acceptance requires a numeric installation run ID"
+                exit 1
+              }
+              ;;
+            *) echo "::error::Unknown validation mode"; exit 1 ;;
+          esac
+
+      - name: Install the existing Ansible runtime dependencies
+        run: |
+          pip install -r requirements.txt
+          apt-get update -qq
+          apt-get install -y -qq sshpass
+          ansible-galaxy collection install -r requirements.yml
+
+      - name: Prepare private connection credentials
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+        run: |
+          umask 077
+          printf '%s\n' "$SSH_PRIVATE_KEY" > private_key.pem
+          printf '%s\n' "$ANSIBLE_VAULT_PASSWORD" > .vault_pass
+
+      - name: Verify the referenced installation completed in this repository
+        if: inputs.mode == 'post-reboot'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, request, fp, code, msg, headers, newurl):
+                  raise RuntimeError("Unexpected redirect while verifying the installation run")
+
+          run_id = os.environ["INSTALLATION_RUN_ID"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/actions/runs/{run_id}",
+              headers={"Authorization": "Bearer " + os.environ["GITHUB_TOKEN"]},
+          )
+          with urllib.request.build_opener(NoRedirect()).open(request, timeout=30) as response:
+              run = json.load(response)
+          assert run["path"].split("@", 1)[0] == ".github/workflows/i915-sriov-upgrade.yml", "Wrong producer workflow"
+          assert run["head_repository"]["full_name"] == repo, "Wrong producer repository"
+          assert run["status"] == "completed" and run["conclusion"] == "success", "Installation did not succeed"
+          Path("artifacts/deployment").mkdir(parents=True, exist_ok=True)
+          Path("artifacts/deployment/source-run.json").write_text(json.dumps({
+              "run_id": run["id"], "head_sha": run["head_sha"], "run_attempt": run["run_attempt"]
+          }, indent=2))
+          print(f"Verified installation run {run['id']} at {run['head_sha']}.")
+          PY
+
+      - name: Fetch the installation's pre-change evidence
+        if: inputs.mode == 'post-reboot'
+        uses: actions/download-artifact@v8
+        with:
+          name: i915-before
+          path: artifacts/deployment
+          run-id: ${{ inputs.installation_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Read the declared target for current-stack diagnostics
+        if: inputs.mode == 'current-stack'
+        run: python3 scripts/i915_acceptance.py target --output target.json
+
+      - name: Use the installation's frozen target for post-reboot acceptance
+        if: inputs.mode == 'post-reboot'
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          before = json.loads(Path("artifacts/deployment/before.json").read_text())
+          Path("target.json").write_text(json.dumps({"i915_acceptance_expected": before["expected"]}))
+          PY
+
+      - name: Validate the installed stack and run temporary GPU probes
+        id: acceptance
+        run: |
+          EXTRA=()
+          if [[ "$VALIDATION_MODE" == post-reboot ]]; then
+            EXTRA=(-e "i915_acceptance_baseline=$GITHUB_WORKSPACE/artifacts/deployment/before.json")
+          fi
+          ansible-playbook -i inventory/hosts.yml -i inventory/proxmox.yml \
+            --vault-password-file .vault_pass --private-key private_key.pem \
+            -e @target.json -e "i915_acceptance_mode=$VALIDATION_MODE" \
+            "${EXTRA[@]}" i915-acceptance.yml
+
+      - name: Report acceptance without confusing diagnostics with reboot evidence
+        if: always()
+        env:
+          ACCEPTANCE_OUTCOME: ${{ steps.acceptance.outcome }}
+        run: |
+          if [[ "$ACCEPTANCE_OUTCOME" != success ]]; then
+            echo "## GPU hardware acceptance did not complete" >> "$GITHUB_STEP_SUMMARY"
+            echo "No operational acceptance is claimed. Inspect the failed task and diagnostic artifact." >> "$GITHUB_STEP_SUMMARY"
+          else
+            python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          result = json.loads(Path("artifacts/i915/acceptance.json").read_text())
+          print("## GPU hardware acceptance")
+          print(f"\nMode: **{result['mode']}**")
+          print(f"\nFresh boots verified: **{result['fresh_boots_verified']}**")
+          if not result["fresh_boots_verified"]:
+              print("\nCurrent installed stack only; this is not post-upgrade/reboot acceptance.")
+          for worker in result["gpu_results"]:
+              print(f"\n- `{worker['node']}`: `{worker['module']}` on `{worker['kernel']}`; frames `{worker['frames']}`")
+          PY
+          fi
+
+      - name: Preserve nonsecret acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: i915-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/i915/
+            artifacts/deployment/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Remove private controller credentials
+        if: always()
+        run: rm -f .vault_pass private_key.pem target.json

@@ -1,0 +1,17 @@
+{
+  "strict": true,
+  "checks": [
+    {
+      "context": "Ansible Lint",
+      "app_id": 15368
+    },
+    {
+      "context": "Ansible Syntax Check",
+      "app_id": 15368
+    },
+    {
+      "context": "Validate i915 metadata and policy",
+      "app_id": 15368
+    }
+  ]
+}

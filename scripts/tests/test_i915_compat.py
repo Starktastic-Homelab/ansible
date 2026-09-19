@@ -9,8 +9,10 @@ import io
 import json
 import os
 import sys
+import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
@@ -143,6 +145,91 @@ class TestNegotiation(Base):
 
 
 class TestCli(Base):
+    def test_success_is_explicitly_metadata_only(self):
+        self.use(CURRENT)
+        code, out = self.run_cli(
+            "--host-version", LATEST, "--host-kernel", "6.17.13-13-pve",
+            "--guest-version", BACKPORT, "--guest-kernel", "6.12",
+        )
+        self.assertEqual(code, c.EXIT_OK, out)
+        self.assertIn("Metadata constraints passed", out)
+        self.assertIn("Hardware acceptance: NOT TESTED", out)
+        self.assertNotIn("Overall: ✅ Compatible", out)
+
+    def test_known_bad_host_is_rejected_despite_supported_metadata(self):
+        bad = "2026.09.16"
+        self.use(fake_world(
+            {bad: NOTES_LATEST, BACKPORT: NOTES_BACKPORT},
+            {bad: ABI_1_0, BACKPORT: ABI_1_0},
+        ))
+        self.assertTrue(c.check_kernel("host", bad, "6.17.13-13-pve")["ok"])
+        self.assertTrue(c.check_abi(bad, BACKPORT)["ok"])
+        code, out = self.run_cli(
+            "--host-version", bad, "--host-kernel", "6.17.13-13-pve",
+            "--guest-version", BACKPORT, "--guest-kernel", "6.12",
+        )
+        self.assertEqual(code, c.EXIT_INCOMPATIBLE, out)
+        self.assertIn("Blocked host release", out)
+        self.assertIn(bad, out)
+        self.assertIn("Hardware acceptance: NOT TESTED", out)
+
+    def test_known_bad_host_is_rejected_without_network_access(self):
+        def forbidden_network(url):
+            self.fail("A known-bad release must be rejected before fetching " + url)
+
+        self.use(forbidden_network)
+        for tag in ("2026.09.16", "v2026.09.16", "2026.09.16-sriov"):
+            with self.subTest(tag=tag):
+                code, out = self.run_cli(
+                    "--host-version", tag, "--host-kernel", "6.17.13-13-pve",
+                )
+                self.assertEqual(code, c.EXIT_INCOMPATIBLE, out)
+                self.assertIn("Blocked host release", out)
+
+    def test_host_regression_does_not_invent_a_guest_exclusion(self):
+        bad_host = "2026.09.16"
+        self.use(fake_world({bad_host: NOTES_LATEST}, {bad_host: ABI_1_0}))
+        code, out = self.run_cli(
+            "--guest-version", bad_host, "--guest-kernel", "6.17",
+        )
+        self.assertEqual(code, c.EXIT_OK, out)
+
+    def test_policy_failure_is_written_to_the_markdown_report(self):
+        bad = "2026.09.16"
+        self.use(fake_world({bad: NOTES_LATEST}, {bad: ABI_1_0}))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.md"
+            code, out = self.run_cli(
+                "--host-version", bad, "--host-kernel", "6.17.13-13-pve",
+                "--markdown", str(path),
+            )
+            self.assertEqual(code, c.EXIT_INCOMPATIBLE, out)
+            self.assertEqual(path.read_text(), out)
+            self.assertIn("Blocked host release", out)
+
+    def test_unknown_metadata_does_not_imply_hardware_acceptance(self):
+        self.use(fake_world({LATEST: "unparseable release metadata"}, {LATEST: ABI_1_0}))
+        code, out = self.run_cli(
+            "--host-version", LATEST, "--host-kernel", "6.17.13-13-pve",
+        )
+        self.assertEqual(code, c.EXIT_UNKNOWN, out)
+        self.assertIn("Hardware acceptance: NOT TESTED", out)
+
+    def test_incomplete_axis_is_not_silently_skipped(self):
+        self.use(CURRENT)
+        cases = [
+            ["--host-version", LATEST, "--guest-version", BACKPORT, "--guest-kernel", "6.12"],
+            ["--host-kernel", "6.17", "--guest-version", BACKPORT, "--guest-kernel", "6.12"],
+            ["--guest-version", BACKPORT, "--host-version", LATEST, "--host-kernel", "6.17"],
+            ["--guest-kernel", "6.12", "--host-version", LATEST, "--host-kernel", "6.17"],
+            ["--host-version", "", "--host-kernel", "", "--guest-version", BACKPORT, "--guest-kernel", "6.12"],
+        ]
+        for args in cases:
+            with self.subTest(args=args), redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as result:
+                    self.run_cli(*args)
+                self.assertEqual(result.exception.code, 2)
+
     def test_intended_split_combination_passes(self):
         self.use(CURRENT)
         code, out = self.run_cli(
@@ -221,6 +308,19 @@ class TestCli(Base):
         self.use(CURRENT)
         _, out = self.run_cli("--guest-version", BACKPORT, "--guest-kernel", "6.12")
         self.assertNotIn("ghp_secret_value", out)
+
+
+class TestRequiredCheckPolicy(unittest.TestCase):
+    def test_metadata_gate_is_required_by_the_versioned_policy(self):
+        path = Path(__file__).resolve().parents[2] / ".github/required-status-checks.json"
+        self.assertTrue(path.is_file(), "Required-check policy must be versioned")
+        policy = json.loads(path.read_text())
+        self.assertTrue(policy["strict"])
+        contexts = {check["context"] for check in policy["checks"]}
+        self.assertIn("Validate i915 metadata and policy", contexts)
+        self.assertNotIn("Verify Proxmox host driver is updated", contexts)
+        workflow = (path.parent / "workflows/i915-compat.yml").read_text()
+        self.assertNotRegex(workflow, r"(?m)^\s+paths(?:-ignore)?:")
 
 
 @unittest.skipUnless(os.environ.get("I915_COMPAT_LIVE"), "set I915_COMPAT_LIVE=1")

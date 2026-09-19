@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate an i915-sriov-dkms host/guest combination against upstream data.
+"""Check i915-sriov-dkms metadata and known-bad policy, not live hardware.
 
 Host (PF) and guest (VF) do NOT have to run the same release. Upstream says so
 explicitly, and the releases have split into kernel-compatible lines. What must
@@ -10,17 +10,18 @@ hold instead is three independent axes:
   3. host PF and guest VF can negotiate a common IOV ABI
      (drivers/gpu/drm/i915/gt/iov/abi/iov_version_abi.h of each exact tag)
 
-Everything is derived from the exact upstream tag; nothing is hardcoded and
-there is no curated host/guest allowlist. Anything that cannot be fetched or
-parsed fails closed.
+Compatibility metadata is derived from the exact upstream tag, not a curated
+host/guest allowlist. Local, reproduced runtime regressions are rejected even
+when their metadata agrees. Anything that cannot be fetched or parsed fails
+closed. Passing this gate never proves functional GPU encoding or tone mapping.
 
 Usage:
   i915_compat.py --host-version T --host-kernel K --guest-version T --guest-kernel K
   i915_compat.py --host-version T --host-kernel K     # host axis only
   i915_compat.py --guest-version T --guest-kernel K   # guest axis only
 
-Exit codes: 0 compatible, 1 incompatible, 2 compatibility could not be
-established (network/parse/missing tag -> fail closed).
+Exit codes: 0 metadata/policy passed (hardware NOT TESTED), 1 unsupported or
+blocked, 2 metadata could not be established (network/parse/missing tag).
 
 NOTE: this file is duplicated verbatim in the Starktastic-Homelab/ansible and
 Starktastic-Homelab/packer repositories so each repo stays independently
@@ -42,6 +43,19 @@ IOV_ABI_PATH = "drivers/gpu/drm/i915/gt/iov/abi/iov_version_abi.h"
 GUC_ABI_PATH = "drivers/gpu/drm/i915/gt/uc/abi/guc_version_abi.h"
 
 EXIT_OK, EXIT_INCOMPATIBLE, EXIT_UNKNOWN = 0, 1, 2
+REPORT_TITLE = "## i915 SR-IOV Metadata Gate"
+HARDWARE_NOTICE = (
+    "**Hardware acceptance: NOT TESTED.** This gate checks declared kernel/ABI "
+    "compatibility and known-bad policy only. Operational acceptance requires "
+    "the expected loaded drivers and real GPU encode/tone-map checks after reboot."
+)
+BLOCKED_HOST_RELEASES = {
+    "2026.09.16": (
+        "Reproduced VA-API initialization and GuC regression on this homelab's "
+        "Alder Lake SR-IOV stack; rolling back to 2026.09.14 restored hardware "
+        "encoding. See https://github.com/Starktastic-Homelab/ansible/pull/264."
+    ),
+}
 
 # "**Required kernel**: 6.17.x ~ 7.1.x" / "**Supported kernel**: 6.12.x ~ 6.19.x"
 KERNEL_RANGE_RE = re.compile(
@@ -200,7 +214,7 @@ def mark(ok):
 
 
 def report(axes, abi, guc):
-    lines = ["## i915 SR-IOV Compatibility", ""]
+    lines = [REPORT_TITLE, ""]
     for axis in axes:
         lines += [
             "%s:" % axis["role"].capitalize(),
@@ -222,7 +236,10 @@ def report(axes, abi, guc):
     if guc:
         lines += ["_GuC VF interface (informational): %s_" % guc, ""]
     ok = all(axis["ok"] for axis in axes) and (abi is None or abi["ok"])
-    lines.append("Overall: %s %s" % (mark(ok), "Compatible" if ok else "Incompatible"))
+    lines.append(
+        "Overall: %s %s"
+        % (mark(ok), "Metadata constraints passed" if ok else "Metadata constraints rejected")
+    )
     return ok, "\n".join(lines) + "\n"
 
 
@@ -235,34 +252,54 @@ def main(argv=None):
     parser.add_argument("--markdown", help="also write the report to this file")
     args = parser.parse_args(argv)
 
+    for role in ("host", "guest"):
+        version = getattr(args, role + "_version")
+        kernel = getattr(args, role + "_kernel")
+        if version is not None or kernel is not None:
+            if not version or not version.strip() or not kernel or not kernel.strip():
+                parser.error("give both nonempty --%s-version and --%s-kernel" % (role, role))
+
     host = bool(args.host_version and args.host_kernel)
     guest = bool(args.guest_version and args.guest_kernel)
     if not host and not guest:
         parser.error("give --host-version/--host-kernel and/or --guest-version/--guest-kernel")
 
-    try:
-        axes = []
-        if host:
-            axes.append(check_kernel("host", args.host_version, args.host_kernel))
-        if guest:
-            axes.append(check_kernel("guest", args.guest_version, args.guest_kernel))
-        abi = check_abi(args.host_version, args.guest_version) if host and guest else None
-        guc = None
-        if host and guest:
-            guc = "host %s, guest %s" % (
-                guc_latest(args.host_version),
-                guc_latest(args.guest_version),
-            )
-        ok, text = report(axes, abi, guc)
-    except Unknown as err:
+    blocked = None
+    if host:
+        host_release = args.host_version.strip().removeprefix("v").removesuffix("-sriov")
+        blocked = BLOCKED_HOST_RELEASES.get(host_release)
+    if blocked:
         text = (
-            "## i915 SR-IOV Compatibility\n\n"
-            "Overall: %s Cannot be established — failing closed.\n\n- %s\n" % (mark(False), err)
+            "%s\n\nOverall: %s Rejected by known-bad runtime policy.\n\n"
+            "- Blocked host release: `%s`\n- %s\n"
+            % (REPORT_TITLE, mark(False), args.host_version, blocked)
         )
-        ok, code = False, EXIT_UNKNOWN
+        code = EXIT_INCOMPATIBLE
     else:
-        code = EXIT_OK if ok else EXIT_INCOMPATIBLE
+        try:
+            axes = []
+            if host:
+                axes.append(check_kernel("host", args.host_version, args.host_kernel))
+            if guest:
+                axes.append(check_kernel("guest", args.guest_version, args.guest_kernel))
+            abi = check_abi(args.host_version, args.guest_version) if host and guest else None
+            guc = None
+            if host and guest:
+                guc = "host %s, guest %s" % (
+                    guc_latest(args.host_version),
+                    guc_latest(args.guest_version),
+                )
+            ok, text = report(axes, abi, guc)
+        except Unknown as err:
+            text = (
+                "%s\n\nOverall: %s Cannot be established — failing closed.\n\n- %s\n"
+                % (REPORT_TITLE, mark(False), err)
+            )
+            code = EXIT_UNKNOWN
+        else:
+            code = EXIT_OK if ok else EXIT_INCOMPATIBLE
 
+    text += "\n" + HARDWARE_NOTICE + "\n"
     sys.stdout.write(text)
     if args.markdown:
         with open(args.markdown, "w", encoding="utf-8") as handle:

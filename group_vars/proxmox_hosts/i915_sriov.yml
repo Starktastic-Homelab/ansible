@@ -10,4 +10,4 @@
 # CI and again on the host before any driver/kernel transition.
 
 # renovate: datasource=github-releases depName=strongtz/i915-sriov-dkms
-i915_sriov_version: "2026.09.16"
+i915_sriov_version: "2026.09.14"

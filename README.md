@@ -200,8 +200,8 @@ states the two sides need not match:
 
 | Side | Kernel | Driver | Upstream range |
 |------|--------|--------|----------------|
-| **Host** (this repo) | 6.17.13-13-pve | `2026.08.12.1` | 6.17 – 7.1 |
-| **Guest** (packer repo) | 6.12 (Debian 13) | `2026.03.05.6` | 6.12 – 6.19 |
+| **Host** (this repo) | 6.17.13-13-pve | `2026.09.14` | 6.17 – 7.2 |
+| **Guest** (packer repo) | 6.12 (Debian 13) | `2026.03.05.7` | 6.12 – 6.19 |
 
 Three axes are validated, all from upstream data for the exact tags — never
 from version ordering, equality or a curated allowlist:
@@ -218,17 +218,73 @@ approving an unverified combination.
 
 ```bash
 python3 scripts/i915_compat.py \
-  --host-version 2026.08.12.1 --host-kernel 6.17.13-13-pve \
-  --guest-version 2026.03.05.6 --guest-kernel 6.12
+  --host-version 2026.09.14 --host-kernel 6.17.13-13-pve \
+  --guest-version 2026.03.05.7 --guest-kernel 6.12
 # exit 0 = compatible · 1 = incompatible · 2 = cannot be established
 ```
 
 Renovate is free to propose newer host releases, but the `i915-compat`
 workflow re-runs the same check against the pinned kernel (and the guest state
 on the packer repo's `main`) and blocks the PR with a sticky report if the
-combination is not proven safe. Moving the guest to a newer release line is a
+combination is not proven compatible. Moving the guest to a newer release line is a
 packer-repo change; the host only needs a driver whose range covers
 `i915_sriov_pinned_kernel`.
+
+#### Host-driver recovery and GPU acceptance
+
+The host pin `2026.09.14` is a controlled rollback candidate for the VA-API
+initialization failures observed on both workers after `2026.09.16`.
+Renovate excludes that suspect release and disables automerge for host-driver
+updates; later releases remain visible for manual review. Kernel/IOV
+compatibility alone does not prove usable hardware encoding.
+
+**Merge only during an approved Proxmox maintenance window.** A push to
+`main` changing `group_vars/proxmox_hosts/i915_sriov.yml` automatically runs
+the upgrade workflow. The role schedules `sync && shutdown -r +1`, which
+interrupts the hosted VMs and potentially the whole cluster, not just
+Jellyfin. Confirm working console access and recoverable critical-workload
+backups first. Do not issue a second manual reboot.
+
+After the host returns, verify the running kernel and **loaded** module on
+the Proxmox console, not just the installed package:
+
+```sh
+uname -r
+cat /sys/module/i915/version
+dkms status
+proxmox-boot-tool kernel list
+```
+
+For this rollback, expect kernel `6.17.13-13-pve` and loaded module
+`2026.09.14-sriov`. Keep the guest images, GPU device plugin, and application
+encoding settings unchanged. Wait for the nodes and workloads to recover,
+then confirm Jellyfin and Immich run on different workers with
+`kubectl -n media get pods -o wide`.
+
+Readiness and advertised GPU resources can remain healthy while encoding
+is broken. Require exit zero from actual synthetic hardware encodes:
+
+```sh
+kubectl -n media exec deployment/jellyfin -c main -- \
+  s6-setuidgid abc timeout 30 /usr/lib/jellyfin-ffmpeg/ffmpeg \
+  -hide_banner -loglevel error \
+  -init_hw_device vaapi=va:/dev/dri/renderD128 -filter_hw_device va \
+  -f lavfi -i testsrc2=size=128x128:rate=30 -t 1 \
+  -vf format=nv12,hwupload -c:v h264_vaapi -low_power 1 -f null -
+
+kubectl -n media exec deployment/immich-main -- \
+  timeout 30 ffmpeg -hide_banner -loglevel error \
+  -init_hw_device vaapi=va:/dev/dri/renderD128 -filter_hw_device va \
+  -f lavfi -i testsrc2=size=128x128:rate=30 -t 1 \
+  -vf format=nv12,hwupload -c:v h264_vaapi -f null -
+```
+
+Repeat the Jellyfin command with `-c:v hevc_vaapi` to cover its other enabled
+low-power encoder. Then verify a real forced hardware transcode, HDR tone
+mapping, and seeking in Jellyfin, and inspect the new worker boots for GuC
+CT errors. Direct play is not proof. If the rollback does not restore
+encoding, stop and investigate before another driver/kernel change or
+reboot. This recovery does not address the separate SQLite contention.
 
 ### Sealed Secrets Bootstrap
 

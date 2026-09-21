@@ -1,4 +1,10 @@
 import copy
+import hashlib
+import http.server
+import ssl
+import subprocess
+import threading
+import time
 import json
 import os
 from pathlib import Path
@@ -8,7 +14,7 @@ import unittest
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from maintenance_lock import acquire
-from proxmox_fence import verify_vm, fence, reconcile, validate_acl
+from proxmox_fence import verify_vm, fence, reconcile, validate_acl, PVE as TLSClient
 
 EXPECTED=dict(node='pve',vmid=201,name='worker-a',smbios_uuid='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
 class PVE:
@@ -96,6 +102,23 @@ class FenceTests(unittest.TestCase):
             with self.assertRaises(OSError):self.call(api)
         self.assertFalse(self.receipt.exists())
 
+    def test_qualification_accepts_exact_memory_in_proxmox_string_or_integer_form(self):
+        expected = dict(EXPECTED, vmid=990, name='owned-fence-test-unit',
+                        qualification=dict(approved=True, diskless=True, networkless=True, memory_mib=128))
+        for memory in (128, '128', 256, '128,max=256', None):
+            with self.subTest(memory=memory):
+                api = PVE(name=expected['name'])
+                original = api.get
+                def get(path, **query):
+                    result = original(path, **query)
+                    return dict(result, memory=memory) if path.endswith('/config') else result
+                api.get = get
+                if memory in (128, '128'):
+                    self.assertEqual(verify_vm(api, expected)['status'], 'running')
+                else:
+                    with self.assertRaises(ValueError):
+                        verify_vm(api, expected)
+
     def test_acl_refuses_broader_existing_grants(self):
         allowed=[dict(type=t,ugid=p,path=f'/vms/{vmid}',roleid='HomelabFence',propagate=0)
                  for t,p in [('user','fence@pve'),('token','fence@pve!retained')] for vmid in [201,202]]
@@ -103,5 +126,84 @@ class FenceTests(unittest.TestCase):
         for patch_ in [dict(path='/'),dict(propagate=1),dict(roleid='Administrator')]:
             bad=copy.deepcopy(allowed);bad[0].update(patch_)
             with self.assertRaises(ValueError):validate_acl(bad,'fence@pve','retained','HomelabFence')
+
+
+class FencingTLS(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.tmp.cleanup)
+        cls.root = Path(cls.tmp.name)
+        # Match the Proxmox-generated CA: CA constraint, but no keyUsage extension.
+        (cls.root / 'ca.cnf').write_text('[req]\ndistinguished_name=dn\nx509_extensions=ca\n[dn]\n[ca]\nbasicConstraints=critical,CA:TRUE\nsubjectKeyIdentifier=hash\n')
+        (cls.root / 'leaf.cnf').write_text('basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=IP:127.0.0.1\nauthorityKeyIdentifier=keyid:always\n')
+        def openssl(*args):
+            subprocess.run(['openssl', *args], cwd=cls.root, check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        for name in ('ca', 'other'):
+            openssl('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+                    '-config', 'ca.cnf', '-subj', '/CN=' + name,
+                    '-keyout', name + '.key', '-out', name + '.pem')
+        openssl('req', '-new', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=fixture',
+                '-keyout', 'leaf.key', '-out', 'leaf.csr')
+        for name, days in (('leaf', '1'), ('expired', '0')):
+            openssl('x509', '-req', '-in', 'leaf.csr', '-CA', 'ca.pem', '-CAkey', 'ca.key',
+                    '-CAcreateserial', '-days', days, '-extfile', 'leaf.cnf', '-out', name + '.pem')
+        time.sleep(1.1)  # Move past the zero-day certificate's whole-second expiry.
+
+    def client(self, leaf='leaf', ca='ca', wrong_pin=False):
+        received = []
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def handle(self):
+                try:
+                    super().handle()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass  # Expected when a pin mismatch closes TLS before HTTP.
+            def do_GET(self):
+                received.append(self.headers.get('Authorization'))
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{"data":{"ok":true}}')
+            def log_message(self, *args):
+                pass
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(self.root / (leaf + '.pem'), self.root / 'leaf.key')
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01})
+        thread.start()
+        def close():
+            server.shutdown()
+            server.server_close()
+            thread.join()
+        self.addCleanup(close)
+        credentials = self.root / 'credentials.json'
+        credentials.write_text(json.dumps({'origin': 'https://127.0.0.1:' + str(server.server_port),
+                                          'token_id': 'fixture@pve!token', 'token_secret': 'synthetic'}))
+        credentials.chmod(0o600)
+        digest = hashlib.sha256(ssl.PEM_cert_to_DER_cert((self.root / (leaf + '.pem')).read_text())).hexdigest()
+        pin = self.root / 'pin'
+        pin.write_text('0' * 64 if wrong_pin else digest)
+        return TLSClient(credentials, self.root / (ca + '.pem'), pin), received
+
+    def test_proxmox_ca_without_key_usage_accepts_matching_pinned_leaf(self):
+        api, received = self.client()
+        self.assertEqual(api.context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertEqual(api.get('/nodes/pve/qemu/201/status/current'), {'ok': True})
+        self.assertEqual(received, ['PVEAPIToken=fixture@pve!token=synthetic'])
+
+    def test_wrong_pin_never_sends_credentials(self):
+        api, received = self.client(wrong_pin=True)
+        with self.assertRaises(RuntimeError):
+            api.get('/nodes/pve/qemu/201/status/current')
+        self.assertEqual(received, [])
+
+    def test_untrusted_or_expired_leaf_never_sends_credentials(self):
+        for kwargs in ({'ca': 'other'}, {'leaf': 'expired'}):
+            with self.subTest(**kwargs):
+                api, received = self.client(**kwargs)
+                with self.assertRaises(RuntimeError):
+                    api.get('/nodes/pve/qemu/201/status/current')
+                self.assertEqual(received, [])
 
 if __name__=='__main__':unittest.main()

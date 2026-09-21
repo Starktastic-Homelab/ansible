@@ -2,5 +2,4 @@
 # Enrollment is a separate, reviewed manual prerequisite until enabled deliberately.
 iscsi_initiator_enabled: false
 iscsi_initiator_names: {}
-iscsi_initiator_review_root: /maintenance/operations/enrollment
 iscsi_initiator_portal: 10.9.8.30

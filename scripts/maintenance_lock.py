@@ -35,6 +35,10 @@ def _guard(root):
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise ValueError('Invalid maintenance guard')
+        if os.fstat(fd).st_uid == os.getuid():
+            os.fchmod(fd, 0o660)
+        elif os.fstat(fd).st_mode & 0o777 != 0o660:
+            raise ValueError('Maintenance guard group permissions changed')
         fcntl.flock(fd, fcntl.LOCK_EX)
         yield root
     finally:

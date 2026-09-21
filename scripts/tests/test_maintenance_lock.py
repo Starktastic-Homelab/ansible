@@ -33,6 +33,13 @@ class LockTests(unittest.TestCase):
         for p in procs:p.join(10);self.assertEqual(p.exitcode,0)
         self.assertCountEqual(results,['won','lost'])
 
+    def test_container_umask_does_not_remove_shared_group_access(self):
+        previous=os.umask(0o077)
+        try: acquire(self.root,'apply','owner')
+        finally:os.umask(previous)
+        for filename in ['guard','operation.json']:
+            self.assertEqual((self.root/filename).stat().st_mode & 0o777,0o660)
+
     def test_wrong_owner_nonce_cannot_release(self):
         nonce=acquire(self.root,'apply','owner')
         for owner,key in [('other',nonce),('owner','wrong')]:

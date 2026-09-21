@@ -1,0 +1,7 @@
+---
+- name: Provision external maintenance coordination on reviewed VM300 inventory
+  hosts: maintenance_runner
+  become: true
+  gather_facts: true
+  roles:
+    - role: maintenance_runner

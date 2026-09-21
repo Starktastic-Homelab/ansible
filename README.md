@@ -530,3 +530,45 @@ ansible-playbook -i inventory/ ser2net.yml
 ## License & Contributing
 
 This is a personal homelab project. Feel free to use it as inspiration for your own infrastructure. If you spot an issue or have a suggestion, [open an issue](../../issues) — contributions and feedback are welcome.
+
+## External maintenance coordination
+
+Storage maintenance, fencing and infrastructure replacement share VM300's
+`/var/lib/homelab-maintenance`, mounted as `/maintenance` in mutating job
+containers. An absent/mismatched runner marker blocks execution. The record is
+independent of K3s and NAS availability; it survives job cancellation and reboot.
+No age-based takeover or unconditional unlock exists. Prohibit concurrent manual
+Proxmox GUI start/recreate operations during a maintenance operation.
+
+Before merging workflows, run `maintenance-runner.yml` against an explicitly
+reviewed `maintenance_runner` inventory host for **VM300**, after confirming its
+address, SSH route, service user and SMBIOS UUID. Set `maintenance_runner_user`
+to that service user. The role checks UUID
+`cc1aeeb7-4827-466c-9d4b-5dc6c881f193`; it neither guesses an IP nor creates a
+runner. Restart the runner service in an approved window if supplementary group
+membership changed. This bootstrap is manual, never part of `k3s.yml`.
+
+Deploy uses a pinned helper, acquires before configuration, verifies immediately
+before the playbook, and releases only after success. Terraform's companion PR
+holds the same lock through drain/apply/recovery and releases before dispatching
+Ansible. Existing workflow concurrency alone does not serialize repositories.
+The mutation job must run on this external runner; a container-local directory
+without the matching host marker cannot acquire ownership.
+
+After a failed/cancelled operation: inspect `operation.json` on VM300 (protect its
+nonce from logs), identify the exact repository/run/attempt and current stage,
+ensure the owner process is gone, inspect infrastructure/workload state, and
+reconcile the failed operation explicitly. Never delete a lock just because it is
+old. An operator continuation requires the original `MAINTENANCE_OWNER` and
+`MAINTENANCE_NONCE`, the expected `HOMELAB_RUNNER_INSTANCE`, and an exact stage:
+
+```sh
+python3 scripts/maintenance_lock.py verify --stage acquired
+python3 scripts/maintenance_lock.py advance --stage acquired --next-stage held
+```
+
+Use the recorded stage, not necessarily the example above. Only after resolving
+all uncertain effects may the original owner release. Losing the runner disk or
+its identity blocks maintenance until the shared lock domain is recovered and
+all possible writers/infrastructure jobs have been reconciled. Do not provision
+a second independent runner marker to bypass a held operation.

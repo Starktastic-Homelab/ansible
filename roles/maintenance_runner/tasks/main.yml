@@ -24,7 +24,7 @@
     state: directory
     owner: root
     group: "{{ maintenance_runner_group }}"
-    mode: '2770'
+    mode: "2770"
 
 - name: Inspect existing runner marker without following links
   ansible.builtin.stat:
@@ -57,7 +57,7 @@
     force: false
     owner: root
     group: "{{ maintenance_runner_group }}"
-    mode: '0640'
+    mode: "0640"
 
 - name: Create durable operation evidence directory
   ansible.builtin.file:
@@ -65,4 +65,4 @@
     state: directory
     owner: root
     group: "{{ maintenance_runner_group }}"
-    mode: '2770'
+    mode: "2770"

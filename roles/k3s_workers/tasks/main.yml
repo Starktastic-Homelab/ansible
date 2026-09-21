@@ -80,4 +80,5 @@
           metadata:
             labels:
               storage.starktastic.net/iscsi-ready: "true"
+              storage.starktastic.net/node-uid: "{{ k3s_workers_iscsi_node.resources[0].metadata.uid }}"
               storage.starktastic.net/generation: "{{ iscsi_initiator_current.smbios_uuid }}"

@@ -533,6 +533,10 @@ This is a personal homelab project. Feel free to use it as inspiration for your 
 
 ## External maintenance coordination
 
+VM300 was bootstrapped and checked across real containers on September 21, 2026.
+See the [qualification record](docs/maintenance-runner-qualification-2026-09-21.md)
+for evidence and the remaining workflow/reboot test limits.
+
 Storage maintenance, fencing and infrastructure replacement share VM300's
 `/var/lib/homelab-maintenance`, mounted as `/maintenance` in mutating job
 containers. An absent/mismatched runner marker blocks execution. The record is

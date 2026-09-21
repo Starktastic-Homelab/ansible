@@ -1,0 +1,68 @@
+---
+- name: Require the reviewed runner VM generation and service user
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.product_uuid | lower == maintenance_runner_instance
+      - maintenance_runner_user is defined
+      - maintenance_runner_user | length > 0
+    fail_msg: Use an explicitly reviewed VM300 inventory and runner service user.
+
+- name: Create maintenance group
+  ansible.builtin.group:
+    name: "{{ maintenance_runner_group }}"
+    state: present
+
+- name: Allow runner service user to share the host directory
+  ansible.builtin.user:
+    name: "{{ maintenance_runner_user }}"
+    groups: "{{ maintenance_runner_group }}"
+    append: true
+
+- name: Create persistent setgid maintenance directory
+  ansible.builtin.file:
+    path: "{{ maintenance_runner_root }}"
+    state: directory
+    owner: root
+    group: "{{ maintenance_runner_group }}"
+    mode: "2770"
+
+- name: Inspect existing runner marker without following links
+  ansible.builtin.stat:
+    path: "{{ maintenance_runner_root }}/runner-instance"
+    follow: false
+  register: maintenance_runner_marker
+
+- name: Refuse a nonregular marker
+  ansible.builtin.assert:
+    that:
+      - not maintenance_runner_marker.stat.exists or maintenance_runner_marker.stat.isreg
+      - not maintenance_runner_marker.stat.islnk | default(false)
+
+- name: Read existing instance marker
+  ansible.builtin.slurp:
+    src: "{{ maintenance_runner_root }}/runner-instance"
+  register: maintenance_runner_existing
+  when: maintenance_runner_marker.stat.exists
+
+- name: Refuse replacing a different runner instance
+  ansible.builtin.assert:
+    that:
+      - maintenance_runner_existing.content | b64decode | trim == maintenance_runner_instance
+  when: maintenance_runner_marker.stat.exists
+
+- name: Create runner identity marker once
+  ansible.builtin.copy:
+    content: "{{ maintenance_runner_instance }}\n"
+    dest: "{{ maintenance_runner_root }}/runner-instance"
+    force: false
+    owner: root
+    group: "{{ maintenance_runner_group }}"
+    mode: "0640"
+
+- name: Create durable operation evidence directory
+  ansible.builtin.file:
+    path: "{{ maintenance_runner_root }}/operations"
+    state: directory
+    owner: root
+    group: "{{ maintenance_runner_group }}"
+    mode: "2770"

@@ -530,3 +530,136 @@ ansible-playbook -i inventory/ ser2net.yml
 ## License & Contributing
 
 This is a personal homelab project. Feel free to use it as inspiration for your own infrastructure. If you spot an issue or have a suggestion, [open an issue](../../issues) — contributions and feedback are welcome.
+
+## External maintenance coordination
+
+VM300 was bootstrapped and checked across real containers on September 21, 2026.
+See the [qualification record](docs/maintenance-runner-qualification-2026-09-21.md)
+for evidence and the remaining workflow/reboot test limits.
+
+Storage maintenance, fencing and infrastructure replacement share VM300's
+`/var/lib/homelab-maintenance`, mounted as `/maintenance` in mutating job
+containers. An absent/mismatched runner marker blocks execution. The record is
+independent of K3s and NAS availability; it survives job cancellation and reboot.
+No age-based takeover or unconditional unlock exists. Prohibit concurrent manual
+Proxmox GUI start/recreate operations during a maintenance operation.
+
+Before merging workflows, run `maintenance-runner.yml` against an explicitly
+reviewed `maintenance_runner` inventory host for **VM300**, after confirming its
+address, SSH route, service user and SMBIOS UUID. Set `maintenance_runner_user`
+to that service user. The role checks UUID
+`cc1aeeb7-4827-466c-9d4b-5dc6c881f193`; it neither guesses an IP nor creates a
+runner. Restart the runner service in an approved window if supplementary group
+membership changed. This bootstrap is manual, never part of `k3s.yml`.
+
+Deploy uses a pinned helper, acquires before configuration, verifies immediately
+before the playbook, and releases only after success. Terraform's companion PR
+holds the same lock through drain/apply/recovery and releases before dispatching
+Ansible. Existing workflow concurrency alone does not serialize repositories.
+The mutation job must run on this external runner; a container-local directory
+without the matching host marker cannot acquire ownership.
+
+After a failed/cancelled operation: inspect `operation.json` on VM300 (protect its
+nonce from logs), identify the exact repository/run/attempt and current stage,
+ensure the owner process is gone, inspect infrastructure/workload state, and
+reconcile the failed operation explicitly. Never delete a lock just because it is
+old. An operator continuation requires the original `MAINTENANCE_OWNER` and
+`MAINTENANCE_NONCE`, the expected `HOMELAB_RUNNER_INSTANCE`, and an exact stage:
+
+```sh
+python3 scripts/maintenance_lock.py verify --stage acquired
+python3 scripts/maintenance_lock.py advance --stage acquired --next-stage held
+```
+
+Use the recorded stage, not necessarily the example above. Only after resolving
+all uncertain effects may the original owner release. Losing the runner disk or
+its identity blocks maintenance until the shared lock domain is recovered and
+all possible writers/infrastructure jobs have been reconciled. Do not provision
+a second independent runner marker to bypass a held operation.
+
+### Worker iSCSI enrollment
+
+The new `iscsi_initiator` role is disabled on routine deploys. After the shared
+lock is qualified, explicitly dispatch deployment with `enroll_iscsi_workers`
+only after reviewing durable `/maintenance/operations/enrollment/<hostname>.json`
+records for both workers. This keeps a merge from silently enrolling a reused
+initiator identity. Enrollment installs `open-iscsi`/e2fsprogs, sets a unique
+reviewed per-worker IQN, checks idle sessions before any identity change/restart,
+checks the storage route and 25 GiB free disk prerequisite, and labels only a
+verified current VM generation. It never logs out a session.
+
+Each review records the exact `generation` (hostname, VMID, SMBIOS UUID, storage
+IP and IQN), `reviewed_by`, and `previous` generation. Initial use additionally
+requires `first_enrollment: true` after verifying that no existing VM uses that
+IQN. Changed generation requires an exact prior-generation `retirement` record:
+`kind` fenced/destroyed, `generation`, `verified: true`, private `evidence` path
+and `reviewed_by`. Review the real power-off/destruction evidence while holding
+the same maintenance lock; this operator record is **not** proof by itself.
+A new VM having zero sessions does not establish that its predecessor stopped.
+Do not accept a stale fence receipt or concurrent GUI restart.
+
+After joining, a separate `-observed.json` adds the actual Kubernetes node UID.
+It does not change the reviewed enrollment, and explicitly denies writer
+authorization. The Apps release gate must separately bind namespace UID, native
+volume identity and this exact single worker generation. Bootstrap still
+restores Sealed Secrets key material before Apps can recover sealed credentials.
+
+### Scoped fencing and qualification
+
+`storage-fencing.yml` is a separate manually invoked account-definition playbook.
+It is not imported by `k3s.yml`. Run it under the same maintenance ownership with
+an approved external `storage_fencing_secret_destination` beneath
+`/maintenance/private/`. It defines `iscsi-fence@pve!retained`, separated privileges,
+and only `VM.Audit VM.PowerMgmt` at `/vms/201` and `/vms/202`, for both user and
+token, without propagation. It refuses broader existing grants and group
+membership. A token/store mismatch fails rather than rotating a lost secret.
+The private directory, trusted Proxmox CA and independent leaf fingerprint must
+be prepared outside Git. Account application and credential qualification are
+separate approved live operations.
+
+The manual `storage-fencing` workflow accepts reviewed records on the runner,
+not arbitrary commands. Records contain node, VMID, VM name and SMBIOS UUID.
+It checks current configuration, pending changes and power status, journals
+intent before one stop, polls only its own token's task, then verifies exact
+identity and stopped state. Timeout/lost reply keeps ownership and requires the
+same intent's explicit `reconcile` operation. A successful receipt is published
+only after durable writing. A fresh read of the exact stopped VM is still
+required immediately before replacement release; never treat a receipt as
+permission for a later unattended failover. `VM.PowerMgmt` itself also permits
+start/reboot; the wrapper only exposes stop.
+
+Configure the `storage-maintenance` environment's reviewer protections before
+live use. For continuation, supply the original owner, exact recorded stage and
+its nonce through the protected environment secret, never plaintext workflow
+inputs. The workflow deliberately keeps the lock after fencing. Preserve each
+operation's intent and receipt; archive them under the operation ID only after
+recovery completes, before a later independent fence uses the canonical paths.
+
+Qualification procedure, under a separately approved operation:
+
+1. Save effective **user and token** permissions. Require exactly the two worker
+   VM paths and two named privileges, no root/node/storage grants. Use the actual
+   token for worker config/current reads and protected VM read-denial checks.
+   Negative checks for VMs 100/200/300 are read-only; never POST to those VMs.
+2. Verify an unused VMID >=900 from the cluster VM inventory. Record a random
+   UUID and `owned-fence-test-<unique-id>` name. Create one stopped **128 MiB,
+   diskless, networkless** VM on the existing node. Recheck config has no disk or
+   NIC. This is a manual administrative step; the token cannot allocate VMs.
+3. Add temporary propagation=false grants for the same user and separated token
+   at that one VM path, saving the exact ACL delta. Add `qualification` fields
+   `approved: true`, `diskless: true`, `networkless: true`, `memory_mib: 128` to
+   its reviewed expected record. The command checks the actual config too.
+4. Start only that owned empty VM administratively. Test wrong-UUID refusal
+   before any stop, then real token stop/own-task polling/current-state readback.
+   Run fault injection locally for timeouts; never create uncertainty by
+   interrupting production. Confirm reconciliation performs no second stop.
+5. Recheck test VM name/UUID and stopped state, remove only the recorded temporary
+   grants, then delete only that owned diskless VM. Verify the ID and both ACL
+   entries are gone and the final effective permissions are again worker-only.
+   Save cleanup evidence before releasing ownership.
+
+This qualifies the credential route, not a production partition recovery. No
+production power-off, account creation or test VM allocation was performed while
+preparing these changes. API permission semantics and command options follow
+[Proxmox's access-control source](https://github.com/proxmox/pve-docs/blob/master/pveum.adoc)
+and [pveum synopsis](https://github.com/proxmox/pve-docs/blob/master/generated/pveum.1-synopsis.adoc).

@@ -1,0 +1,70 @@
+name: Explicit storage fencing
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        type: choice
+        options: [inspect, fence, reconcile]
+        required: true
+      record:
+        type: choice
+        options: [worker-201, worker-202, qualification]
+        required: true
+      resume_owner:
+        description: Original operation owner for a continuation; nonce comes from the protected secret
+        type: string
+        default: ''
+      expected_stage:
+        type: string
+        default: acquired
+permissions:
+  contents: read
+concurrency:
+  group: explicit-storage-fencing
+  cancel-in-progress: false
+jobs:
+  fence:
+    runs-on: self-hosted
+    environment: storage-maintenance
+    container:
+      image: python:trixie
+      volumes:
+        - /var/lib/homelab-maintenance:/maintenance
+    env:
+      HOMELAB_RUNNER_INSTANCE: cc1aeeb7-4827-466c-9d4b-5dc6c881f193
+      MAINTENANCE_OWNER: ${{ inputs.resume_owner || format('{0}/{1}/{2}', github.repository, github.run_id, github.run_attempt) }}
+      MAINTENANCE_NONCE: ${{ secrets.MAINTENANCE_NONCE }}
+      RESUME_OWNER: ${{ inputs.resume_owner }}
+      OPERATION: ${{ inputs.operation }}
+      RECORD: ${{ inputs.record }}
+      EXPECTED_STAGE: ${{ inputs.expected_stage }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Checkout reviewed maintenance helper
+        uses: actions/checkout@v7
+        with:
+          repository: Starktastic-Homelab/ansible
+          ref: 887269798650e88fed791bb4f22a47bf50ad17be
+          path: maintenance-helper
+          persist-credentials: false
+      - name: Establish exact operation ownership
+        if: inputs.operation != 'inspect'
+        run: |
+          if [ -n "$RESUME_OWNER" ]; then
+            python3 maintenance-helper/scripts/maintenance_lock.py verify --stage "$EXPECTED_STAGE"
+          else
+            test "$OPERATION" = fence
+            test "$EXPECTED_STAGE" = acquired
+            python3 maintenance-helper/scripts/maintenance_lock.py acquire --operation storage-fence --github-env
+          fi
+      - name: Inspect or stop only the reviewed VM generation
+        run: |
+          case "$RECORD" in worker-201|worker-202|qualification) ;; *) exit 1 ;; esac
+          case "$OPERATION" in inspect|fence|reconcile) ;; *) exit 1 ;; esac
+          python3 scripts/proxmox_fence.py "$OPERATION" \
+            --expected "/maintenance/operations/generations/$RECORD.json" \
+            --credentials /maintenance/private/pve-fence.json \
+            --ca /maintenance/private/pve-ca.pem \
+            --leaf-pin /maintenance/private/pve-leaf.sha256 \
+            --receipt "/maintenance/operations/generations/$RECORD-fence.json"
+      # Deliberately retain ownership: a fence is a stage of recovery, not its end.

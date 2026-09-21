@@ -23,6 +23,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
+      - name: Test maintenance ownership
+        run: python3 -m unittest discover -s scripts/tests -p test_maintenance_lock.py -v
+
       - name: Install ansible-lint
         run: pip install ansible-lint
 
@@ -35,6 +38,15 @@ jobs:
       # the file to exist. A dummy password is fine — decryption isn't required.
       - name: Create dummy Ansible Vault password file
         run: echo "dummy" > .vault_pass
+
+      - name: Test exact-generation fencing refusals
+        run: python3 scripts/tests/test_proxmox_fence.py
+
+      - name: Test worker enrollment refusals
+        run: python3 scripts/tests/test_iscsi_initiator.py
+
+      - name: Test deploy workflow ownership
+        run: python3 scripts/tests/test_deploy_lock.py
 
       - name: Run ansible-lint
         run: |

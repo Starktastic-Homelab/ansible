@@ -61,6 +61,18 @@
   roles:
     - role: k3s_masters
 
+- name: Prepare reviewed worker storage identities
+  hosts: workers
+  become: true
+  gather_facts: true
+  tags:
+    - k3s
+    - workers
+    - iscsi
+  roles:
+    - role: iscsi_initiator
+      when: iscsi_initiator_enabled | default(false) | bool
+
 - name: Join workers
   hosts: workers
   become: true

@@ -1,0 +1,7 @@
+---
+- name: Define the dedicated worker fencing principal during approved maintenance
+  hosts: proxmox_hosts
+  gather_facts: false
+  become: true
+  roles:
+    - role: storage_fencing

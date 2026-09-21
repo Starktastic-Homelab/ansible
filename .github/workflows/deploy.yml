@@ -2,6 +2,11 @@ name: Deploy K3s Cluster
 
 on:
   workflow_dispatch:
+    inputs:
+      enroll_iscsi_workers:
+        description: Enroll workers using reviewed external generation and retirement records
+        type: boolean
+        default: false
 
   repository_dispatch:
     types: [infrastructure-changed]
@@ -28,7 +33,12 @@ jobs:
     runs-on: self-hosted
     container:
       image: python:trixie
+      volumes:
+        - /var/lib/homelab-maintenance:/maintenance
     env:
+      HOMELAB_RUNNER_INSTANCE: cc1aeeb7-4827-466c-9d4b-5dc6c881f193
+      ENROLL_ISCSI: ${{ inputs.enroll_iscsi_workers || 'false' }}
+      MAINTENANCE_OWNER: ${{ github.repository }}/${{ github.run_id }}/${{ github.run_attempt }}
       PROXMOX_URL: ${{ secrets.PROXMOX_URL }}
       PROXMOX_USER: ${{ secrets.PROXMOX_USER }}
       PROXMOX_TOKEN_ID: ${{ secrets.PROXMOX_TOKEN_ID }}
@@ -36,6 +46,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7.0.1
+
+      - name: Checkout reviewed maintenance helper
+        uses: actions/checkout@v7
+        with:
+          repository: Starktastic-Homelab/ansible
+          ref: 887269798650e88fed791bb4f22a47bf50ad17be
+          path: maintenance-helper
+          persist-credentials: false
 
       - name: Cache Pip Packages
         uses: actions/cache@v6.1.0
@@ -65,12 +83,20 @@ jobs:
       - name: Create Ansible Vault password file
         run: echo "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > .vault_pass
 
+      - name: Acquire external maintenance ownership
+        run: python3 maintenance-helper/scripts/maintenance_lock.py acquire --operation ansible-deploy --github-env
+
       - name: Run K3s Playbook
         run: |
+          python3 maintenance-helper/scripts/maintenance_lock.py verify
           ansible-playbook -i inventory/proxmox.yml \
             --vault-password-file .vault_pass \
             --private-key private_key.pem \
+            -e "iscsi_initiator_enabled=$ENROLL_ISCSI" \
             k3s.yml
+
+      - name: Release ownership after successful configuration
+        run: python3 maintenance-helper/scripts/maintenance_lock.py release
 
       - name: Stage Kubeconfig
         run: cp ~/.kube/config ./kubeconfig_artifact

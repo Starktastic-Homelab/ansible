@@ -1,0 +1,4 @@
+---
+iscsi_initiator_names:
+  k3s-worker-01: iqn.2026-09.net.starktastic:k3s-worker-01
+  k3s-worker-02: iqn.2026-09.net.starktastic:k3s-worker-02

@@ -572,3 +572,30 @@ all uncertain effects may the original owner release. Losing the runner disk or
 its identity blocks maintenance until the shared lock domain is recovered and
 all possible writers/infrastructure jobs have been reconciled. Do not provision
 a second independent runner marker to bypass a held operation.
+
+### Worker iSCSI enrollment
+
+The new `iscsi_initiator` role is disabled on routine deploys. After the shared
+lock is qualified, explicitly dispatch deployment with `enroll_iscsi_workers`
+only after reviewing durable `/maintenance/operations/enrollment/<hostname>.json`
+records for both workers. This keeps a merge from silently enrolling a reused
+initiator identity. Enrollment installs `open-iscsi`/e2fsprogs, sets a unique
+reviewed per-worker IQN, checks idle sessions before any identity change/restart,
+checks the storage route and 25 GiB free disk prerequisite, and labels only a
+verified current VM generation. It never logs out a session.
+
+Each review records the exact `generation` (hostname, VMID, SMBIOS UUID, storage
+IP and IQN), `reviewed_by`, and `previous` generation. Initial use additionally
+requires `first_enrollment: true` after verifying that no existing VM uses that
+IQN. Changed generation requires an exact prior-generation `retirement` record:
+`kind` fenced/destroyed, `generation`, `verified: true`, private `evidence` path
+and `reviewed_by`. Review the real power-off/destruction evidence while holding
+the same maintenance lock; this operator record is **not** proof by itself.
+A new VM having zero sessions does not establish that its predecessor stopped.
+Do not accept a stale fence receipt or concurrent GUI restart.
+
+After joining, a separate `-observed.json` adds the actual Kubernetes node UID.
+It does not change the reviewed enrollment, and explicitly denies writer
+authorization. The Apps release gate must separately bind namespace UID, native
+volume identity and this exact single worker generation. Bootstrap still
+restores Sealed Secrets key material before Apps can recover sealed credentials.

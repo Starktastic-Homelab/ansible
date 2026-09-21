@@ -1,0 +1,115 @@
+---
+- name: Verify shared external maintenance ownership before enrollment
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ playbook_dir }}/maintenance-helper/scripts/maintenance_lock.py"
+      - verify
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
+- name: Inspect existing initiator identity and active sessions without changing them
+  ansible.builtin.shell: |
+    python3 - <<'PY'
+    import json, pathlib, os
+    p = pathlib.Path('/etc/iscsi/initiatorname.iscsi')
+    names = [line.split('=', 1)[1].strip() for line in p.read_text().splitlines()
+             if line.startswith('InitiatorName=')] if p.exists() else []
+    if len(names) > 1:
+        raise ValueError('Ambiguous initiator identity')
+    disk = os.statvfs('/')
+    print(json.dumps({'iqn': names[0] if names else '',
+                      'sessions': len(list(pathlib.Path('/sys/class/iscsi_session').glob('session*'))),
+                      'free_bytes': disk.f_bavail * disk.f_frsize}))
+    PY
+  register: iscsi_initiator_observation
+  changed_when: false
+
+- name: Read explicit enrollment review from durable external storage
+  ansible.builtin.set_fact:
+    iscsi_initiator_review: >-
+      {{ lookup('ansible.builtin.file', iscsi_initiator_review_root ~ '/' ~ inventory_hostname ~ '.json') | from_json }}
+    iscsi_initiator_observed: "{{ iscsi_initiator_observation.stdout | from_json }}"
+    iscsi_initiator_current:
+      hostname: "{{ inventory_hostname }}"
+      vmid: "{{ proxmox_vmid | int }}"
+      smbios_uuid: "{{ ansible_facts.product_uuid | lower }}"
+      storage_ip: "{{ ansible_facts[flannel_iface].ipv4.address }}"
+      iqn: "{{ iscsi_initiator_names[inventory_hostname] }}"
+
+- name: Validate enrollment and previous generation retirement before installing or changing identity
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ playbook_dir }}/scripts/iscsi_generation.py"
+    stdin: >-
+      {{ {'worker': inventory_hostname in groups['workers'],
+          'iqns': iscsi_initiator_names, 'current': iscsi_initiator_current,
+          'review': iscsi_initiator_review, 'existing_iqn': iscsi_initiator_observed.iqn,
+          'sessions': iscsi_initiator_observed.sessions,
+          'free_bytes': iscsi_initiator_observed.free_bytes} | to_json }}
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
+- name: Refuse a live initiator identity change
+  ansible.builtin.assert:
+    that:
+      - iscsi_initiator_observed.iqn == iscsi_initiator_current.iqn or iscsi_initiator_observed.sessions | int == 0
+    fail_msg: An active iSCSI session prevents changing this node identity.
+
+- name: Install initiator tools without automatically starting services
+  ansible.builtin.apt:
+    name:
+      - open-iscsi
+      - e2fsprogs
+    state: present
+    policy_rc_d: 101
+
+- name: Load iSCSI TCP transport
+  ansible.builtin.command: modprobe iscsi_tcp
+  changed_when: false
+
+- name: Persist iSCSI TCP transport module
+  ansible.builtin.copy:
+    content: "iscsi_tcp\n"
+    dest: /etc/modules-load.d/iscsi.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Write reviewed initiator identity
+  ansible.builtin.template:
+    src: initiatorname.iscsi.j2
+    dest: /etc/iscsi/initiatorname.iscsi
+    owner: root
+    group: root
+    mode: "0644"
+  when: iscsi_initiator_observed.iqn != iscsi_initiator_current.iqn
+  notify: Restart verified idle iscsid
+
+- name: Apply identity before starting initiator
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable initiator service
+  ansible.builtin.service:
+    name: iscsid
+    state: started
+    enabled: true
+
+- name: Verify storage-network route selects reviewed source address
+  ansible.builtin.command:
+    argv: [ip, -j, route, get, "{{ iscsi_initiator_portal }}"]
+  register: iscsi_initiator_route
+  changed_when: false
+
+- name: Validate initiator route and publish prerequisite fact
+  ansible.builtin.assert:
+    that:
+      - (iscsi_initiator_route.stdout | from_json)[0].prefsrc == iscsi_initiator_current.storage_ip
+      - (iscsi_initiator_route.stdout | from_json)[0].dev == flannel_iface
+
+- name: Mark this verified generation ready for node labeling
+  ansible.builtin.set_fact:
+    iscsi_initiator_ready: true

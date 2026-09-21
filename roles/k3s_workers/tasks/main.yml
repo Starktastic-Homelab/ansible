@@ -41,3 +41,43 @@
     - k3s
     - workers
     - labels
+
+- name: Record verified worker generation after joining Kubernetes
+  when: iscsi_initiator_ready | default(false) | bool
+  block:
+    - name: Read current Kubernetes worker UID
+      delegate_to: localhost
+      become: false
+      kubernetes.core.k8s_info:
+        kind: Node
+        name: "{{ inventory_hostname }}"
+      register: k3s_workers_iscsi_node
+
+    - name: Require one exact current worker
+      ansible.builtin.assert:
+        that:
+          - k3s_workers_iscsi_node.resources | length == 1
+          - k3s_workers_iscsi_node.resources[0].status.nodeInfo.systemUUID | lower ==
+            iscsi_initiator_current.smbios_uuid
+
+    - name: Write generation observation without authorizing a workload
+      delegate_to: localhost
+      become: false
+      ansible.builtin.copy:
+        content: >-
+          {{ iscsi_initiator_current | combine({'node_uid': k3s_workers_iscsi_node.resources[0].metadata.uid,
+             'writer_authorized': false}) | to_nice_json }}
+        dest: "{{ iscsi_initiator_review_root }}/{{ inventory_hostname }}-observed.json"
+        mode: "0660"
+
+    - name: Label only verified storage-ready worker generation
+      delegate_to: localhost
+      become: false
+      kubernetes.core.k8s:
+        kind: Node
+        name: "{{ inventory_hostname }}"
+        definition:
+          metadata:
+            labels:
+              storage.starktastic.net/iscsi-ready: "true"
+              storage.starktastic.net/generation: "{{ iscsi_initiator_current.smbios_uuid }}"

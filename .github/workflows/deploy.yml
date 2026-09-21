@@ -2,6 +2,11 @@ name: Deploy K3s Cluster
 
 on:
   workflow_dispatch:
+    inputs:
+      enroll_iscsi_workers:
+        description: Enroll workers using reviewed external generation and retirement records
+        type: boolean
+        default: false
 
   repository_dispatch:
     types: [infrastructure-changed]
@@ -32,6 +37,7 @@ jobs:
         - /var/lib/homelab-maintenance:/maintenance
     env:
       HOMELAB_RUNNER_INSTANCE: cc1aeeb7-4827-466c-9d4b-5dc6c881f193
+      ENROLL_ISCSI: ${{ inputs.enroll_iscsi_workers || 'false' }}
       MAINTENANCE_OWNER: ${{ github.repository }}/${{ github.run_id }}/${{ github.run_attempt }}
       PROXMOX_URL: ${{ secrets.PROXMOX_URL }}
       PROXMOX_USER: ${{ secrets.PROXMOX_USER }}
@@ -86,6 +92,7 @@ jobs:
           ansible-playbook -i inventory/proxmox.yml \
             --vault-password-file .vault_pass \
             --private-key private_key.pem \
+            -e "iscsi_initiator_enabled=$ENROLL_ISCSI" \
             k3s.yml
 
       - name: Release ownership after successful configuration

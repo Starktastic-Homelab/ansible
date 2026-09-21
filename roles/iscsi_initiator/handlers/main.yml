@@ -1,0 +1,20 @@
+---
+- name: Recheck active sessions before initiator restart
+  listen: Restart verified idle iscsid
+  ansible.builtin.find:
+    paths: /sys/class/iscsi_session
+    patterns: session*
+    file_type: any
+  register: iscsi_initiator_restart_sessions
+
+- name: Refuse restarting an initiator with an active session
+  listen: Restart verified idle iscsid
+  ansible.builtin.assert:
+    that:
+      - iscsi_initiator_restart_sessions.matched | int == 0
+
+- name: Restart iscsid only while idle
+  listen: Restart verified idle iscsid
+  ansible.builtin.service:
+    name: iscsid
+    state: restarted

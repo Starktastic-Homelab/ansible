@@ -1,0 +1,8 @@
+---
+storage_fencing_user: iscsi-fence@pve
+storage_fencing_token: retained
+storage_fencing_role: HomelabFence
+storage_fencing_vmids: [201, 202]
+storage_fencing_origin: https://10.9.9.20:8006
+# Required: storage_fencing_secret_destination on the external controller.
+# Never store the token in this repository or Kubernetes.

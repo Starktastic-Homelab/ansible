@@ -39,6 +39,9 @@ jobs:
       - name: Create dummy Ansible Vault password file
         run: echo "dummy" > .vault_pass
 
+      - name: Test exact-generation fencing refusals
+        run: python3 scripts/tests/test_proxmox_fence.py
+
       - name: Test worker enrollment refusals
         run: python3 scripts/tests/test_iscsi_initiator.py
 

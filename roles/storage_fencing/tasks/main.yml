@@ -1,0 +1,184 @@
+---
+- name: Verify external maintenance ownership before ACL inspection
+  ansible.builtin.command:
+    argv: [python3, "{{ playbook_dir }}/maintenance-helper/scripts/maintenance_lock.py", verify]
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
+- name: Require exact scoped principal and external secret destination
+  ansible.builtin.assert:
+    that:
+      - storage_fencing_user == 'iscsi-fence@pve'
+      - storage_fencing_token == 'retained'
+      - storage_fencing_role == 'HomelabFence'
+      - storage_fencing_vmids == [201, 202]
+      - storage_fencing_secret_destination is defined
+      - storage_fencing_secret_destination is match('^/maintenance/private/')
+
+- name: Read existing ACLs
+  ansible.builtin.command: pveum acl list --output-format json
+  register: storage_fencing_acls
+  changed_when: false
+
+- name: Reject broader existing grants without deleting them
+  ansible.builtin.assert:
+    that:
+      - item.path in ['/vms/201', '/vms/202']
+      - item.roleid == storage_fencing_role
+      - item.propagate | int == 0
+  loop: "{{ storage_fencing_acls.stdout | from_json }}"
+  when: item.ugid in [storage_fencing_user, storage_fencing_user ~ '!' ~ storage_fencing_token]
+
+- name: Read existing roles
+  ansible.builtin.command: pveum role list --output-format json
+  register: storage_fencing_roles
+  changed_when: false
+
+- name: Reject a broader preexisting fencing role
+  ansible.builtin.assert:
+    that:
+      - item.privs.split(',') | sort == ['VM.Audit', 'VM.PowerMgmt']
+  loop: "{{ storage_fencing_roles.stdout | from_json }}"
+  when: item.roleid == storage_fencing_role
+
+- name: Read existing users including groups
+  ansible.builtin.command: pveum user list --output-format json
+  register: storage_fencing_users
+  changed_when: false
+
+- name: Reject group grants or a disabled existing principal
+  ansible.builtin.assert:
+    that:
+      - not item.groups | default('')
+      - item.enable | int == 1
+  loop: "{{ storage_fencing_users.stdout | from_json }}"
+  when: item.userid == storage_fencing_user
+
+- name: Verify ownership immediately before account changes
+  ansible.builtin.command:
+    argv: [python3, "{{ playbook_dir }}/maintenance-helper/scripts/maintenance_lock.py", verify]
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
+- name: Create narrowly scoped role only if absent
+  ansible.builtin.command:
+    argv: [pveum, role, add, "{{ storage_fencing_role }}", --privs, "VM.Audit VM.PowerMgmt"]
+  when: storage_fencing_role not in (storage_fencing_roles.stdout | from_json | map(attribute='roleid') | list)
+  changed_when: true
+
+- name: Create dedicated PVE user only if absent
+  ansible.builtin.command:
+    argv: [pveum, user, add, "{{ storage_fencing_user }}", --enable, "1"]
+  when: storage_fencing_user not in (storage_fencing_users.stdout | from_json | map(attribute='userid') | list)
+  changed_when: true
+
+- name: Read existing token identities without secrets
+  ansible.builtin.command:
+    argv: [pveum, user, token, list, "{{ storage_fencing_user }}", --output-format, json]
+  register: storage_fencing_tokens
+  changed_when: false
+
+- name: Refuse unseparated existing token
+  ansible.builtin.assert:
+    that:
+      - item.privsep | int == 1
+  loop: "{{ storage_fencing_tokens.stdout | from_json }}"
+  when: item.tokenid == storage_fencing_token
+
+- name: Inspect protected external token destination
+  delegate_to: localhost
+  become: false
+  ansible.builtin.stat:
+    path: "{{ storage_fencing_secret_destination }}"
+    follow: false
+  register: storage_fencing_secret
+  no_log: true
+
+- name: Refuse implicit token recovery or an unrelated existing secret
+  ansible.builtin.assert:
+    that:
+      - >-
+        (storage_fencing_token in (storage_fencing_tokens.stdout | from_json | map(attribute='tokenid') | list)) ==
+        storage_fencing_secret.stat.exists
+      - not storage_fencing_secret.stat.islnk | default(false)
+      - not storage_fencing_secret.stat.exists or storage_fencing_secret.stat.mode == '0600'
+    fail_msg: Token/store mismatch; inspect explicitly, never regenerate a lost secret.
+  no_log: true
+
+- name: Create separated token once
+  ansible.builtin.command:
+    argv:
+      [
+        pveum,
+        user,
+        token,
+        add,
+        "{{ storage_fencing_user }}",
+        "{{ storage_fencing_token }}",
+        --privsep,
+        "1",
+        --output-format,
+        json
+      ]
+  register: storage_fencing_created
+  when: not storage_fencing_secret.stat.exists
+  changed_when: true
+  no_log: true
+
+- name: Save token directly to approved external private storage
+  delegate_to: localhost
+  become: false
+  ansible.builtin.copy:
+    content: >-
+      {{ {'origin': storage_fencing_origin,
+          'token_id': storage_fencing_user ~ '!' ~ storage_fencing_token,
+          'token_secret': (storage_fencing_created.stdout | from_json).value} | to_json }}
+    dest: "{{ storage_fencing_secret_destination }}"
+    mode: "0600"
+    force: false
+  when: not storage_fencing_secret.stat.exists
+  no_log: true
+
+- name: Apply exact nonpropagating user and token grants
+  ansible.builtin.command:
+    argv:
+      - pveum
+      - acl
+      - modify
+      - "/vms/{{ item.0 }}"
+      - "{{ item.1.option }}"
+      - "{{ item.1.principal }}"
+      - --roles
+      - "{{ storage_fencing_role }}"
+      - --propagate
+      - "0"
+  loop: >-
+    {{ storage_fencing_vmids | product([
+       {'option': '--users', 'principal': storage_fencing_user},
+       {'option': '--tokens', 'principal': storage_fencing_user ~ '!' ~ storage_fencing_token}]) | list }}
+  changed_when: true
+
+- name: Read effective separated token permissions for qualification
+  ansible.builtin.command:
+    argv:
+      [
+        pveum,
+        user,
+        token,
+        permissions,
+        "{{ storage_fencing_user }}",
+        "{{ storage_fencing_token }}",
+        --output-format,
+        json
+      ]
+  register: storage_fencing_permissions
+  changed_when: false
+
+- name: Refuse effective permissions outside exact worker paths
+  ansible.builtin.assert:
+    that:
+      - item.key in ['/vms/201', '/vms/202']
+      - item.value.keys() | list | sort == ['VM.Audit', 'VM.PowerMgmt']
+  loop: "{{ storage_fencing_permissions.stdout | from_json | dict2items }}"

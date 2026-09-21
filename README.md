@@ -599,3 +599,63 @@ It does not change the reviewed enrollment, and explicitly denies writer
 authorization. The Apps release gate must separately bind namespace UID, native
 volume identity and this exact single worker generation. Bootstrap still
 restores Sealed Secrets key material before Apps can recover sealed credentials.
+
+### Scoped fencing and qualification
+
+`storage-fencing.yml` is a separate manually invoked account-definition playbook.
+It is not imported by `k3s.yml`. Run it under the same maintenance ownership with
+an approved external `storage_fencing_secret_destination` beneath
+`/maintenance/private/`. It defines `iscsi-fence@pve!retained`, separated privileges,
+and only `VM.Audit VM.PowerMgmt` at `/vms/201` and `/vms/202`, for both user and
+token, without propagation. It refuses broader existing grants and group
+membership. A token/store mismatch fails rather than rotating a lost secret.
+The private directory, trusted Proxmox CA and independent leaf fingerprint must
+be prepared outside Git. Account application and credential qualification are
+separate approved live operations.
+
+The manual `storage-fencing` workflow accepts reviewed records on the runner,
+not arbitrary commands. Records contain node, VMID, VM name and SMBIOS UUID.
+It checks current configuration, pending changes and power status, journals
+intent before one stop, polls only its own token's task, then verifies exact
+identity and stopped state. Timeout/lost reply keeps ownership and requires the
+same intent's explicit `reconcile` operation. A successful receipt is published
+only after durable writing. A fresh read of the exact stopped VM is still
+required immediately before replacement release; never treat a receipt as
+permission for a later unattended failover. `VM.PowerMgmt` itself also permits
+start/reboot; the wrapper only exposes stop.
+
+Configure the `storage-maintenance` environment's reviewer protections before
+live use. For continuation, supply the original owner, exact recorded stage and
+its nonce through the protected environment secret, never plaintext workflow
+inputs. The workflow deliberately keeps the lock after fencing. Preserve each
+operation's intent and receipt; archive them under the operation ID only after
+recovery completes, before a later independent fence uses the canonical paths.
+
+Qualification procedure, under a separately approved operation:
+
+1. Save effective **user and token** permissions. Require exactly the two worker
+   VM paths and two named privileges, no root/node/storage grants. Use the actual
+   token for worker config/current reads and protected VM read-denial checks.
+   Negative checks for VMs 100/200/300 are read-only; never POST to those VMs.
+2. Verify an unused VMID >=900 from the cluster VM inventory. Record a random
+   UUID and `owned-fence-test-<unique-id>` name. Create one stopped **128 MiB,
+   diskless, networkless** VM on the existing node. Recheck config has no disk or
+   NIC. This is a manual administrative step; the token cannot allocate VMs.
+3. Add temporary propagation=false grants for the same user and separated token
+   at that one VM path, saving the exact ACL delta. Add `qualification` fields
+   `approved: true`, `diskless: true`, `networkless: true`, `memory_mib: 128` to
+   its reviewed expected record. The command checks the actual config too.
+4. Start only that owned empty VM administratively. Test wrong-UUID refusal
+   before any stop, then real token stop/own-task polling/current-state readback.
+   Run fault injection locally for timeouts; never create uncertainty by
+   interrupting production. Confirm reconciliation performs no second stop.
+5. Recheck test VM name/UUID and stopped state, remove only the recorded temporary
+   grants, then delete only that owned diskless VM. Verify the ID and both ACL
+   entries are gone and the final effective permissions are again worker-only.
+   Save cleanup evidence before releasing ownership.
+
+This qualifies the credential route, not a production partition recovery. No
+production power-off, account creation or test VM allocation was performed while
+preparing these changes. API permission semantics and command options follow
+[Proxmox's access-control source](https://github.com/proxmox/pve-docs/blob/master/pveum.adoc)
+and [pveum synopsis](https://github.com/proxmox/pve-docs/blob/master/generated/pveum.1-synopsis.adoc).

@@ -1,0 +1,222 @@
+{
+  "completed_at": "2026-09-21T19:42:15.148650+00:00",
+  "maintenance_released": true,
+  "enrollment": {
+    "workflow_run": 35643849523,
+    "workflow_conclusion": "failure",
+    "manual_reconciliation": "completed missing generation observations and prerequisite labels after fresh installed-state checks",
+    "workers": {
+      "kube-worker-01": {
+        "generation": {
+          "hostname": "kube-worker-01",
+          "vmid": 201,
+          "smbios_uuid": "8b2aa6c7-b54f-4323-9900-bdbb85098f62",
+          "storage_ip": "10.9.8.51",
+          "iqn": "iqn.2026-09.net.starktastic:k3s-worker-01"
+        },
+        "node_uid": "ed4cb64c-0c87-414e-9538-110650ba2f34",
+        "writer_authorized": false
+      },
+      "kube-worker-02": {
+        "generation": {
+          "hostname": "kube-worker-02",
+          "vmid": 202,
+          "smbios_uuid": "d6c40da9-aaa5-4b5c-a9ce-70d3cfdcc4b4",
+          "storage_ip": "10.9.8.52",
+          "iqn": "iqn.2026-09.net.starktastic:k3s-worker-02"
+        },
+        "node_uid": "63d963c8-0c04-4be8-81a3-07e8aa1cc240",
+        "writer_authorized": false
+      }
+    }
+  },
+  "account": {
+    "permissions": {
+      "user": {
+        "/vms/201": {
+          "VM.Audit": 0,
+          "VM.PowerMgmt": 0
+        },
+        "/vms/202": {
+          "VM.Audit": 0,
+          "VM.PowerMgmt": 0
+        }
+      },
+      "token": {
+        "/vms/201": {
+          "VM.Audit": 0,
+          "VM.PowerMgmt": 0
+        },
+        "/vms/202": {
+          "VM.Audit": 0,
+          "VM.PowerMgmt": 0
+        }
+      },
+      "acls": [
+        {
+          "path": "/vms/201",
+          "propagate": 0,
+          "roleid": "HomelabFence",
+          "type": "user",
+          "ugid": "iscsi-fence@pve"
+        },
+        {
+          "path": "/vms/201",
+          "propagate": 0,
+          "roleid": "HomelabFence",
+          "type": "token",
+          "ugid": "iscsi-fence@pve!retained"
+        },
+        {
+          "path": "/vms/202",
+          "propagate": 0,
+          "roleid": "HomelabFence",
+          "type": "user",
+          "ugid": "iscsi-fence@pve"
+        },
+        {
+          "path": "/vms/202",
+          "propagate": 0,
+          "roleid": "HomelabFence",
+          "type": "token",
+          "ugid": "iscsi-fence@pve!retained"
+        }
+      ]
+    },
+    "worker_reads": [
+      {
+        "expected": {
+          "node": "pve",
+          "vmid": 201,
+          "name": "kube-worker-01",
+          "smbios_uuid": "8b2aa6c7-b54f-4323-9900-bdbb85098f62"
+        },
+        "status": "running"
+      },
+      {
+        "expected": {
+          "node": "pve",
+          "vmid": 202,
+          "name": "kube-worker-02",
+          "smbios_uuid": "d6c40da9-aaa5-4b5c-a9ce-70d3cfdcc4b4"
+        },
+        "status": "running"
+      }
+    ],
+    "protected_read_status": {
+      "100": 403,
+      "200": 403,
+      "300": 403
+    }
+  },
+  "qualification": {
+    "test_vm": {
+      "node": "pve",
+      "vmid": 990,
+      "name": "owned-fence-test-jellyfin-20260921",
+      "smbios_uuid": "06621413-6a17-4972-b16c-4c7e6cf8ee37",
+      "qualification": {
+        "approved": true,
+        "diskless": true,
+        "networkless": true,
+        "memory_mib": 128
+      }
+    },
+    "normal_stop": {
+      "same_token_task_polling_and_exact_stopped_identity": true,
+      "successful_stop_requests": 1,
+      "wrong_uuid_refused_without_stop": true
+    },
+    "lost_response": {
+      "no_receipt_before_reconciliation": true,
+      "one_stop_request": true,
+      "read_only_reconciliation_passed": true,
+      "successful_reply_intentionally_suppressed": true
+    },
+    "cleanup": {
+      "absent": true,
+      "acls": [
+        {
+          "path": "/vms/201",
+          "propagate": 0,
+          "roleid": "HomelabFence",
+          "type": "user",
+          "ugid": "iscsi-fence@pve"
+        },
+        {
+          "path": "/vms/201",
+          "propagate": 0,
+          "roleid": "HomelabFence",
+          "type": "token",
+          "ugid": "iscsi-fence@pve!retained"
+        },
+        {
+          "path": "/vms/202",
+          "propagate": 0,
+          "roleid": "HomelabFence",
+          "type": "user",
+          "ugid": "iscsi-fence@pve"
+        },
+        {
+          "path": "/vms/202",
+          "propagate": 0,
+          "roleid": "HomelabFence",
+          "type": "token",
+          "ugid": "iscsi-fence@pve!retained"
+        }
+      ],
+      "permissions": {
+        "token": {
+          "/vms/201": {
+            "VM.Audit": 0,
+            "VM.PowerMgmt": 0
+          },
+          "/vms/202": {
+            "VM.Audit": 0,
+            "VM.PowerMgmt": 0
+          }
+        },
+        "user": {
+          "/vms/201": {
+            "VM.Audit": 0,
+            "VM.PowerMgmt": 0
+          },
+          "/vms/202": {
+            "VM.Audit": 0,
+            "VM.PowerMgmt": 0
+          }
+        }
+      },
+      "uuid": "06621413-6a17-4972-b16c-4c7e6cf8ee37",
+      "vmid": 990
+    }
+  },
+  "final": {
+    "at": "2026-09-21T19:42:13.075712+00:00",
+    "all_workloads_ready": 97,
+    "nodes_ready": 3,
+    "production_vm_states": {
+      "100": "running",
+      "200": "running",
+      "201": "running",
+      "202": "running",
+      "300": "running"
+    },
+    "k3s_node_identities_and_boot_ids_unchanged": true,
+    "iscsi_nas_service": "stopped-disabled",
+    "nas_targets": 0,
+    "nas_extents": 0,
+    "apps_pv_sync": "STANDARD",
+    "writer_authorized": false,
+    "qualification_client_sha256": "ed2e1b80841007ed81b9bc9e00a702c9d7add2692279978313cadb4bf2dd6528",
+    "temporary_containers_and_tool_image_removed": true,
+    "root_password_copy_removed": true,
+    "scoped_token_retained_private": true
+  },
+  "limits": [
+    "No production worker fencing or partition test.",
+    "No NAS iSCSI service, target, extent, PV or Jellyfin migration.",
+    "Workflow failure preserved; missing observations and prerequisite labels reconciled under original ownership.",
+    "Jellyfin still uses its original NFS configuration."
+  ]
+}

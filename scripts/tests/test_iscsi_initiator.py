@@ -1,6 +1,9 @@
 import copy
+import os
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from iscsi_generation import validate
@@ -36,5 +39,34 @@ class InitiatorTests(unittest.TestCase):
             with self.assertRaises(ValueError):self.call(review=safe)
     def test_unchanged_generation_requires_no_new_retirement(self):
         self.call(review=dict(REVIEW,previous=CURRENT,first_enrollment=False))
+
+    def test_review_root_available_in_both_real_role_plays(self):
+        repo = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'group_vars').mkdir()
+            (root / 'group_vars/workers').symlink_to(repo / 'group_vars/workers')
+            (root / 'inventory').write_text('[workers]\nkube-worker-01 ansible_connection=local\n')
+            (root / 'ansible.cfg').write_text('[defaults]\nroles_path = ' + str(repo / 'roles') + '\n')
+            # Load each production role in its own play, but skip every host task.
+            # The real Ansible variable resolver must expose the shared path to both.
+            plays = ''.join('''
+- hosts: workers
+  gather_facts: false
+  roles:
+    - role: %s
+      when: false
+  tasks:
+    - ansible.builtin.assert:
+        that:
+          - iscsi_initiator_review_root == '/maintenance/operations/enrollment'
+''' % role for role in ('iscsi_initiator', 'k3s_workers'))
+            (root / 'scope.yml').write_text(plays)
+            result = subprocess.run(
+                ['ansible-playbook', '-i', str(root / 'inventory'), str(root / 'scope.yml')],
+                env=dict(os.environ, ANSIBLE_CONFIG=str(root / 'ansible.cfg'),
+                         ANSIBLE_LOCAL_TEMP=str(root / 'local')),
+                capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 if __name__=='__main__':unittest.main()

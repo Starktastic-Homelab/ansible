@@ -1,4 +1,6 @@
 ---
+# Shared by enrollment and the later worker-generation recording play.
+iscsi_initiator_review_root: /maintenance/operations/enrollment
 iscsi_initiator_names:
   kube-worker-01: iqn.2026-09.net.starktastic:k3s-worker-01
   kube-worker-02: iqn.2026-09.net.starktastic:k3s-worker-02

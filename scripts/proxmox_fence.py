@@ -33,6 +33,9 @@ class PVE:
             raise ValueError('Expected a dedicated PVE-realm separated token')
         self.token_secret = data['token_secret']
         self.context = ssl.create_default_context(cafile=str(ca))
+        # Proxmox's generated CA lacks keyUsage. Retain chain/expiry verification
+        # and the mandatory pre-auth leaf pin, allowing that legacy CA encoding.
+        self.context.verify_flags &= ~ssl.VERIFY_X509_STRICT
         self.context.check_hostname = False
         self.pin = Path(leaf_pin).read_text().strip().lower()
         if not re.fullmatch('[0-9a-f]{64}', self.pin):
@@ -97,7 +100,7 @@ def verify_vm(api, expected):
     if config.get('lock') or any('pending' in x or x.get('delete') for x in pending):
         raise ValueError('VM has a current task lock or pending edits')
     if expected.get('qualification'):
-        if config.get('memory') != 128 or any(re.fullmatch(r'(net|scsi|virtio|sata|ide)\d+', k) for k in config):
+        if config.get('memory') not in (128, '128') or any(re.fullmatch(r'(net|scsi|virtio|sata|ide)\d+', k) for k in config):
             raise ValueError('Qualification VM must be diskless/networkless with 128 MiB')
     status = api.get(base + '/status/current')
     if status.get('status') not in ('running', 'stopped'):

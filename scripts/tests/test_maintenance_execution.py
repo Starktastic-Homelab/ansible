@@ -1,8 +1,12 @@
 """Execution exclusion uses real processes and temporary ownership records."""
+import ctypes
 import multiprocessing as mp
 import os
 from pathlib import Path
 import sys
+import select
+import signal
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -156,6 +160,75 @@ class ExecutionTests(unittest.TestCase):
                 else: path.unlink()
         self.assertEqual(victim.read_text(), 'unchanged')
         self.assertEqual((self.root/'operation.json').read_bytes(), self.original)
+
+    def assert_child_retains_lock(self, termination):
+        # Adopt and reap the orphan in this Linux-only process-lifetime test.
+        libc = ctypes.CDLL(None, use_errno=True)
+        previous = ctypes.c_int()
+        self.assertEqual(libc.prctl(37, ctypes.byref(previous), 0, 0, 0), 0)
+        self.assertEqual(libc.prctl(36, 1, 0, 0, 0), 0)
+        stop_read, stop_write = os.pipe()
+        parent = None
+        child_pid = None
+        child_handle = None
+        try:
+            code = """import os, subprocess, sys
+from pathlib import Path
+from maintenance_lock import execution
+child_code = 'import os,sys;print(os.getpid(),flush=True);os.read(int(sys.argv[1]),1)'
+with execution(Path(sys.argv[1]), 'owner', sys.argv[2], 'acquired') as fd:
+    child = subprocess.Popen([sys.executable, '-c', child_code, sys.argv[3]],
+                             pass_fds=(fd, int(sys.argv[3])))
+    sys.stdin.readline()
+"""
+            env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]))
+            parent = subprocess.Popen([sys.executable, '-c', code, str(self.root), self.nonce, str(stop_read)],
+                                      env=env, pass_fds=(stop_read,), stdin=subprocess.PIPE,
+                                      stdout=subprocess.PIPE, text=True)
+            os.close(stop_read); stop_read = None
+            self.assertTrue(select.select([parent.stdout], [], [], 5)[0], 'child not ready')
+            child_pid = int(parent.stdout.readline())
+            child_handle = os.pidfd_open(child_pid)
+            if termination is None:
+                parent.stdin.write('exit\n'); parent.stdin.flush()
+            else:
+                parent.send_signal(termination)
+            parent.wait(timeout=5)
+            self.assertEqual(parent.returncode, 0 if termination is None else -termination)
+            with self.assertRaises(lock.ExecutionBusy), self.context():
+                self.fail('child lost execution exclusion')
+            self.assertEqual((self.root/'operation.json').read_bytes(), self.original)
+            os.close(stop_write); stop_write = None
+            self.assertTrue(select.select([child_handle], [], [], 5)[0], 'child did not exit')
+            self.assertEqual(os.waitpid(child_pid, 0)[1], 0)
+            child_pid = None
+            with self.context():
+                pass
+            with self.assertRaises(FileExistsError):
+                lock.acquire(self.root, 'other', 'new-owner')
+            self.assertEqual((self.root/'operation.json').read_bytes(), self.original)
+        finally:
+            if parent is not None:
+                if parent.poll() is None:
+                    parent.kill()
+                parent.wait(timeout=5)
+                parent.stdin.close(); parent.stdout.close()
+            if child_pid is not None:
+                try: os.kill(child_pid, signal.SIGKILL)
+                except ProcessLookupError: pass
+                os.waitpid(child_pid, 0)
+            for fd in (stop_read, stop_write, child_handle):
+                if fd is not None: os.close(fd)
+            libc.prctl(36, previous.value, 0, 0, 0)
+
+    def test_child_retains_lock_after_normal_parent_exit(self):
+        self.assert_child_retains_lock(None)
+
+    def test_child_retains_lock_after_sigterm(self):
+        self.assert_child_retains_lock(signal.SIGTERM)
+
+    def test_child_retains_lock_after_sigkill(self):
+        self.assert_child_retains_lock(signal.SIGKILL)
 
     def test_restrictive_umask_keeps_shared_lock_and_inode(self):
         old = os.umask(0o077)

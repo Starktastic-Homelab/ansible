@@ -23,8 +23,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      - name: Test maintenance ownership
-        run: python3 -m unittest discover -s scripts/tests -p test_maintenance_lock.py -v
+      - name: Test maintenance ownership and execution
+        run: python3 -m unittest discover -s scripts/tests -p 'test_maintenance*.py' -v
 
       - name: Install ansible-lint
         run: pip install ansible-lint

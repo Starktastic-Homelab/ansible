@@ -62,3 +62,9 @@ NAS durability change remain separate steps. No storage writer was authorized.
 
 [Packer #109](https://github.com/Starktastic-Homelab/packer/pull/109) adds clone-safe
 image prerequisites; no image build or cluster replacement ran for that PR.
+
+## Execution mutex follow-up
+
+The later [execution exclusion helper](maintenance-execution.md) adds local
+process-lifetime qualification. It does not change the historical observations
+above or enable production adoption by itself.

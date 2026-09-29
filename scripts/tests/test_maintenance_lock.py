@@ -9,14 +9,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from maintenance_lock import acquire, verify, release, advance
+from maintenance_lock import acquire, verify, release, advance, ExecutionBusy
 
 INSTANCE='cc1aeeb7-4827-466c-9d4b-5dc6c881f193'
 
 def contender(root,start,queue):
     start.wait()
     try: queue.put(('won',acquire(Path(root),'apply',str(os.getpid()))))
-    except FileExistsError: queue.put(('lost',''))
+    except (FileExistsError, ExecutionBusy): queue.put(('lost',''))
 
 class LockTests(unittest.TestCase):
     def setUp(self):

@@ -80,10 +80,56 @@ def _record(root, owner, nonce, stage=None):
     return record
 
 
+class ExecutionBusy(BlockingIOError):
+    """Another adopting process still holds maintenance execution exclusion."""
+
+
+@contextmanager
+def _execution_guard(root):
+    # Validate the runner before opening a lock, but never hold the metadata
+    # guard while acquiring execution exclusion. Mutation lock order is always
+    # execution -> metadata; verify remains usable inside an execution body.
+    with _guard(root) as validated:
+        root = validated
+    fd = os.open(root / 'execution.guard',
+                 os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o660)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError('Invalid maintenance execution guard')
+        if info.st_uid == os.getuid():
+            os.fchmod(fd, 0o660)
+        elif info.st_mode & 0o777 != 0o660:
+            raise ValueError('Execution guard group permissions changed')
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ExecutionBusy('Maintenance execution is busy; inspect the active operation') from None
+        yield fd
+    finally:
+        # Do not LOCK_UN: a trusted child may retain this open file description.
+        # Exclusion ends only when the last inherited/duplicated descriptor closes.
+        os.close(fd)
+
+
+@contextmanager
+def execution(root: Path, owner: str, nonce: str, stage: str):
+    """Hold execution exclusion; pass the yielded fd explicitly to trusted children.
+
+    Non-reentrant: advance/release only after this context and its children exit.
+    This does not reconcile uncertain intent or authorize retry after a crash.
+    """
+    if not isinstance(stage, str) or not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', stage):
+        raise ValueError('Execution requires an exact maintenance stage')
+    with _execution_guard(root) as fd:
+        verify(root, owner, nonce, stage)
+        yield fd
+
+
 def acquire(root: Path, operation: str, owner: str) -> str:
     if not all(isinstance(x, str) and re.fullmatch(r'[a-zA-Z0-9_./:-]{1,200}', x) for x in (operation, owner)):
         raise ValueError('Invalid operation or owner')
-    with _guard(root) as root:
+    with _execution_guard(root), _guard(root) as root:
         nonce = secrets.token_hex(32)
         _write(root / 'operation.json', {'schema': 1, 'owner': owner, 'nonce': nonce,
                'operation': operation, 'stage': 'acquired',
@@ -98,7 +144,7 @@ def verify(root: Path, owner: str, nonce: str, stage=None) -> None:
 
 
 def release(root: Path, owner: str, nonce: str) -> None:
-    with _guard(root) as root:
+    with _execution_guard(root), _guard(root) as root:
         _record(root, owner, nonce)
         (root / 'operation.json').unlink()
         _sync_dir(root)
@@ -107,7 +153,7 @@ def release(root: Path, owner: str, nonce: str) -> None:
 def advance(root: Path, owner: str, nonce: str, stage: str, next_stage: str) -> None:
     if not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', next_stage):
         raise ValueError('Invalid next stage')
-    with _guard(root) as root:
+    with _execution_guard(root), _guard(root) as root:
         record = _record(root, owner, nonce, stage)
         record['stage'] = next_stage
         # If this write is interrupted, the original record remains held.

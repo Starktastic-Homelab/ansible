@@ -1,0 +1,328 @@
+{
+  "uuid": "8bbf6024-b312-4068-8781-070e772d5249",
+  "machine_id": "8bbf6024b31240688781070e772d5249",
+  "results": {
+    "passed": [
+      "client exit and duplicate submission preserve one running attempt",
+      "concurrency, forced stop, descendant cleanup and no replay",
+      "explicit start of accepted request",
+      "supervisor SIGKILL cleans children and cannot replay",
+      "nonzero child produces failed receipt",
+      "stale started receipt is not success or replay permission",
+      "runtime drift refuses execution"
+    ]
+  },
+  "ownership_sha256": "7f42e61287bad30fa664bb52a97cbd7b1864d11d97a456ee1f196979857cc227",
+  "requests": [
+    {
+      "id": "08c71b19-be4e-44f7-953c-441dff9a69ce",
+      "directory_mode": "0o700",
+      "files": {
+        "accepted.json": {
+          "mode": "0o600",
+          "sha256": "c978eb67afcf97d47dd5e3f107daef79068c048384c69fb7bdbc474610e977ad"
+        },
+        "credentials.json": {
+          "mode": "0o600",
+          "sha256": "b1862f7c540e37e25a26014c6559e20eefef9735dababb2a06f3e41be1a9dc2f"
+        },
+        "request.json": {
+          "mode": "0o600",
+          "sha256": "df48ff3ea184738d2914be212ae72ddd3ee6b27ddeeae87c468faf1400db1410",
+          "record": {
+            "apps_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expected_stage": "acquired",
+            "operation": "status",
+            "request_id": "08c71b19-be4e-44f7-953c-441dff9a69ce",
+            "runtime_id": "eac455cb3dc25d509625d28f32423d4ae40eb7576119f160461a9475e1b842f3",
+            "schema": 1,
+            "service": "jellyfin"
+          }
+        },
+        "started.json": {
+          "mode": "0o600",
+          "sha256": "628828423391291b52812ce18b712563a3cdfc11928b6380381ce32daff377bb",
+          "record": {
+            "at": "2026-09-30T16:45:42.877561+00:00",
+            "exit_code": null,
+            "kind": "started",
+            "request_hash": "df48ff3ea184738d2914be212ae72ddd3ee6b27ddeeae87c468faf1400db1410",
+            "request_id": "08c71b19-be4e-44f7-953c-441dff9a69ce",
+            "runner_instance": "disposable-qualification",
+            "runtime_id": "eac455cb3dc25d509625d28f32423d4ae40eb7576119f160461a9475e1b842f3",
+            "schema": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "1d7f1cbc-5cc4-48b4-bc6b-557c75eb3091",
+      "directory_mode": "0o700",
+      "files": {
+        "accepted.json": {
+          "mode": "0o600",
+          "sha256": "81d85146464c884dc653c4e386fb759f034a2f7674c5838b6e602b73825410b0"
+        },
+        "attempt-ce2e0a89-8425-4737-8da5-319efc4e5bf1.json": {
+          "mode": "0o600",
+          "sha256": "156528537d6b250659a8967d3271d60c6eb76bafc6a4e8056e1aa28bacfb1621",
+          "record": {
+            "at": "2026-09-30T16:45:41.756508+00:00",
+            "diagnostic": "execution_busy",
+            "schema": 1
+          }
+        },
+        "credentials.json": {
+          "mode": "0o600",
+          "sha256": "b1862f7c540e37e25a26014c6559e20eefef9735dababb2a06f3e41be1a9dc2f"
+        },
+        "request.json": {
+          "mode": "0o600",
+          "sha256": "58fecf4574632ed20b9d33bed061b50531ef2478cd90b31553ba548e0c476b89",
+          "record": {
+            "apps_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expected_stage": "acquired",
+            "operation": "status",
+            "request_id": "1d7f1cbc-5cc4-48b4-bc6b-557c75eb3091",
+            "runtime_id": "eac455cb3dc25d509625d28f32423d4ae40eb7576119f160461a9475e1b842f3",
+            "schema": 1,
+            "service": "jellyfin"
+          }
+        },
+        "started.json": {
+          "mode": "0o600",
+          "sha256": "a63c838bc627406e8a182569e53b49003da147e88657a7890c4736e48ff12bbd",
+          "record": {
+            "at": "2026-09-30T16:45:42.015154+00:00",
+            "exit_code": null,
+            "kind": "started",
+            "request_hash": "58fecf4574632ed20b9d33bed061b50531ef2478cd90b31553ba548e0c476b89",
+            "request_id": "1d7f1cbc-5cc4-48b4-bc6b-557c75eb3091",
+            "runner_instance": "disposable-qualification",
+            "runtime_id": "eac455cb3dc25d509625d28f32423d4ae40eb7576119f160461a9475e1b842f3",
+            "schema": 1
+          }
+        },
+        "stderr.log": {
+          "mode": "0o600",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stdout.log": {
+          "mode": "0o600",
+          "sha256": "43c4f923570960e7bee074c1ad66c8104499a2237e0f81c1087027c026a8eb68"
+        },
+        "terminal.json": {
+          "mode": "0o600",
+          "sha256": "121e379028b76565caf6d459d0ba3cb64e1db4b52ec85a0dc24b5e3de8597226",
+          "record": {
+            "at": "2026-09-30T16:45:42.054299+00:00",
+            "exit_code": 0,
+            "kind": "terminal",
+            "request_hash": "58fecf4574632ed20b9d33bed061b50531ef2478cd90b31553ba548e0c476b89",
+            "request_id": "1d7f1cbc-5cc4-48b4-bc6b-557c75eb3091",
+            "runner_instance": "disposable-qualification",
+            "runtime_id": "eac455cb3dc25d509625d28f32423d4ae40eb7576119f160461a9475e1b842f3",
+            "schema": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "370f8990-2e2a-434f-be00-6ce11b3362fb",
+      "directory_mode": "0o700",
+      "files": {
+        "accepted.json": {
+          "mode": "0o600",
+          "sha256": "9a11eca67faf03d0fd1558883ee2faca0534e52d72ff3541db481e08cc667d35"
+        },
+        "credentials.json": {
+          "mode": "0o600",
+          "sha256": "b1862f7c540e37e25a26014c6559e20eefef9735dababb2a06f3e41be1a9dc2f"
+        },
+        "request.json": {
+          "mode": "0o600",
+          "sha256": "534060e9a54bd6c81c5da2f38f8e822de8ded23f794c62a8200119210306c530",
+          "record": {
+            "apps_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expected_stage": "acquired",
+            "operation": "status",
+            "request_id": "370f8990-2e2a-434f-be00-6ce11b3362fb",
+            "runtime_id": "eac455cb3dc25d509625d28f32423d4ae40eb7576119f160461a9475e1b842f3",
+            "schema": 1,
+            "service": "jellyfin"
+          }
+        },
+        "started.json": {
+          "mode": "0o600",
+          "sha256": "03741d2168d62f32bf7c29051cb4a0141bdd81079cf4caf05676f72e2de8f502",
+          "record": {
+            "at": "2026-09-30T16:45:42.713411+00:00",
+            "exit_code": null,
+            "kind": "started",
+            "request_hash": "534060e9a54bd6c81c5da2f38f8e822de8ded23f794c62a8200119210306c530",
+            "request_id": "370f8990-2e2a-434f-be00-6ce11b3362fb",
+            "runner_instance": "disposable-qualification",
+            "runtime_id": "eac455cb3dc25d509625d28f32423d4ae40eb7576119f160461a9475e1b842f3",
+            "schema": 1
+          }
+        },
+        "stderr.log": {
+          "mode": "0o600",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stdout.log": {
+          "mode": "0o600",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "terminal.json": {
+          "mode": "0o600",
+          "sha256": "4c8712d65c6cd525eb13dfd9ed551b8bd71f5b05eb7af5f07996c1f0e90e4980",
+          "record": {
+            "at": "2026-09-30T16:45:42.745168+00:00",
+            "exit_code": 2,
+            "kind": "terminal",
+            "request_hash": "534060e9a54bd6c81c5da2f38f8e822de8ded23f794c62a8200119210306c530",
+            "request_id": "370f8990-2e2a-434f-be00-6ce11b3362fb",
+            "runner_instance": "disposable-qualification",
+            "runtime_id": "eac455cb3dc25d509625d28f32423d4ae40eb7576119f160461a9475e1b842f3",
+            "schema": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "3f25f871-9fd1-4dfa-b395-7af959cc1d12",
+      "directory_mode": "0o700",
+      "files": {
+        "accepted.json": {
+          "mode": "0o600",
+          "sha256": "db86c833f61f9d4ed15e9cc0a30a0711aa7b97f2ce17e2962a55cb4dcfd9ca9d"
+        },
+        "credentials.json": {
+          "mode": "0o600",
+          "sha256": "b1862f7c540e37e25a26014c6559e20eefef9735dababb2a06f3e41be1a9dc2f"
+        },
+        "request.json": {
+          "mode": "0o600",
+          "sha256": "06ab3e30d96d6b91dfae961bcc09ef4e0d4efd2a182065183b34f555d7889b1c",
+          "record": {
+            "apps_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expected_stage": "acquired",
+            "operation": "status",
+            "request_id": "3f25f871-9fd1-4dfa-b395-7af959cc1d12",
+            "runtime_id": "eac455cb3dc25d509625d28f32423d4ae40eb7576119f160461a9475e1b842f3",
+            "schema": 1,
+            "service": "jellyfin"
+          }
+        },
+        "started.json": {
+          "mode": "0o600",
+          "sha256": "c8363a3a1522fdbfdb1ca187082e92d846ed9b274ab9c89c2ee8ca1d7a2533c6",
+          "record": {
+            "at": "2026-09-30T16:45:42.329431+00:00",
+            "exit_code": null,
+            "kind": "started",
+            "request_hash": "06ab3e30d96d6b91dfae961bcc09ef4e0d4efd2a182065183b34f555d7889b1c",
+            "request_id": "3f25f871-9fd1-4dfa-b395-7af959cc1d12",
+            "runner_instance": "disposable-qualification",
+            "runtime_id": "eac455cb3dc25d509625d28f32423d4ae40eb7576119f160461a9475e1b842f3",
+            "schema": 1
+          }
+        },
+        "stderr.log": {
+          "mode": "0o600",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stdout.log": {
+          "mode": "0o600",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    {
+      "id": "996e122e-c20e-49f8-9d9b-2bd2119f852b",
+      "directory_mode": "0o700",
+      "files": {
+        "accepted.json": {
+          "mode": "0o600",
+          "sha256": "07b104e13ed5ddd056a4bde7726cba3f10759964865f053fd13aec712522824c"
+        },
+        "credentials.json": {
+          "mode": "0o600",
+          "sha256": "b1862f7c540e37e25a26014c6559e20eefef9735dababb2a06f3e41be1a9dc2f"
+        },
+        "request.json": {
+          "mode": "0o600",
+          "sha256": "ae5368361a52433e23af530d45486ed15cf3137533b7d1ea88187e522621e1d0",
+          "record": {
+            "apps_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expected_stage": "acquired",
+            "operation": "status",
+            "request_id": "996e122e-c20e-49f8-9d9b-2bd2119f852b",
+            "runtime_id": "eac455cb3dc25d509625d28f32423d4ae40eb7576119f160461a9475e1b842f3",
+            "schema": 1,
+            "service": "jellyfin"
+          }
+        }
+      }
+    },
+    {
+      "id": "b6158627-fda7-4db7-9112-326886c5d532",
+      "directory_mode": "0o700",
+      "files": {
+        "accepted.json": {
+          "mode": "0o600",
+          "sha256": "e19252078e57d91f21e9a7f7013be0955063e450d36a9f1a472b671cf9db7388"
+        },
+        "credentials.json": {
+          "mode": "0o600",
+          "sha256": "b1862f7c540e37e25a26014c6559e20eefef9735dababb2a06f3e41be1a9dc2f"
+        },
+        "request.json": {
+          "mode": "0o600",
+          "sha256": "a46161d2e53ba212f8af86a603bceac5e942137ed1379dc35c7eb8761557e5e3",
+          "record": {
+            "apps_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expected_stage": "acquired",
+            "operation": "status",
+            "request_id": "b6158627-fda7-4db7-9112-326886c5d532",
+            "runtime_id": "eac455cb3dc25d509625d28f32423d4ae40eb7576119f160461a9475e1b842f3",
+            "schema": 1,
+            "service": "jellyfin"
+          }
+        },
+        "started.json": {
+          "mode": "0o600",
+          "sha256": "4e80c46c43f5ccd1aa39b5e1d8e5ccd3e12c4744386e62c05f83cbc8cd6a4a0f",
+          "record": {
+            "at": "2026-09-30T16:45:41.464467+00:00",
+            "exit_code": null,
+            "kind": "started",
+            "request_hash": "a46161d2e53ba212f8af86a603bceac5e942137ed1379dc35c7eb8761557e5e3",
+            "request_id": "b6158627-fda7-4db7-9112-326886c5d532",
+            "runner_instance": "disposable-qualification",
+            "runtime_id": "eac455cb3dc25d509625d28f32423d4ae40eb7576119f160461a9475e1b842f3",
+            "schema": 1
+          }
+        },
+        "stderr.log": {
+          "mode": "0o600",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stdout.log": {
+          "mode": "0o600",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    }
+  ],
+  "sources": {
+    "scripts/maintenance_requests.py": "3239db3a571dad9044e9a940eb43ab51671bcc6aee41eb67f35171a8fc5796e5",
+    "scripts/maintenance_lock.py": "80ab96eb8cc264ace33e37e4b013858f7f0b9ca85948e46521bf0bd063101a58",
+    "scripts/maintenance_executor.py": "4997c1bc46015f1dec232445a069f3f4ccf4814511c3ec603c0ab41ee8812967",
+    "scripts/tests/qualify_maintenance_executor.py": "383c5237864f52ad23ca0285f0233b43b5d4388109167716c865fd7a352860b2",
+    "roles/maintenance_runner/templates/homelab-maintenance@.service.j2": "7b7ef9546c11c194bb4a76f5917a058894168d16c8e451a86e6447c9b673cc61"
+  },
+  "unit_removed": true,
+  "user_processes": "    PID    PPID STAT COMMAND\n    731       1 Ss   /usr/lib/systemd/systemd --user\n    733     731 S    (sd-pam)\n"
+}

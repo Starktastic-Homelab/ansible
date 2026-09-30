@@ -30,7 +30,9 @@ Output lives in private `stdout.log`/`stderr.log` files under the request. Repor
 contain allowlisted fields and fixed diagnostics. `attempt-*.json` records fixed
 validation/start errors when writable state is available. If runtime verification
 fails before state can safely be located, the CLI exits nonzero without claiming
-completion. Do not erase files to make a request eligible again.
+completion. A retained `.pending-*` marker makes the entire request unknown after a failed
+publication, including directory-sync failure. Do not erase files to make a
+request eligible again.
 
 ## Opt-in installation (later reviewed rollout)
 

@@ -106,14 +106,18 @@ def atomic_json(fd, name, data):
         raise ValueError('State too large')
     temporary = '.pending-'+secrets.token_hex(16)
     file_fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+    # Preserve the pending marker on failure, including a failed directory fsync
+    # after link publication. Visible bytes alone must not imply durable success.
+    with os.fdopen(file_fd, 'wb') as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(raw); stream.flush(); os.fsync(stream.fileno())
     try:
-        with os.fdopen(file_fd, 'wb') as stream:
-            os.fchmod(stream.fileno(), 0o600)
-            stream.write(raw); stream.flush(); os.fsync(stream.fileno())
         os.link(temporary, name, src_dir_fd=fd, dst_dir_fd=fd, follow_symlinks=False)
-        os.fsync(fd)
-    finally:
-        os.unlink(temporary, dir_fd=fd)
+    except FileExistsError:
+        os.unlink(temporary, dir_fd=fd)  # An immutable duplicate changed nothing.
+        raise
+    os.fsync(fd)
+    os.unlink(temporary, dir_fd=fd)
 
 
 def publish_request(root: Path, request: dict, credentials: dict) -> str:
@@ -134,6 +138,8 @@ def publish_request(root: Path, request: dict, credentials: dict) -> str:
 
 
 def load_request(fd):
+    if any(name.startswith(".pending-") for name in os.listdir(fd)):
+        raise ValueError("Incomplete durable publication")
     request = validate_request(read_json(fd, 'request.json'))
     credentials = validate_credentials(read_json(fd, 'credentials.json'))
     accepted = read_json(fd, 'accepted.json')

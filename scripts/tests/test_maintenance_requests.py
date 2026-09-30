@@ -1,6 +1,7 @@
 import copy
 import json
 import os
+import stat
 from pathlib import Path
 import sys
 import tempfile
@@ -108,6 +109,21 @@ class RequestTests(unittest.TestCase):
         with patch('maintenance_requests.os.fsync', side_effect=OSError(SECRET)):
             with self.assertRaises(OSError): requests.write_receipt(self.root, REQUEST, 'terminal', 'runner', exit_code=0)
         self.assertNotEqual(requests.inspect_request(self.root, RID)['phase'], 'succeeded')
+
+    def test_directory_sync_failure_keeps_publication_unknown(self):
+        self.publish()
+        requests.write_receipt(self.root, REQUEST, 'started', 'runner', exit_code=None)
+        fsync = os.fsync
+        def fail_directory(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError('directory sync failed')
+            fsync(fd)
+        with patch('maintenance_requests.os.fsync', side_effect=fail_directory):
+            with self.assertRaises(OSError):
+                requests.write_receipt(self.root, REQUEST, 'terminal', 'runner', exit_code=0)
+        self.assertEqual(requests.inspect_request(self.root, RID)['phase'], 'unknown')
+        with requests.request_directory(self.root, RID) as fd:
+            with self.assertRaises(ValueError): requests.load_request(fd)
 
 
 if __name__ == '__main__': unittest.main()

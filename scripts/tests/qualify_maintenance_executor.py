@@ -46,6 +46,8 @@ def gate(expected_machine_id, state_root):
         raise ValueError('Missing root-owned disposable-VM marker or identity mismatch')
     if Path('/sys/class/dmi/id/product_uuid').read_text().strip().lower() == PRODUCTION_RUNNER:
         raise ValueError('Production runner is prohibited')
+    if subprocess.run(['/usr/bin/systemd-detect-virt', '--container'], capture_output=True).returncode != 1:
+        raise ValueError('Containers or ambiguous virtualization probes are prohibited')
     if subprocess.run(['/usr/bin/systemd-detect-virt', '--vm'], capture_output=True).returncode:
         raise ValueError('A VM is required; workstations and containers are prohibited')
     if os.geteuid() == 0:
@@ -110,6 +112,9 @@ def qualify(root):
         identity,payload=new_request('block')
         result=invoke('submit',payload=payload);assert result.returncode==0
         wait_for(identity,'running')  # submit client has already exited.
+        deadline=time.monotonic()+15
+        while not (root/'child-pid').exists() and time.monotonic()<deadline:time.sleep(.1)
+        assert (root/'child-pid').exists(), 'Fixture child did not become ready'
         started=(root/'requests'/identity/'started.json').read_bytes()
         assert invoke('submit',payload=payload).returncode==0
         assert (root/'requests'/identity/'started.json').read_bytes()==started

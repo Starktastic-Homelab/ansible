@@ -3,7 +3,7 @@ Description=Read-only homelab maintenance request %i
 
 [Service]
 Type=exec
-ExecStart={{ maintenance_executor_python }} -B -E -s {{ maintenance_executor_manifest | dirname }}/ansible/scripts/maintenance_executor.py --manifest {{ maintenance_executor_manifest }} run %i
+ExecStart={{ maintenance_runner_executor_python }} -B -E -s {{ maintenance_runner_executor_manifest | dirname }}/ansible/scripts/maintenance_executor.py --manifest {{ maintenance_runner_executor_manifest }} run %i
 Restart=no
 KillMode=control-group
 TimeoutStopSec=30s

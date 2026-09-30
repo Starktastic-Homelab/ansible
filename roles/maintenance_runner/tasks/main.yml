@@ -69,4 +69,4 @@
 
 - name: Install the explicitly enabled read-only executor
   ansible.builtin.include_tasks: executor.yml
-  when: maintenance_executor_enabled | bool
+  when: maintenance_runner_executor_enabled | bool

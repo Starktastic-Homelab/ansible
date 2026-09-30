@@ -36,7 +36,7 @@ request eligible again.
 
 ## Opt-in installation (later reviewed rollout)
 
-`maintenance_executor_enabled` defaults to false. Enabling it requires reviewed
+`maintenance_runner_executor_enabled` defaults to false. Enabling it requires reviewed
 40-character Apps and Ansible commit IDs and SHA-256 checksums of their GitHub
 archives. Merge the adapter PR first, then select final reviewed commits for both
 repositories; no mutable branch archive is accepted.

@@ -79,9 +79,9 @@ def qualify(root):
     if unit.exists() or Path('/etc/systemd/user/homelab-maintenance@.service').exists():
         raise ValueError('Existing executor installation; use a fresh disposable VM')
     template = (source.parent/'roles/maintenance_runner/templates/homelab-maintenance@.service.j2').read_text()
-    for key, value in [('{{ maintenance_executor_python }}',sys.executable),
-                       ('{{ maintenance_executor_manifest | dirname }}',str(release)),
-                       ('{{ maintenance_executor_manifest }}',str(manifest))]: template=template.replace(key,value)
+    for key, value in [('{{ maintenance_runner_executor_python }}',sys.executable),
+                       ('{{ maintenance_runner_executor_manifest | dirname }}',str(release)),
+                       ('{{ maintenance_runner_executor_manifest }}',str(manifest))]: template=template.replace(key,value)
     if '{{' in template: raise ValueError('Unrendered template')
     unit.parent.mkdir(parents=True, exist_ok=True)
     with unit.open('x') as stream: stream.write(template)

@@ -1,8 +1,9 @@
 # Supervised read-only maintenance runner
 
-Status: source and unit-test preparation. **Disposable-VM systemd qualification is
-pending. Do not enable this on VM300 yet.** No production Apps helper pin or
-workflow changes are part of this increment.
+Status: the synthetic executor passed disposable-VM systemd qualification on
+2026-09-30. See [qualification evidence](maintenance-executor-qualification-2026-09-30.md).
+**Production installation is not qualified or enabled.** No production Apps
+helper pin or workflow changes are part of this increment.
 
 The executor accepts only `status` and `preflight` for Jellyfin. It has no API for
 shell commands, arbitrary environment variables, source paths, or mutations.
@@ -85,7 +86,9 @@ provisioned disposable VM, as an unprivileged test user with a working systemd
 user manager. Provisioning is outside this script. An administrator must first
 create root-owned `/etc/homelab-maintenance-disposable` containing that VM's exact
 `/etc/machine-id`, with no group/other write permission. The script also requires
-that exact ID as an argument, refuses non-VM/container environments and production
+that exact ID as an argument. The unprivileged user must be able to read
+`/sys/class/dmi/id/product_uuid`; provisioning granted read permission only inside
+the isolated test VM. The script refuses non-VM/container environments and production
 VM300's UUID, and requires a new `/var/tmp/maintenance-qualification-*` state root.
 
 The script installs only a temporary user unit if none already exists, runs a
@@ -93,10 +96,11 @@ fixed synthetic adapter, stops its own units and removes its unit afterward.
 It preserves synthetic receipts and results. It never uses production credentials
 or acquires the real maintenance operation. It covers client exit, duplicate
 submission, concurrency, explicit start, forced stop/child cleanup, nonzero exit,
-stale evidence and runtime drift. Actual runner reboot and mutating-operation
+supervisor SIGKILL, stale evidence and runtime drift. Actual runner reboot and mutating-operation
 recovery remain separate qualification work.
 
-Until this script passes on the identified disposable VM, keep the coordinated
-PRs draft. Unit results do not substitute for systemd qualification. Production
-adoption, backup integration and mutation-specific reconciliation need later
-reviewed plans and deployment approval.
+The script passed on the identified disposable VM and the guest was removed
+after evidence export. This qualifies the synthetic supervised execution protocol;
+it does not validate Ansible installation, the production runtime, runner reboot,
+or live storage. Production adoption, backup integration and mutation-specific
+reconciliation need later reviewed plans and deployment approval.

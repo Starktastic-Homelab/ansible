@@ -135,6 +135,22 @@ def qualify(root):
         (root/'fixture-mode').write_text('success')
         assert invoke('start',other).returncode==0;wait_for(other,'succeeded')
         results.append('explicit start of accepted request')
+        # Unlike an orderly service stop, kill the supervisor without cleanup.
+        (root/'child-pid').unlink()
+        killed,payload=new_request('block');invoke('submit',payload=payload)
+        wait_for(killed,'running')
+        deadline=time.monotonic()+15
+        while not (root/'child-pid').exists() and time.monotonic()<deadline:time.sleep(.1)
+        assert (root/'child-pid').exists(), 'Kill-test child did not become ready'
+        child_pid=int((root/'child-pid').read_text())
+        systemctl('kill','--kill-whom=main','--signal=SIGKILL','homelab-maintenance@'+killed+'.service')
+        wait_for(killed,'unknown')
+        deadline=time.monotonic()+5
+        while Path('/proc',str(child_pid)).exists() and time.monotonic()<deadline:time.sleep(.1)
+        assert not Path('/proc',str(child_pid)).exists()
+        assert invoke('start',killed).returncode!=0
+        assert not (root/'requests'/killed/'terminal.json').exists()
+        results.append('supervisor SIGKILL cleans children and cannot replay')
         failed,payload=new_request('fail');invoke('submit',payload=payload);wait_for(failed,'failed')
         results.append('nonzero child produces failed receipt')
         stale,payload=new_request('success');publish_request(root,payload['request'],payload['credentials'])

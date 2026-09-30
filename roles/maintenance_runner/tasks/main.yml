@@ -66,3 +66,7 @@
     owner: root
     group: "{{ maintenance_runner_group }}"
     mode: "2770"
+
+- name: Install the explicitly enabled read-only executor
+  ansible.builtin.include_tasks: executor.yml
+  when: maintenance_executor_enabled | bool

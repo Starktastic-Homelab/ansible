@@ -3,3 +3,9 @@ maintenance_runner_instance: cc1aeeb7-4827-466c-9d4b-5dc6c881f193
 maintenance_runner_root: /var/lib/homelab-maintenance
 maintenance_runner_group: homelab-maintenance
 # Set maintenance_runner_user in the reviewed inventory; do not guess it.
+# Installation is opt-in and never starts an operation.
+maintenance_executor_enabled: false
+maintenance_executor_python: /usr/bin/python3
+maintenance_executor_release_root: /opt/homelab-maintenance/releases
+# Required when enabled: maintenance_executor_apps_commit, _apps_sha256,
+# _ansible_commit, _ansible_sha256 (reviewed GitHub archive identities).

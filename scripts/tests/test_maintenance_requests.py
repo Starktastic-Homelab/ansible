@@ -93,6 +93,16 @@ class RequestTests(unittest.TestCase):
         requests.write_receipt(self.root, REQUEST, 'terminal', 'runner', exit_code=2)
         self.assertEqual(requests.inspect_request(self.root, RID)['phase'], 'failed')
 
+    def test_terminal_timestamp_order_uses_instants_not_text(self):
+        self.publish()
+        requests.write_receipt(self.root, REQUEST, 'started', 'runner', exit_code=None)
+        requests.write_receipt(self.root, REQUEST, 'terminal', 'runner', exit_code=0)
+        for name, timestamp in [('started', '2020-01-01T00:00:00+00:00'),
+                                ('terminal', '2020-01-01T01:00:00+02:00')]:
+            p = self.directory/(name+'.json'); value = json.loads(p.read_text())
+            value['at'] = timestamp; p.write_text(json.dumps(value))
+        self.assertEqual(requests.inspect_request(self.root, RID)['phase'], 'unknown')
+
     def test_failed_terminal_publication_is_not_success(self):
         self.publish(); requests.write_receipt(self.root, REQUEST, 'started', 'runner', exit_code=None)
         with patch('maintenance_requests.os.fsync', side_effect=OSError(SECRET)):

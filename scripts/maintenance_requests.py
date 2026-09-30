@@ -197,7 +197,7 @@ def inspect_request(root: Path, identity: str) -> dict:
                 timestamps['started_at'] = started['at']
             if terminal is not None:
                 _receipt(terminal, request, 'terminal')
-                if started is None or terminal['runner_instance'] != started['runner_instance'] or terminal['at'] < started['at']:
+                if started is None or terminal['runner_instance'] != started['runner_instance'] or datetime.fromisoformat(terminal['at']) < datetime.fromisoformat(started['at']):
                     raise ValueError('Invalid terminal history')
                 phase = 'succeeded' if terminal['exit_code'] == 0 else 'failed'
                 timestamps['finished_at'] = terminal['at']

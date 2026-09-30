@@ -1,0 +1,116 @@
+---
+- name: Require reviewed immutable source identities
+  ansible.builtin.assert:
+    that:
+      - maintenance_executor_apps_commit is match('^[0-9a-f]{40}$')
+      - maintenance_executor_ansible_commit is match('^[0-9a-f]{40}$')
+      - maintenance_executor_apps_sha256 is match('^[0-9a-f]{64}$')
+      - maintenance_executor_ansible_sha256 is match('^[0-9a-f]{64}$')
+      - maintenance_executor_python is match('^/[a-zA-Z0-9_./-]+$')
+      - maintenance_executor_release_root is match('^/[a-zA-Z0-9_./-]+$')
+      - maintenance_runner_root is match('^/[a-zA-Z0-9_./-]+$')
+      - maintenance_runner_user is match('^[a-z_][a-z0-9_-]*[$]?$')
+
+- name: Create root-owned executor installation directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ maintenance_executor_release_root }}"
+    - /etc/systemd/user
+    - /etc/homelab-maintenance
+
+- name: Create private request directory
+  ansible.builtin.file:
+    path: "{{ maintenance_runner_root }}/requests"
+    state: directory
+    owner: "{{ maintenance_runner_user }}"
+    group: "{{ maintenance_runner_group }}"
+    mode: "0700"
+
+- name: Allocate installation staging directory
+  ansible.builtin.tempfile:
+    state: directory
+    path: "{{ maintenance_executor_release_root }}"
+    prefix: .staging-
+  register: maintenance_executor_staging
+
+- name: Assemble the verified runtime release
+  block:
+    - name: Download pinned archives
+      ansible.builtin.get_url:
+        url: "https://github.com/Starktastic-Homelab/{{ item.name }}/archive/{{ item.commit }}.tar.gz"
+        checksum: "sha256:{{ item.sha256 }}"
+        dest: "{{ maintenance_executor_staging.path }}/{{ item.name }}.tar.gz"
+        mode: "0600"
+      loop:
+        - name: apps
+          commit: "{{ maintenance_executor_apps_commit }}"
+          sha256: "{{ maintenance_executor_apps_sha256 }}"
+        - name: ansible
+          commit: "{{ maintenance_executor_ansible_commit }}"
+          sha256: "{{ maintenance_executor_ansible_sha256 }}"
+
+    - name: Create source directories
+      ansible.builtin.file:
+        path: "{{ maintenance_executor_staging.path }}/{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop: [apps, ansible]
+
+    - name: Extract verified archives
+      ansible.builtin.unarchive:
+        src: "{{ maintenance_executor_staging.path }}/{{ item }}.tar.gz"
+        dest: "{{ maintenance_executor_staging.path }}/{{ item }}"
+        remote_src: true
+        extra_opts: [--strip-components=1]
+        owner: root
+        group: root
+      loop: [apps, ansible]
+
+    - name: Finalize content-addressed runtime manifest
+      ansible.builtin.command:
+        argv:
+          - "{{ maintenance_executor_python }}"
+          - -B
+          - "{{ maintenance_executor_staging.path }}/ansible/scripts/maintenance_install.py"
+          - "{{ maintenance_executor_staging.path }}"
+          - "{{ maintenance_executor_release_root }}"
+          - "{{ maintenance_runner_root }}"
+          - "{{ maintenance_runner_instance }}"
+          - "{{ maintenance_executor_apps_commit }}"
+      register: maintenance_executor_installation
+      changed_when: (maintenance_executor_installation.stdout | from_json).created
+
+    - name: Install fixed user-service template
+      ansible.builtin.template:
+        src: homelab-maintenance@.service.j2
+        dest: /etc/systemd/user/homelab-maintenance@.service
+        owner: root
+        group: root
+        mode: "0644"
+      vars:
+        maintenance_executor_manifest: "{{ (maintenance_executor_installation.stdout | from_json).manifest }}"
+
+    - name: Record installed manifest reference
+      ansible.builtin.copy:
+        content: "{{ maintenance_executor_installation.stdout }}\n"
+        dest: /etc/homelab-maintenance/installation.json
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Enable reviewed runner user lingering without starting operations
+      ansible.builtin.command:
+        argv: [loginctl, enable-linger, "{{ maintenance_runner_user }}"]
+        creates: "/var/lib/systemd/linger/{{ maintenance_runner_user }}"
+  always:
+    - name: Remove only installation staging files
+      ansible.builtin.file:
+        path: "{{ maintenance_executor_staging.path }}"
+        state: absent

@@ -9,3 +9,9 @@ maintenance_runner_executor_python: /usr/bin/python3
 maintenance_runner_executor_release_root: /opt/homelab-maintenance/releases
 # Required when enabled: maintenance_runner_executor_apps_commit, _apps_sha256,
 # _ansible_commit, _ansible_sha256 (reviewed GitHub archive identities).
+
+# Optional installation-only dependency bundle. Never installs host OS packages.
+maintenance_runner_executor_dependencies_enabled: false
+maintenance_runner_executor_kubectl_arch: amd64
+# When enabled, also require reviewed _kubectl_version (vX.Y.Z), _kubectl_sha256,
+# _websocket_version (must match Apps requirements), _websocket_url, _websocket_sha256.

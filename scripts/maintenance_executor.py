@@ -2,10 +2,13 @@
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import importlib.metadata
 import json
 import os
 from pathlib import Path
 import signal
+import re
+import zipfile
 import stat
 import subprocess
 import sys
@@ -28,14 +31,44 @@ def file_hash(path):
             return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def runtime_files(release):
+    """Exact source/dependency inventory for new releases; never follow links."""
+    release = Path(release)
+    files = {str(p.relative_to(release)) for area in ('apps/scripts/storage', 'ansible/scripts')
+             for p in (release/area).rglob('*.py')}
+    files.add('apps/scripts/storage/requirements.txt')
+    dependencies = release/'dependencies'
+    if dependencies.exists() or dependencies.is_symlink():
+        if dependencies.is_symlink() or not dependencies.is_dir():
+            raise ValueError('Unsafe dependency directory')
+        for path in dependencies.rglob('*'):
+            if path.is_symlink() or not (path.is_dir() or path.is_file()):
+                raise ValueError('Unsafe dependency entry')
+            if path.is_file(): files.add(str(path.relative_to(release)))
+        if not (dependencies/'bin/kubectl').is_file() or not (dependencies/'python').is_dir():
+            raise ValueError('Incomplete dependency bundle')
+    return sorted(files)
+
+
 def build_manifest(release, root, instance, apps_commit):
     """Installation-time only. Runtime IDs are SHA-256 of this canonical manifest."""
     release = Path(release)
-    files = sorted({str(p.relative_to(release)) for area in ('apps/scripts/storage', 'ansible/scripts')
-                    for p in (release/area).rglob('*.py')})
+    files = runtime_files(release)
+    if (release/'dependencies').exists():
+        requirement = (release/'apps/scripts/storage/requirements.txt').read_text().strip()
+        pin = re.fullmatch(r'websocket-client==([0-9]+(?:\.[0-9]+){2})', requirement)
+        wheels = list((release/'dependencies/python').glob('*.whl'))
+        if pin is None or len(wheels) != 1 or wheels[0].name != 'websocket_client-'+pin[1]+'-py3-none-any.whl':
+            raise ValueError('Incomplete or unpinned transport wheel')
+        distributions = list(importlib.metadata.distributions(path=[str(wheels[0])]))
+        if len(distributions) != 1 or distributions[0].version != pin[1] or distributions[0].metadata['Name'] != 'websocket-client':
+            raise ValueError('Transport metadata differs from requirement')
+        with zipfile.ZipFile(wheels[0]) as wheel:
+            if 'websocket/__init__.py' not in wheel.namelist():
+                raise ValueError('Transport module absent')
     if not {ADAPTER, *HELPERS}.issubset(files):
         raise ValueError('Missing runtime sources')
-    return dict(schema=1, state_root=str(root), runner_instance=instance, apps_commit=apps_commit,
+    return dict(schema=2, state_root=str(root), runner_instance=instance, apps_commit=apps_commit,
                 python=str(Path(sys.executable).resolve()), python_sha256=file_hash(Path(sys.executable).resolve()),
                 python_version=list(sys.version_info[:3]), files={name: file_hash(release/name) for name in files})
 
@@ -45,10 +78,12 @@ def manifest(path):
     with directory(path.parent) as fd:
         data = read_json(fd, path.name, private=False)
     fields = {'schema', 'state_root', 'runner_instance', 'apps_commit', 'python', 'python_sha256', 'python_version', 'files'}
-    if set(data) != fields or type(data['schema']) is not int or data['schema'] != 1:
+    if set(data) != fields or type(data['schema']) is not int or data['schema'] not in (1, 2):
         raise ValueError('Invalid runtime manifest')
     if not isinstance(data['files'], dict) or not {ADAPTER, *HELPERS}.issubset(data['files']):
         raise ValueError('Incomplete runtime manifest')
+    if data['schema'] == 2 and set(data['files']) != set(runtime_files(path.parent)):
+        raise ValueError('Runtime inventory drift')
     if (data['python'] != str(Path(sys.executable).resolve()) or data['python_version'] != list(sys.version_info[:3]) or
             file_hash(data['python']) != data['python_sha256']):
         raise ValueError('Interpreter drift')
@@ -104,6 +139,11 @@ def run(manifest_path, identity):
                     os.fchmod(output.fileno(), 0o600); os.fchmod(error.fileno(), 0o600)
                     argv = [data['python'], '-B', '-E', '-s', str(Path(manifest_path).parent/ADAPTER),
                             request['operation'], '--state-root', str(root), '--service', request['service']]
+                    if data['schema'] == 2:
+                        release = Path(manifest_path).parent
+                        argv += ['--helper-directory', str(release/'ansible/scripts')]
+                        if (release/'dependencies').exists():
+                            argv += ['--dependency-directory', str(release/'dependencies')]
                     env = {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'}
                     with subprocess.Popen(argv, env=env, stdout=output, stderr=error,
                                           pass_fds=(lock_fd,), start_new_session=True) as child:

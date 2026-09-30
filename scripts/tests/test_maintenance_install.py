@@ -9,6 +9,7 @@ from maintenance_executor import manifest
 class InstallTests(unittest.TestCase):
     setUp = fixtures.ExecutorTests.setUp
     refresh = fixtures.ExecutorTests.refresh
+    dependencies = fixtures.ExecutorTests.dependencies
     def test_finalize_is_content_addressed_and_existing_release_verified(self):
         releases = self.base/'releases'; releases.mkdir()
         self.manifest.unlink()
@@ -22,6 +23,16 @@ class InstallTests(unittest.TestCase):
         self.assertFalse(finalize(self.release, releases, self.root, 'test-runner', 'a'*40)['created'])
         (path.parent/'apps/scripts/storage/supervised_readonly.py').write_text('changed')
         with self.assertRaises(ValueError): finalize(self.release, releases, self.root, 'test-runner', 'a'*40)
+
+    def test_published_kubectl_remains_executable_and_wheel_read_only(self):
+        self.dependencies(); self.manifest.unlink()
+        releases = self.base/'releases'; releases.mkdir()
+        result = finalize(self.release, releases, self.root, 'test-runner', 'a'*40)
+        release = Path(result['manifest']).parent
+        self.assertEqual((release/'dependencies/bin/kubectl').stat().st_mode & 0o777, 0o755)
+        wheel = next((release/'dependencies/python').glob('*.whl'))
+        self.assertEqual(wheel.stat().st_mode & 0o777, 0o644)
+        manifest(result['manifest'])
 
     def test_unit_has_no_restart_or_boot_activation(self):
         source = (Path(__file__).resolve().parents[2]/'roles/maintenance_runner/templates/homelab-maintenance@.service.j2').read_text()

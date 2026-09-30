@@ -68,6 +68,7 @@ def qualify(root):
     source = Path(__file__).resolve().parents[1]
     release = root/'release'; (release/'ansible/scripts').mkdir(parents=True)
     (release/'apps/scripts/storage').mkdir(parents=True)
+    (release/'apps/scripts/storage/requirements.txt').write_text('websocket-client==1.9.2\n')
     for name in ('maintenance_executor.py', 'maintenance_requests.py', 'maintenance_lock.py'):
         shutil.copyfile(source/name, release/'ansible/scripts'/name)
     adapter = release/'apps/scripts/storage/supervised_readonly.py'; adapter.write_text(FIXTURE)

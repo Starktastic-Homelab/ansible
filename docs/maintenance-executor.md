@@ -2,8 +2,10 @@
 
 Status: the synthetic executor passed disposable-VM systemd qualification on
 2026-09-30. See [qualification evidence](maintenance-executor-qualification-2026-09-30.md).
-**Production installation is not qualified or enabled.** No production Apps
-helper pin or workflow changes are part of this increment.
+The original read-only executor was installed and accepted on VM300 on
+2026-10-01 (local time), with diagnostic findings preserved. The dependency-bundle
+upgrade described below is source-only and has not been installed or qualified
+on VM300. No production workflow switch is included.
 
 The executor accepts only `status` and `preflight` for Jellyfin. It has no API for
 shell commands, arbitrary environment variables, source paths, or mutations.
@@ -104,3 +106,63 @@ after evidence export. This qualifies the synthetic supervised execution protoco
 it does not validate Ansible installation, the production runtime, runner reboot,
 or live storage. Production adoption, backup integration and mutation-specific
 reconciliation need later reviewed plans and deployment approval.
+
+## Managed preflight dependencies (opt-in upgrade)
+
+New runtime manifests use schema 2. They bind the Apps requirements file and
+exact source/dependency inventory as well as file hashes and interpreter identity.
+Added, removed, modified, or symlinked dependency files invalidate the runtime.
+Schema-1 manifests and their original request/runtime IDs remain readable; do not
+rewrite old receipts or replay a started request during upgrade.
+
+The fixed executor passes its verified `ansible/scripts` directory to the Apps
+adapter. Requests cannot supply helper/dependency paths. The adapter only discovers
+the helper; it does not import it. Install a commit containing the matching Apps
+adapter options before enabling this Ansible revision.
+
+Set `maintenance_runner_executor_dependencies_enabled: true` only in a reviewed
+installation inventory, alongside the existing executor opt-in and immutable
+Apps/Ansible archive pins. Supply all of:
+
+- `maintenance_runner_executor_kubectl_version`: exact `vX.Y.Z`, compatible with
+  the observed API server version; no `latest` lookup during installation.
+- `maintenance_runner_executor_kubectl_arch`: `amd64` (default) or `arm64`, checked
+  against the target host architecture.
+- `maintenance_runner_executor_kubectl_sha256`: reviewed publisher checksum.
+- `maintenance_runner_executor_websocket_version`: exact Apps requirements pin.
+- `maintenance_runner_executor_websocket_url`: reviewed pure-Python wheel URL
+  under `https://files.pythonhosted.org/packages/`.
+- `maintenance_runner_executor_websocket_sha256`: reviewed wheel checksum.
+
+The role downloads kubectl from the official versioned Kubernetes URL into
+`dependencies/bin/kubectl`, and retains the checksum-verified wheel under
+`dependencies/python/`. It installs no OS packages, changes no host Python
+packages, and runs no pip/build hooks. The release validator checks wheel metadata
+against the pinned requirement and checks that the transport module is present.
+The read-only adapter examines wheel metadata without importing transport code;
+there is no fallback to host packages or host kubectl for a managed bundle.
+The immutable wheel is available to a future explicitly qualified transport
+consumer; this change does not introduce a mutating consumer.
+
+The manifest covers wheel bytes and kubectl bytes; publication preserves kubectl's
+executable mode and makes the wheel read-only to the service account. A new bundle
+produces a new runtime ID. No service reload, request submission, or NAS mutation
+occurs during source delivery. Installation is still a separately reviewed VM300
+operation with new acceptance requests and preserved original evidence.
+
+Checks only establish local prerequisites. Executable presence/version metadata
+are not live cluster access, functional transport qualification, journal
+reconciliation, or writer release authorization. Existing journals continue to
+report `unknown` until a separately designed evidence-consumption protocol exists.
+
+Installation references: [Kubernetes checksum verification](https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/)
+and [Python ZIP imports](https://docs.python.org/3/library/zipimport.html).
+
+Source validation on 2026-10-01: 49 synthetic maintenance tests and 110 Apps
+storage tests passed. A combined executor/actual-adapter smoke test using synthetic
+state and the verified wheel passed helper, transport and kubectl discovery and
+wrote a terminal receipt. It used a fake kubectl that must not execute. No local
+Ansible/systemd/container qualification ran. The Apps suite emitted existing
+SQLite fixture ResourceWarnings. Full pre-commit was unavailable locally;
+changed YAML was parsed and formatted with cached tools. CI must supply
+Ansible lint/syntax validation, and VM300 upgrade acceptance is still pending.

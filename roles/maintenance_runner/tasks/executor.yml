@@ -73,6 +73,10 @@
         group: root
       loop: [apps, ansible]
 
+    - name: Assemble explicitly enabled pinned dependencies
+      ansible.builtin.include_tasks: dependencies.yml
+      when: maintenance_runner_executor_dependencies_enabled | bool
+
     - name: Finalize content-addressed runtime manifest
       ansible.builtin.command:
         argv:

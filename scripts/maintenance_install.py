@@ -28,7 +28,8 @@ def finalize(staging, releases, root, instance, apps_commit):
         os.chmod(directory, 0o755)
         for filename in files:
             source = Path(directory)/filename
-            if not source.is_symlink(): os.chmod(source, 0o644)
+            if not source.is_symlink():
+                os.chmod(source, 0o755 if source == staging/'dependencies/bin/kubectl' else 0o644)
     os.rename(staging, target)
     with path.open('rb') as stream: os.fsync(stream.fileno())
     fd = os.open(releases, os.O_RDONLY | os.O_DIRECTORY)

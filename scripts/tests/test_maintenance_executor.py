@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -28,6 +29,7 @@ class ExecutorTests(unittest.TestCase):
         self.release = self.base/'release'; (self.release/'apps/scripts/storage').mkdir(parents=True)
         self.adapter = self.release/'apps/scripts/storage/supervised_readonly.py'
         self.adapter.write_text('print("local fixture")\n')
+        (self.adapter.parent/'requirements.txt').write_text('websocket-client==1.9.2\n')
         (self.release/'ansible/scripts').mkdir(parents=True)
         for name in ('maintenance_executor.py', 'maintenance_requests.py', 'maintenance_lock.py'):
             shutil.copyfile(Path(__file__).resolve().parents[1]/name, self.release/'ansible/scripts'/name)
@@ -49,6 +51,52 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(requests.inspect_request(self.root, RID)['phase'], 'succeeded')
         self.assertNotEqual(executor.run(self.manifest, RID), 0)
         self.assertEqual((self.root/'operation.json').read_bytes(), self.original)
+
+    def dependencies(self):
+        deps = self.release/'dependencies'; (deps/'bin').mkdir(parents=True)
+        (deps/'python').mkdir()
+        (deps/'bin/kubectl').write_text('#!/bin/sh\nexit 99\n')
+        (deps/'bin/kubectl').chmod(0o755)
+        with zipfile.ZipFile(deps/'python/websocket_client-1.9.2-py3-none-any.whl', 'w') as wheel:
+            wheel.writestr('websocket_client-1.9.2.dist-info/METADATA', 'Name: websocket-client\nVersion: 1.9.2\n')
+            wheel.writestr('websocket/__init__.py', 'raise AssertionError("must not import")')
+        return deps
+
+    def test_managed_inputs_bound_and_drift_refused_before_start(self):
+        deps = self.dependencies(); self.refresh(); self.publish()
+        for path in [self.adapter.parent/'requirements.txt', deps/'bin/kubectl', deps/'python/websocket_client-1.9.2-py3-none-any.whl']:
+            with self.subTest(path=path):
+                original = path.read_bytes(); path.write_bytes(original+b'# changed\n')
+                with self.assertRaises(ValueError): executor.manifest(self.manifest)
+                path.write_bytes(original)
+        extra = deps/'python/unreviewed.py'; extra.write_text('raise AssertionError')
+        self.assertNotEqual(executor.run(self.manifest, RID), 0)
+        self.assertFalse((self.root/'requests'/RID/'started.json').exists())
+
+    def test_incomplete_or_wrong_transport_cannot_be_published(self):
+        deps = self.dependencies()
+        wheel = next((deps/'python').glob('*.whl')); original = wheel.read_bytes()
+        wheel.unlink()
+        with self.assertRaises(ValueError): self.refresh()
+        wheel.write_bytes(original)
+        (self.adapter.parent/'requirements.txt').write_text('websocket-client==0.0.1\n')
+        with self.assertRaises(ValueError): self.refresh()
+
+    def test_managed_child_receives_only_fixed_release_paths(self):
+        self.dependencies()
+        self.adapter.write_text('import json,sys;print(json.dumps(sys.argv[1:]))')
+        self.refresh(); self.publish()
+        self.assertEqual(executor.run(self.manifest, RID), 0)
+        argv = json.loads((self.root/'requests'/RID/'stdout.log').read_text())
+        self.assertIn('--helper-directory', argv)
+        self.assertEqual(argv[argv.index('--helper-directory')+1], str(self.release/'ansible/scripts'))
+        self.assertEqual(argv[argv.index('--dependency-directory')+1], str(self.release/'dependencies'))
+
+    def test_legacy_manifest_can_still_be_inspected(self):
+        self.data['schema'] = 1
+        self.data['files'] = {k:v for k,v in self.data['files'].items() if k.endswith('.py')}
+        self.manifest.chmod(0o600); self.manifest.write_bytes(requests.encoded(self.data))
+        self.assertEqual(executor.manifest(self.manifest), self.data)
 
     def test_wrong_owner_stage_and_runtime_never_start(self):
         for field, value in [('expected_stage', 'held'), ('runtime_id', 'c'*64), ('apps_commit', 'b'*40)]:

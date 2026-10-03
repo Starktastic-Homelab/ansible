@@ -1,0 +1,24 @@
+---
+# k3s node-label flags apply at registration. Patch existing Nodes as well;
+# do not create synthetic Node objects when a guest has not joined yet.
+- name: Wait for every inventory node to register
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+    name: "{{ item }}"
+  register: bootstrap_cluster_csi_node
+  until: bootstrap_cluster_csi_node.resources | length == 1
+  retries: 24
+  delay: 5
+  loop: "{{ groups['all_k3s'] }}"
+
+- name: Reconcile native Proxmox topology labels on existing nodes
+  kubernetes.core.k8s:
+    state: patched
+    api_version: v1
+    kind: Node
+    name: "{{ item }}"
+    definition:
+      metadata:
+        labels: "{{ hostvars[item].proxmox_csi_node_labels }}"
+  loop: "{{ groups['all_k3s'] }}"

@@ -1,0 +1,269 @@
+---
+- name: Verify external maintenance ownership before inspection
+  ansible.builtin.command:
+    argv: [python3, "{{ playbook_dir }}/maintenance-helper/scripts/maintenance_lock.py", verify]
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
+- name: Require reviewed shared storage identities
+  ansible.builtin.assert:
+    that:
+      - groups['proxmox_hosts'] | length == 1
+      - proxmox_csi_storage_id is match('^[a-zA-Z][a-zA-Z0-9_-]+$')
+      - proxmox_csi_storage_pool is match('^[a-zA-Z][a-zA-Z0-9_-]+$')
+      - proxmox_csi_storage_nfs_server is match('^[a-zA-Z0-9][a-zA-Z0-9.-]+$')
+      - proxmox_csi_storage_nfs_export is match('^/[^\\s]+$')
+      - proxmox_csi_storage_nodes == [inventory_hostname]
+      - proxmox_csi_storage_owner_id | type_debug == 'int'
+      - proxmox_csi_storage_owner_id | int >= 100
+      - proxmox_csi_storage_owner_id | int <= 999999999
+      - proxmox_csi_storage_user == 'kubernetes-csi@pve'
+      - proxmox_csi_storage_token == 'retained'
+      - proxmox_csi_storage_role == 'HomelabCSI'
+      - proxmox_csi_storage_secret_destination is match('^/maintenance/private/[a-zA-Z0-9_-]+[.]json$')
+      - proxmox_csi_storage_api_url == 'https://' ~ ansible_host ~ ':8006/api2/json'
+    fail_msg: Supply the reviewed dedicated NFS, pool, unused owner ID and external secret path; setup is single-host scoped.
+
+- name: Read registered storage definitions
+  ansible.builtin.command: pvesh get /storage --output-format json
+  register: proxmox_csi_storage_definitions
+  changed_when: false
+
+- name: Refuse mismatched existing storage
+  ansible.builtin.assert:
+    that:
+      - item.type == 'nfs'
+      - item.server == proxmox_csi_storage_nfs_server
+      - item.export == proxmox_csi_storage_nfs_export
+      - item.content == 'images'
+      - item.nodes.split(',') | sort == proxmox_csi_storage_nodes | sort
+      - item.options == 'vers=4.2'
+      - item.disable | default(0) | int == 0
+  loop: "{{ proxmox_csi_storage_definitions.stdout | from_json }}"
+  when: item.storage == proxmox_csi_storage_id
+
+- name: Read cluster VM and container identities
+  ansible.builtin.command: pvesh get /cluster/resources --type vm --output-format json
+  register: proxmox_csi_storage_vms
+  changed_when: false
+
+- name: Refuse an owner ID used by a VM or container
+  ansible.builtin.assert:
+    that:
+      - proxmox_csi_storage_owner_id | int not in (proxmox_csi_storage_vms.stdout | from_json | map(attribute='vmid') | map('int') | list)
+    fail_msg: The external image owner ID must never be a real VM or container.
+
+- name: Refuse unrelated members of the CSI resource pool
+  ansible.builtin.assert:
+    that:
+      - item.type == 'qemu'
+      - "'k3s' in item.tags | default('') | split(';')"
+  loop: "{{ proxmox_csi_storage_vms.stdout | from_json }}"
+  when: item.pool | default('') == proxmox_csi_storage_pool
+
+- name: Read pools
+  ansible.builtin.command: pvesh get /pools --output-format json
+  register: proxmox_csi_storage_pools
+  changed_when: false
+
+- name: Read existing pool membership
+  ansible.builtin.command:
+    argv: [pvesh, get, "/pools/{{ proxmox_csi_storage_pool }}", --output-format, json]
+  register: proxmox_csi_storage_pool_detail
+  changed_when: false
+  when: proxmox_csi_storage_pool in (proxmox_csi_storage_pools.stdout | from_json | map(attribute='poolid') | list)
+
+- name: Refuse an unrelated existing pool
+  ansible.builtin.assert:
+    that:
+      - >-
+        (proxmox_csi_storage_pool_detail.stdout | from_json).comment | default('') ==
+        'Retained CSI infrastructure; image owner ' ~ proxmox_csi_storage_owner_id ~ ' is reserved and must never be a VM'
+      - (proxmox_csi_storage_pool_detail.stdout | from_json).members | rejectattr('type', 'equalto', 'qemu') | list | length == 0
+  when: proxmox_csi_storage_pool in (proxmox_csi_storage_pools.stdout | from_json | map(attribute='poolid') | list)
+
+- name: Read existing ACLs
+  ansible.builtin.command: pveum acl list --output-format json
+  register: proxmox_csi_storage_acls
+  changed_when: false
+
+- name: Refuse broader existing grants
+  ansible.builtin.assert:
+    that:
+      - item.path in (proxmox_csi_storage_grants | map(attribute='path') | list)
+      - item.roleid == proxmox_csi_storage_role
+      - item.propagate | int == (proxmox_csi_storage_grants | selectattr('path', 'equalto', item.path) | first).propagate
+  loop: "{{ proxmox_csi_storage_acls.stdout | from_json }}"
+  when: item.ugid in [proxmox_csi_storage_user, proxmox_csi_storage_user ~ '!' ~ proxmox_csi_storage_token]
+
+- name: Read existing roles
+  ansible.builtin.command: pveum role list --output-format json
+  register: proxmox_csi_storage_roles
+  changed_when: false
+
+- name: Refuse a changed runtime role
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.privs | replace(',', ' ') | split | sort ==
+        ['Datastore.Allocate', 'Datastore.AllocateSpace', 'Datastore.Audit', 'VM.Audit', 'VM.Config.Disk']
+  loop: "{{ proxmox_csi_storage_roles.stdout | from_json }}"
+  when: item.roleid == proxmox_csi_storage_role
+
+- name: Read existing users
+  ansible.builtin.command: pveum user list --output-format json
+  register: proxmox_csi_storage_users
+  changed_when: false
+
+- name: Refuse inherited group privileges or a disabled principal
+  ansible.builtin.assert:
+    that:
+      - not item.groups | default('')
+      - item.enable | int == 1
+      - item.expire | default(0) | int == 0
+  loop: "{{ proxmox_csi_storage_users.stdout | from_json }}"
+  when: item.userid == proxmox_csi_storage_user
+
+- name: Read existing token identities
+  ansible.builtin.command:
+    argv: [pveum, user, token, list, "{{ proxmox_csi_storage_user }}", --output-format, json]
+  register: proxmox_csi_storage_tokens
+  changed_when: false
+  when: proxmox_csi_storage_user in (proxmox_csi_storage_users.stdout | from_json | map(attribute='userid') | list)
+
+- name: Refuse an unseparated or expiring existing token
+  ansible.builtin.assert:
+    that:
+      - item.privsep | int == 1
+      - item.expire | default(0) | int == 0
+  loop: "{{ proxmox_csi_storage_tokens.stdout | default('[]') | from_json }}"
+  when: item.tokenid == proxmox_csi_storage_token
+
+- name: Record token existence without secret material
+  ansible.builtin.set_fact:
+    proxmox_csi_storage_token_exists: >-
+      {{ proxmox_csi_storage_token in (proxmox_csi_storage_tokens.stdout | default('[]') | from_json | map(attribute='tokenid') | list) }}
+
+- name: Inspect external private directory
+  ansible.builtin.stat:
+    path: /maintenance/private
+    follow: false
+  delegate_to: localhost
+  become: false
+  register: proxmox_csi_storage_private
+
+- name: Require a protected external private directory
+  ansible.builtin.assert:
+    that:
+      - proxmox_csi_storage_private.stat.isdir | default(false)
+      - not proxmox_csi_storage_private.stat.islnk | default(false)
+      - proxmox_csi_storage_private.stat.mode == '0700'
+
+- name: Inspect external token destination
+  ansible.builtin.stat:
+    path: "{{ proxmox_csi_storage_secret_destination }}"
+    follow: false
+  delegate_to: localhost
+  become: false
+  register: proxmox_csi_storage_secret_stat
+  no_log: true
+
+- name: Refuse implicit token recovery
+  ansible.builtin.assert:
+    that:
+      - proxmox_csi_storage_token_exists == proxmox_csi_storage_secret_stat.stat.exists
+      - not proxmox_csi_storage_secret_stat.stat.islnk | default(false)
+      - not proxmox_csi_storage_secret_stat.stat.exists or proxmox_csi_storage_secret_stat.stat.isreg
+      - not proxmox_csi_storage_secret_stat.stat.exists or proxmox_csi_storage_secret_stat.stat.mode == '0600'
+    fail_msg: Token/store mismatch; inspect explicitly and never regenerate a lost secret.
+  no_log: true
+
+- name: Read existing protected credential binding
+  ansible.builtin.slurp:
+    src: "{{ proxmox_csi_storage_secret_destination }}"
+  delegate_to: localhost
+  become: false
+  register: proxmox_csi_storage_existing_secret
+  when: proxmox_csi_storage_token_exists
+  no_log: true
+
+- name: Refuse a credential store for a different identity
+  ansible.builtin.assert:
+    that:
+      - (proxmox_csi_storage_existing_secret.content | b64decode | from_json).origin == proxmox_csi_storage_api_url
+      - (proxmox_csi_storage_existing_secret.content | b64decode | from_json).token_id == proxmox_csi_storage_user ~ '!' ~ proxmox_csi_storage_token
+      - (proxmox_csi_storage_existing_secret.content | b64decode | from_json).token_secret | length > 0
+  when: proxmox_csi_storage_token_exists
+  no_log: true
+
+- name: Verify ownership immediately before shared infrastructure changes
+  ansible.builtin.command:
+    argv: [python3, "{{ playbook_dir }}/maintenance-helper/scripts/maintenance_lock.py", verify]
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
+- name: Register dedicated NAS NFS storage
+  ansible.builtin.command:
+    argv:
+      [pvesm, add, nfs, "{{ proxmox_csi_storage_id }}", --server, "{{ proxmox_csi_storage_nfs_server }}",
+       --export, "{{ proxmox_csi_storage_nfs_export }}", --content, images, --nodes, "{{ proxmox_csi_storage_nodes | join(',') }}",
+       --options, "vers=4.2"]
+  when: proxmox_csi_storage_id not in (proxmox_csi_storage_definitions.stdout | from_json | map(attribute='storage') | list)
+  changed_when: true
+
+- name: Create persistent CSI VM resource pool
+  ansible.builtin.command:
+    argv:
+      [pvesh, create, /pools, --poolid, "{{ proxmox_csi_storage_pool }}", --comment,
+       "Retained CSI infrastructure; image owner {{ proxmox_csi_storage_owner_id }} is reserved and must never be a VM"]
+  when: proxmox_csi_storage_pool not in (proxmox_csi_storage_pools.stdout | from_json | map(attribute='poolid') | list)
+  changed_when: true
+
+- name: Create non-replication runtime role
+  ansible.builtin.command:
+    argv:
+      [pveum, role, add, "{{ proxmox_csi_storage_role }}", --privs,
+       "VM.Audit VM.Config.Disk Datastore.Allocate Datastore.AllocateSpace Datastore.Audit"]
+  when: proxmox_csi_storage_role not in (proxmox_csi_storage_roles.stdout | from_json | map(attribute='roleid') | list)
+  changed_when: true
+
+- name: Create dedicated runtime user
+  ansible.builtin.command:
+    argv: [pveum, user, add, "{{ proxmox_csi_storage_user }}", --enable, "1"]
+  when: proxmox_csi_storage_user not in (proxmox_csi_storage_users.stdout | from_json | map(attribute='userid') | list)
+  changed_when: true
+
+- name: Create separated runtime token once
+  ansible.builtin.command:
+    argv: [pveum, user, token, add, "{{ proxmox_csi_storage_user }}", "{{ proxmox_csi_storage_token }}", --privsep, "1", --output-format, json]
+  register: proxmox_csi_storage_created_token
+  when: not proxmox_csi_storage_token_exists
+  changed_when: true
+  no_log: true
+
+- name: Persist token outside the disposable cluster
+  ansible.builtin.copy:
+    content: >-
+      {{ {'origin': proxmox_csi_storage_api_url,
+          'token_id': proxmox_csi_storage_user ~ '!' ~ proxmox_csi_storage_token,
+          'token_secret': (proxmox_csi_storage_created_token.stdout | from_json).value} | to_json }}
+    dest: "{{ proxmox_csi_storage_secret_destination }}"
+    mode: "0600"
+    force: false
+  delegate_to: localhost
+  become: false
+  when: not proxmox_csi_storage_token_exists
+  no_log: true
+
+- name: Grant runtime access only to the pool storage and external image owner
+  ansible.builtin.command:
+    argv: [pveum, acl, modify, "{{ item.0.path }}", "{{ item.1.flag }}", "{{ item.1.id }}",
+           --roles, "{{ proxmox_csi_storage_role }}", --propagate, "{{ item.0.propagate }}"]
+  loop: >-
+    {{ proxmox_csi_storage_grants | product([
+       {'flag': '--users', 'id': proxmox_csi_storage_user},
+       {'flag': '--tokens', 'id': proxmox_csi_storage_user ~ '!' ~ proxmox_csi_storage_token}]) | list }}
+  when: item.0.path not in (proxmox_csi_storage_acls.stdout | from_json | selectattr('ugid', 'equalto', item.1.id) | map(attribute='path') | list)
+  changed_when: true

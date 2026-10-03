@@ -1,0 +1,20 @@
+---
+# Set the storage identity from a reviewed setup vars file; no active defaults.
+proxmox_csi_storage_id: ""
+proxmox_csi_storage_nfs_server: ""
+proxmox_csi_storage_nfs_export: ""
+proxmox_csi_storage_nodes: []
+proxmox_csi_storage_pool: ""
+proxmox_csi_storage_owner_id: 0
+proxmox_csi_storage_user: kubernetes-csi@pve
+proxmox_csi_storage_token: retained
+proxmox_csi_storage_role: HomelabCSI
+proxmox_csi_storage_secret_destination: ""
+proxmox_csi_storage_api_url: ""
+proxmox_csi_storage_grants:
+  - path: "/pool/{{ proxmox_csi_storage_pool }}"
+    propagate: 1
+  - path: "/storage/{{ proxmox_csi_storage_id }}"
+    propagate: 0
+  - path: "/vms/{{ proxmox_csi_storage_owner_id }}"
+    propagate: 0

@@ -1,0 +1,10 @@
+---
+# Run only from the external maintenance runner under its existing operation lock.
+# Not imported by the normal k3s deployment; NAS export creation is separate.
+- name: Prepare shared Proxmox CSI infrastructure during approved maintenance
+  hosts: proxmox_hosts
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  roles:
+    - role: proxmox_csi_storage

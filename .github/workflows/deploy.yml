@@ -38,6 +38,9 @@ jobs:
     env:
       HOMELAB_RUNNER_INSTANCE: cc1aeeb7-4827-466c-9d4b-5dc6c881f193
       ENROLL_ISCSI: ${{ inputs.enroll_iscsi_workers || 'false' }}
+      K3S_DRAIN_RECOVERY_NODES: >-
+        ${{ github.event_name == 'repository_dispatch' && github.event.action == 'infrastructure-changed'
+        && toJSON(github.event.client_payload.drained_nodes || fromJSON('[]')) || '[]' }}
       MAINTENANCE_OWNER: ${{ github.repository }}/${{ github.run_id }}/${{ github.run_attempt }}
       PROXMOX_URL: ${{ secrets.PROXMOX_URL }}
       PROXMOX_USER: ${{ secrets.PROXMOX_USER }}

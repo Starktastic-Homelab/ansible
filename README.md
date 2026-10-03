@@ -554,10 +554,27 @@ membership changed. This bootstrap is manual, never part of `k3s.yml`.
 
 Deploy uses a pinned helper, acquires before configuration, verifies immediately
 before the playbook, and releases only after success. Terraform's companion PR
-holds the same lock through drain/apply/recovery and releases before dispatching
-Ansible. Existing workflow concurrency alone does not serialize repositories.
+holds the same lock through drain/apply and releases before dispatching Ansible.
+Ansible installs k3s before performing the requested drain recovery and bootstrap. Existing workflow concurrency alone does not serialize repositories.
 The mutation job must run on this external runner; a container-local directory
 without the matching host marker cannot acquire ownership.
+
+The optional `infrastructure-changed` payload `drained_nodes` is a JSON list of
+nodes Terraform made unschedulable. After all k3s installation plays succeed,
+Ansible waits for every current inventory node to become Ready, then uncordons
+only listed names still in the inventory, before ArgoCD bootstrap. Installation
+or recovery failure stops the playbook and retains maintenance ownership.
+Ordinary push/manual runs and older dispatches without the list do not change
+node scheduling. This receiver must merge before the paired Terraform sender.
+
+Nodes already cordoned before Terraform started are omitted from the list, so
+surviving Node objects keep those operator holds. Recreated Node objects retain
+the normal Kubernetes scheduling defaults; this mechanism does not restore
+operator cordons after object deletion. Removed inventory nodes need no recovery.
+If the sender's dispatch fails after apply/release, inspect both runs and retry
+the failed dispatch with its original payload. Do not repeat drain/apply to infer
+the original list. Integrated replacement remains subject to disposable-lab
+qualification before Proxmox CSI activation.
 
 After a failed/cancelled operation: inspect `operation.json` on VM300 (protect its
 nonce from logs), identify the exact repository/run/attempt and current stage,

@@ -64,6 +64,18 @@ class SetupTests(unittest.TestCase):
                                                ('/vms/201','HomelabCSI',0,False),('/pool/k3s-csi','Administrator',1,False)]:
             self.assertEqual(self.allowed('Refuse broader existing grants', item=dict(path=path,roleid=role,propagate=propagate), **settings), expected)
 
+    def test_private_directory_accepts_owner_only_setgid_and_refuses_exposure(self):
+        # VM300 inherits setgid from its maintenance root: native stat reports 2700.
+        for mode, isdir, islnk, expected in [
+                ('0700',True,False,True), ('2700',True,False,True),
+                ('0770',True,False,False), ('2770',True,False,False),
+                ('0755',True,False,False), ('2707',True,False,False),
+                ('4700',True,False,False), ('1700',True,False,False),
+                ('0700',False,False,False), ('2700',True,True,False)]:
+            with self.subTest(mode=mode, isdir=isdir, islnk=islnk):
+                self.assertEqual(self.allowed('Require a protected external private directory',
+                    proxmox_csi_storage_private={'stat':dict(mode=mode,isdir=isdir,islnk=islnk)}), expected)
+
     def test_token_secret_mismatch_never_regenerates(self):
         for exists, token_exists, symlink, mode, expected in [(False,False,False,'',True),(True,True,False,'0600',True),
                 (False,True,False,'',False),(True,False,False,'0600',False),(True,True,True,'0600',False),

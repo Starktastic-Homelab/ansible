@@ -776,7 +776,7 @@ permissions and durability settings. This first profile supports one Proxmox hos
 Review its unused owner ID, existing role/user/ACLs and the exact storage identity.
 Use the external VM300 runner, the pinned maintenance helper already used by
 `deploy.yml`, and its existing ownership protocol. `/maintenance/private` must
-already be a real directory with mode `0700`, writable by the runner service user.
+already be a real owner-only directory with mode `0700` or `2700` (setgid), writable by the runner service user.
 After acquiring and exporting the operation ownership, the source entry point is:
 
 ```sh

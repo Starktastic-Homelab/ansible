@@ -1,4 +1,10 @@
 ---
+- name: Reconcile enabled Proxmox CSI topology before ArgoCD bootstrap
+  ansible.builtin.include_tasks: proxmox-csi.yml
+  when: proxmox_csi_enabled | default(false) | bool
+  tags:
+    - bootstrap
+
 # ponytail: two replicas, not a DaemonSet. k3s ships CoreDNS as a Deployment
 # whose manifest omits "replicas", so this patch survives the k3s restarts that
 # rewrite /var/lib/rancher/k3s/server/manifests/coredns.yaml -- no need to take

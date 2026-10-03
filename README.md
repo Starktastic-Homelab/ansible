@@ -577,6 +577,57 @@ its identity blocks maintenance until the shared lock domain is recovered and
 all possible writers/infrastructure jobs have been reconciled. Do not provision
 a second independent runner marker to bypass a held operation.
 
+### Proxmox CSI bootstrap preparation
+
+`group_vars/all/proxmox_csi.yml` stages the native topology prerequisites for the
+[accepted shared integration plan](https://github.com/Starktastic-Homelab/apps/blob/main/docs/superpowers/plans/2026-10-03-proxmox-csi-shared-integration.md).
+It is **disabled by default**. Merging this preparation runs the existing deployment
+workflow but adds no CSI operations and leaves generated k3s configuration unchanged.
+It does not install CSI, register NFS storage, allocate images, publish credentials,
+or migrate Jellyfin.
+
+The eventual activation change sets `proxmox_csi_enabled: true` and a nonempty
+`proxmox_csi_region` matching the stock driver's `clusters[].region`. Each VM's zone
+comes from the dynamic inventory's `proxmox_node`; no service or VM-to-zone map is
+maintained here. Both values must be valid Kubernetes label values. `k3s_common`
+validates them before configuring that node and writes native `node-label` options.
+Bootstrap also waits for and patches existing Node objects before installing ArgoCD,
+because registration flags do not update labels on already registered nodes.
+Enabling this changes the k3s configuration and can restart existing k3s services;
+that rollout belongs to the separate activation scope. Disabling it later does not
+uninstall CSI or remove existing Kubernetes labels; it is not a rollback procedure.
+
+The stock v0.20.0 [node image](https://github.com/sergelogvinov/proxmox-csi-plugin/blob/v0.20.0/Dockerfile)
+already carries mount, filesystem check/format/resize and device tools. No additional
+guest filesystem package installation or driver wrapper is added here. The qualified
+Debian guests supply the kernel/device support; the integrated deployment still needs
+its synthetic-volume qualification before production use.
+
+Replacement-ordering review: Terraform's locked `destroy` path completes all destroys
+before applying the new VMs. Ansible is dispatched only after a successful changed
+apply. Packer guests do not install k3s; this playbook starts it afterwards. The existing
+worker install guard only checks whether the k3s binary exists. A fresh control plane
+with surviving old workers is therefore **not qualified for CSI activation**: this
+PR adds neither fencing nor a safe partial-datastore-replacement workflow. The full
+rebuild lab does not prove that scenario safe. Retain the existing maintenance lock
+and iSCSI safeguards until the integrated replacement path is qualified.
+
+Before activation, the remaining shared scope is: a dedicated NAS export and Proxmox
+NFS registration, an external reserved image-owner ID, scoped API permissions and
+recoverable credentials, the stock Apps controller, safe replacement ordering, and
+PVC-first resize reconciliation. Apps remains the sole per-volume inventory. No
+production choices or resources are inferred from the disposable lab.
+
+Offline regression check (Ansible and PyYAML installed):
+
+```sh
+python3 scripts/tests/test_proxmox_csi_bootstrap.py
+```
+
+It renders with Ansible's own templating engine, checks exact disabled master/worker
+configuration bytes, inventory-specific new/existing Node labels, and rejects empty,
+malformed or overlong topology values, and checks bootstrap tag selection. It never connects to a host or Kubernetes API.
+
 ### Worker iSCSI enrollment
 
 The new `iscsi_initiator` role is disabled on routine deploys. After the shared

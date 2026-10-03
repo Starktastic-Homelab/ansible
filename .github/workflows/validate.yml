@@ -45,6 +45,9 @@ jobs:
       - name: Test worker enrollment refusals
         run: python3 scripts/tests/test_iscsi_initiator.py
 
+      - name: Test Proxmox CSI bootstrap rendering
+        run: python3 scripts/tests/test_proxmox_csi_bootstrap.py
+
       - name: Test deploy workflow ownership
         run: python3 scripts/tests/test_deploy_lock.py
 

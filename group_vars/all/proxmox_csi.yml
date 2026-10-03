@@ -1,0 +1,9 @@
+---
+# Source preparation only. Enable in the reviewed CSI activation change.
+proxmox_csi_enabled: false
+# Must equal the upstream driver's clusters[].region; no lab/production fallback.
+proxmox_csi_region: ""
+# The inventory plugin supplies proxmox_node separately for each VM.
+proxmox_csi_node_labels:
+  topology.kubernetes.io/region: "{{ proxmox_csi_region }}"
+  topology.kubernetes.io/zone: "{{ proxmox_node | default('') }}"

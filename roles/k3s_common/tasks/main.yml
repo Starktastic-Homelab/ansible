@@ -9,8 +9,8 @@
       - proxmox_csi_region is regex('[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?', match_type='fullmatch')
       - proxmox_node is regex('[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?', match_type='fullmatch')
     fail_msg: >-
-      Enabled Proxmox CSI requires a nonempty Kubernetes label value for proxmox_csi_region
-      and the inventory's proxmox_node on every K3s VM. Region must match the CSI cloud configuration.
+      Enabled Proxmox CSI requires a nonempty Kubernetes label value for proxmox_csi_region and the inventory's
+      proxmox_node on every K3s VM. Region must match the CSI cloud configuration.
   when: proxmox_csi_enabled | default(false) | bool
 
 - name: Set sysctl parameters for Kubernetes

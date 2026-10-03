@@ -163,7 +163,8 @@
     that:
       - proxmox_csi_storage_private.stat.isdir | default(false)
       - not proxmox_csi_storage_private.stat.islnk | default(false)
-      - proxmox_csi_storage_private.stat.mode == '0700'
+      # The maintenance root can pass setgid to this owner-only directory.
+      - proxmox_csi_storage_private.stat.mode in ['0700', '2700']
 
 - name: Inspect external token destination
   ansible.builtin.stat:

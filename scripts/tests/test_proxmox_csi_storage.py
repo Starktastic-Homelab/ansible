@@ -1,5 +1,6 @@
 """Offline native-Ansible refusal checks; no host connection or setup execution."""
 import json
+import shlex
 from pathlib import Path
 import unittest
 from ansible.parsing.dataloader import DataLoader
@@ -79,6 +80,21 @@ class SetupTests(unittest.TestCase):
                                ({'comment':comment,'members':[{'type':'storage','storage':'vm-pool'}]},False)]:
             self.assertEqual(self.allowed('Refuse an unrelated existing pool',
                 proxmox_csi_storage_owner_id=9999, proxmox_csi_storage_pool_detail={'stdout':json.dumps(data)}),expected)
+
+    def test_group_membership_is_requested_and_refused_in_both_roles(self):
+        for role, refusal in [('proxmox_csi_storage','Refuse inherited group privileges or a disabled principal'),
+                              ('storage_fencing','Reject group grants or a disabled existing principal')]:
+            tasks=read('roles/'+role+'/tasks/main.yml')
+            with self.subTest(role=role):
+                command=next(t['ansible.builtin.command'] for t in tasks
+                             if str(t.get('ansible.builtin.command','')).startswith('pveum user list'))
+                # PVE's native user-list API defaults full=0, omitting groups.
+                self.assertIn('--full', shlex.split(command))
+                self.assertEqual(shlex.split(command)[shlex.split(command).index('--full')+1], '1')
+                expressions=next(t for t in tasks if t['name']==refusal)['ansible.builtin.assert']['that']
+                for groups, allowed in [([],True),(['administrators'],False),('',True),('administrators',False)]:
+                    templar=Templar(variables={'item':dict(groups=groups,enable=1,expire=0)})
+                    self.assertEqual(all(templar.evaluate_expression(expr) for expr in expressions),allowed)
 
     def test_setup_is_manual_and_ownership_precedes_writes(self):
         tasks=self.tasks()

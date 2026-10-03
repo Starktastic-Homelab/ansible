@@ -43,7 +43,7 @@
   when: item.roleid == storage_fencing_role
 
 - name: Read existing users including groups
-  ansible.builtin.command: pveum user list --output-format json
+  ansible.builtin.command: pveum user list --full 1 --output-format json
   register: storage_fencing_users
   changed_when: false
 

@@ -116,7 +116,7 @@
   when: item.roleid == proxmox_csi_storage_role
 
 - name: Read existing users
-  ansible.builtin.command: pveum user list --output-format json
+  ansible.builtin.command: pveum user list --full 1 --output-format json
   register: proxmox_csi_storage_users
   changed_when: false
 

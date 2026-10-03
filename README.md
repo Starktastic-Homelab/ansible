@@ -746,6 +746,8 @@ The role has only the stock non-replication privileges, granted to that pool,
 that storage and the external image-owner ID. It has no VM power-management or
 VM-allocation rights. The pool must contain only k3s QEMU VMs, never storage or
 unrelated guests. Existing conflicting definitions are refused, not overwritten.
+Both this setup and the existing fencing setup request full PVE user information
+so their group-membership refusal can detect inherited privileges.
 
 Proxmox removes VM-specific grants when a VM is deleted. The companion Terraform
 `k3s_resource_pool` input gives replacement VMs native pool membership while the

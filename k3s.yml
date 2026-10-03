@@ -120,10 +120,8 @@
             name: "{{ item }}"
           register: k3s_drain_node
           until: >-
-            k3s_drain_node.resources | length == 1 and
-            (k3s_drain_node.resources[0].get('status', {}).get('conditions', []) |
-            selectattr('type', 'equalto', 'Ready') |
-            selectattr('status', 'equalto', 'True') | list | length > 0)
+            k3s_drain_node.resources | length == 1 and (k3s_drain_node.resources[0].get('status', {}).get('conditions',
+            []) | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0)
           retries: 60
           delay: 5
           loop: "{{ groups['all_k3s'] }}"

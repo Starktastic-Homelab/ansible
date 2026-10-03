@@ -1,5 +1,6 @@
 ---
 - name: Wait for SSH availability on all nodes
+  any_errors_fatal: true
   hosts: all_k3s
   gather_facts: false
   tags:
@@ -14,6 +15,7 @@
         timeout: 300
 
 - name: Initialize k3s cluster
+  any_errors_fatal: true
   hosts: masters[0]
   become: true
   gather_facts: true
@@ -24,6 +26,7 @@
     - role: k3s_init
 
 - name: Harvest cluster token & VIP check
+  any_errors_fatal: true
   hosts: masters[0]
   become: true
   gather_facts: false
@@ -52,6 +55,7 @@
       delegate_to: localhost
 
 - name: Join additional masters
+  any_errors_fatal: true
   hosts: masters[1:]
   become: true
   gather_facts: true
@@ -62,6 +66,7 @@
     - role: k3s_masters
 
 - name: Prepare reviewed worker storage identities
+  any_errors_fatal: true
   hosts: workers
   become: true
   gather_facts: true
@@ -74,6 +79,7 @@
       when: iscsi_initiator_enabled | default(false) | bool
 
 - name: Join workers
+  any_errors_fatal: true
   hosts: workers
   become: true
   gather_facts: true
@@ -82,6 +88,57 @@
     - workers
   roles:
     - role: k3s_workers
+
+# Terraform has already completed replacement. All installations above must
+# succeed before restoring scheduling or starting the application bootstrap.
+- name: Recover nodes drained by Terraform
+  hosts: localhost
+  any_errors_fatal: true
+  gather_facts: false
+  become: false
+  tags:
+    - k3s
+    - bootstrap
+  vars:
+    k3s_drain_recovery_nodes: >-
+      {{ lookup('ansible.builtin.env', 'K3S_DRAIN_RECOVERY_NODES', default='[]') | from_json }}
+  tasks:
+    - name: Validate drain handoff
+      ansible.builtin.assert:
+        that:
+          - k3s_drain_recovery_nodes | type_debug == 'list'
+          - k3s_drain_recovery_nodes | select('string') | list | length == k3s_drain_recovery_nodes | length
+        fail_msg: Drain recovery requires a JSON list of node names from Terraform.
+
+    - name: Restore scheduling after k3s installation
+      when: k3s_drain_recovery_nodes | length > 0
+      block:
+        - name: Wait for current inventory nodes to register and become Ready
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Node
+            name: "{{ item }}"
+          register: k3s_drain_node
+          until: >-
+            k3s_drain_node.resources | length == 1 and
+            (k3s_drain_node.resources[0].get('status', {}).get('conditions', []) |
+            selectattr('type', 'equalto', 'Ready') |
+            selectattr('status', 'equalto', 'True') | list | length > 0)
+          retries: 60
+          delay: 5
+          loop: "{{ groups['all_k3s'] }}"
+
+        - name: Uncordon surviving nodes that Terraform made unschedulable
+          kubernetes.core.k8s:
+            state: patched
+            api_version: v1
+            kind: Node
+            name: "{{ item }}"
+            definition:
+              spec:
+                unschedulable: false
+          # Removed VMs need no recovery; surviving prior cordons stay held.
+          loop: "{{ k3s_drain_recovery_nodes | intersect(groups['all_k3s']) | sort }}"
 
 - name: Bootstrap cluster
   hosts: localhost

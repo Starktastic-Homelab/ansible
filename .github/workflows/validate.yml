@@ -48,6 +48,9 @@ jobs:
       - name: Test Proxmox CSI bootstrap rendering
         run: python3 scripts/tests/test_proxmox_csi_bootstrap.py
 
+      - name: Test post-install drain recovery
+        run: python3 scripts/tests/test_drain_recovery.py
+
       - name: Test deploy workflow ownership
         run: python3 scripts/tests/test_deploy_lock.py
 

@@ -40,6 +40,25 @@ class RetirementTests(unittest.TestCase):
     def verify(self):
         return self.mod.verified(self.candidate(), self.expected, self.evidence)
 
+    def test_native_templates_pass_evidence_and_preserve_the_exact_delete_uid(self):
+        from ansible.parsing.dataloader import DataLoader
+        from ansible.plugins.loader import filter_loader, init_plugin_loader
+        from ansible.template import Templar
+        init_plugin_loader()
+        filter_loader.add_directory(str(ROOT / 'filter_plugins'))
+        tasks = DataLoader().load_from_file(str(ROOT / 'roles/k3s_node_retirement/tasks/main.yml'), trusted_as_template=True)
+        block = next(t['block'] for t in tasks if 'block' in t)
+        variables = {'k3s_node_retirement_candidate': self.candidate(), 'k3s_node_retirement_expected': self.expected,
+                     'k3s_node_retirement_configs': {'results': self.configs}}
+        for key in ('permissions_before', 'permissions_after', 'acls_before', 'acls_after', 'resources_before', 'resources_after'):
+            variables['k3s_node_retirement_'+key] = {'json': {'data':self.evidence[key]}}
+        fact = next(t['ansible.builtin.set_fact'] for t in block if 'ansible.builtin.set_fact' in t)
+        variables.update(Templar(variables=variables).template(fact))
+        deletion = next(t['kubernetes.core.k8s'] for t in block if 'kubernetes.core.k8s' in t)
+        rendered = Templar(variables=variables).template(deletion)
+        self.assertEqual(rendered, {'state':'absent', 'api_version':'v1', 'kind':'Node', 'name':'worker',
+                                    'delete_options':{'preconditions':{'uid':UID}}})
+
     def test_absent_or_same_generation_needs_no_retirement(self):
         self.assertEqual(self.mod.candidate([], 'worker', NEW), {})
         self.node['status']['nodeInfo']['systemUUID'] = NEW.upper()

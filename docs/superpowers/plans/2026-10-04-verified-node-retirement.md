@@ -30,16 +30,16 @@ k3s.yml; scripts/tests/test_node_retirement.py; .github/workflows/validate.yml; 
 Interfaces: pure filters validate Kubernetes/guest identities, complete permissions,
 and a full list of Proxmox resources/config responses; native modules own all I/O.
 
-- [ ] Write failing safety cases for missing/unchanged/stale Nodes, UUID validation,
+- [x] Write failing safety cases for missing/unchanged/stale Nodes, UUID validation,
   full permissions including hidden overrides, surviving old UUID anywhere, wrong
   replacement, duplicate/missing configs and changed inventory.
-- [ ] Run tests and confirm the missing behavior fails.
-- [ ] Add pure filters and the disabled role, with secret-protected native URI reads,
+- [x] Run tests and confirm the missing behavior fails.
+- [x] Add pure filters and the disabled role, with secret-protected native URI reads,
   final ownership check and UID-conditional deletion before worker join.
-- [ ] Verify role arguments/order offline; add the test to CI and explain permissions,
+- [x] Verify role arguments/order offline; add the test to CI and explain permissions,
   failure behavior and the surviving-cordon boundary in README.
-- [ ] Run the source suite, offline lint and syntax checks; fix relevant failures.
-- [ ] Commit and obtain one fresh whole-branch review; resolve substantive findings.
+- [x] Run the source suite, offline lint and syntax checks; fix relevant failures.
+- [x] Commit and obtain one fresh whole-branch review; resolve substantive findings.
 
 ## Task 2: Deliver and qualify
 

@@ -43,9 +43,8 @@
       ca_path: "{{ k3s_node_retirement_ca_path | default(omit, true) }}"
       headers:
         Authorization: >-
-          PVEAPIToken={{ lookup('ansible.builtin.env', 'PROXMOX_USER') }}!{{
-          lookup('ansible.builtin.env', 'PROXMOX_TOKEN_ID') }}={{
-          lookup('ansible.builtin.env', 'PROXMOX_TOKEN_SECRET') }}
+          PVEAPIToken={{ lookup('ansible.builtin.env', 'PROXMOX_USER') }}!{{ lookup('ansible.builtin.env',
+          'PROXMOX_TOKEN_ID') }}={{ lookup('ansible.builtin.env', 'PROXMOX_TOKEN_SECRET') }}
   block:
     - name: Require the deployment API identity and expected VM identity
       ansible.builtin.assert:
@@ -87,7 +86,8 @@
     - name: Require complete VM and pool visibility before inventory reads
       ansible.builtin.assert:
         that:
-          - k3s_node_retirement_permissions_before.json.data | k3s_retirement_complete_visibility(k3s_node_retirement_acls_before.json.data)
+          - k3s_node_retirement_permissions_before.json.data |
+            k3s_retirement_complete_visibility(k3s_node_retirement_acls_before.json.data)
         fail_msg: Cannot prove complete Proxmox inventory; no Node may be retired.
 
     - name: Read every VM resource without an application pool filter

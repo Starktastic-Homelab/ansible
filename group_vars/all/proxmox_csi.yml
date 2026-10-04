@@ -7,3 +7,8 @@ proxmox_csi_region: ""
 proxmox_csi_node_labels:
   topology.kubernetes.io/region: "{{ proxmox_csi_region }}"
   topology.kubernetes.io/zone: "{{ proxmox_node | default('') }}"
+
+# Exact public server certificate, independently verified over Proxmox SSH.
+# Native strict TLS remains enabled; retirement itself remains disabled.
+# Refresh this trust anchor before a Proxmox API certificate rotation.
+k3s_node_retirement_ca_path: "{{ playbook_dir }}/files/proxmox-api-trust.pem"

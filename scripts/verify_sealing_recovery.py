@@ -12,7 +12,9 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
 
-def verify(private_key, vault_certificate, apps_certificate, kubeseal):
+def verify(private_key, vault_certificate, apps_certificate, kubeseal, sealed_config=b'', config_sha256=''):
+    if bool(sealed_config) != bool(config_sha256):
+        raise ValueError('Configuration ciphertext and expected digest must be provided together')
     key = serialization.load_pem_private_key(private_key, password=None)
     vault = x509.load_pem_x509_certificate(vault_certificate)
     apps = x509.load_pem_x509_certificate(apps_certificate)
@@ -43,8 +45,22 @@ def verify(private_key, vault_certificate, apps_certificate, kubeseal):
         if (recovered.get('data') != secret['data'] or recovered.get('metadata', {}).get('name') != secret['metadata']['name']
                 or recovered.get('metadata', {}).get('namespace') != secret['metadata']['namespace']):
             raise ValueError('Recovered secret does not match the sealed probe')
-    return {'external_key_recovery': True,
-            'public_certificate_sha256': hashlib.sha256(apps.public_bytes(serialization.Encoding.DER)).hexdigest()}
+        if sealed_config:
+            actual = json.loads(run(['--recovery-unseal', '--recovery-private-key', str(root / 'key.pem'),
+                                     '--format', 'json'], sealed_config))
+            metadata = actual.get('metadata', {})
+            data = actual.get('data', {})
+            if (metadata.get('name') != 'proxmox-csi-config' or metadata.get('namespace') != 'csi-proxmox'
+                    or set(data) != {'config.yaml'}):
+                raise ValueError('Recovered CSI configuration has an unexpected identity or keys')
+            digest = hashlib.sha256(base64.b64decode(data['config.yaml'], validate=True)).hexdigest()
+            if digest != config_sha256:
+                raise ValueError('Recovered CSI configuration does not match the sealed source')
+    result = {'external_key_recovery': True,
+              'public_certificate_sha256': hashlib.sha256(apps.public_bytes(serialization.Encoding.DER)).hexdigest()}
+    if sealed_config:
+        result['config_sha256'] = digest
+    return result
 
 
 if __name__ == '__main__':
@@ -52,7 +68,9 @@ if __name__ == '__main__':
         payload = json.load(sys.stdin)
         result = verify(base64.b64decode(payload['key'], validate=True),
                         base64.b64decode(payload['certificate'], validate=True),
-                        Path(sys.argv[1]).read_bytes(), sys.argv[2])
+                        Path(sys.argv[1]).read_bytes(), sys.argv[2],
+                        base64.b64decode(os.environ.get('CSI_PREFLIGHT_SEALED_CONFIG_B64', ''), validate=True),
+                        os.environ.get('CSI_PREFLIGHT_CONFIG_SHA256', ''))
     except Exception:
         # Do not let subprocess errors, malformed JSON or key material reach CI logs.
         print('External sealing-key recovery verification failed', file=sys.stderr)

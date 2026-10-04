@@ -1,6 +1,15 @@
 name: Read-only CSI activation preflight
 on:
   workflow_dispatch:
+    inputs:
+      sealed_config_b64:
+        description: Optional base64-encoded CSI SealedSecret ciphertext; never plaintext
+        type: string
+        required: false
+      config_sha256:
+        description: SHA256 of the exact original config.yaml bytes; required with ciphertext
+        type: string
+        required: false
 permissions:
   contents: read
 concurrency:
@@ -14,6 +23,8 @@ jobs:
     container:
       image: python:trixie
     env:
+      CSI_PREFLIGHT_SEALED_CONFIG_B64: ${{ inputs.sealed_config_b64 }}
+      CSI_PREFLIGHT_CONFIG_SHA256: ${{ inputs.config_sha256 }}
       PROXMOX_URL: ${{ secrets.PROXMOX_URL }}
       PROXMOX_USER: ${{ secrets.PROXMOX_USER }}
       PROXMOX_TOKEN_ID: ${{ secrets.PROXMOX_TOKEN_ID }}

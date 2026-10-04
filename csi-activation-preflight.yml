@@ -34,7 +34,9 @@
 
     - name: Report external-key recovery
       ansible.builtin.debug:
-        msg: Native sealed-secret recovery passed using the external Vault key and pinned Apps certificate.
+        msg:
+          Native sealed-secret recovery passed using the external Vault key and pinned Apps certificate; any supplied
+          CSI ciphertext matched its original config.yaml digest.
 
     - name: Require the expected API endpoint and deployment credentials
       ansible.builtin.assert:

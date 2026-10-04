@@ -1,6 +1,7 @@
 """Offline native kubeseal round trips with synthetic keys only."""
 import base64
 from datetime import datetime, timedelta, timezone
+import hashlib
 import importlib.util
 import json
 import os
@@ -56,6 +57,32 @@ class RecoveryTests(unittest.TestCase):
             with self.subTest(mismatch=True), self.assertRaises(ValueError):
                 self.mod.verify(key, vault_cert, apps_cert, binary)
 
+
+    def test_actual_config_recovery_requires_expected_bytes_and_identity(self):
+        binary = os.environ['KUBESEAL_BINARY']
+        raw = b'{"token_secret":"synthetic-only"}'
+        digest = hashlib.sha256(raw).hexdigest()
+        def seal(name='proxmox-csi-config', namespace='csi-proxmox', data=None):
+            secret = {'apiVersion': 'v1', 'kind': 'Secret',
+                      'metadata': {'name': name, 'namespace': namespace},
+                      'data': data or {'config.yaml': base64.b64encode(raw).decode()}}
+            with tempfile.TemporaryDirectory() as directory:
+                cert = Path(directory) / 'cert.pem'
+                cert.write_bytes(self.cert)
+                return subprocess.run([binary, '--cert', str(cert), '--scope', 'strict', '--format', 'json'],
+                                      input=json.dumps(secret).encode(), capture_output=True, check=True).stdout
+        sealed = seal()
+        good = self.mod.verify(self.key, self.cert, self.cert, binary, sealed, digest)
+        self.assertEqual(good['config_sha256'], digest)
+        self.assertNotIn('synthetic-only', str(good))
+        for ciphertext, expected in (
+            (sealed, '0' * 64), (sealed, ''), (b'', digest),
+            (seal(name='wrong'), digest), (seal(namespace='wrong'), digest),
+            (seal(data={'wrong': base64.b64encode(raw).decode()}), digest),
+            (b'not a sealed secret', digest),
+        ):
+            with self.subTest(expected=expected), self.assertRaises(ValueError):
+                self.mod.verify(self.key, self.cert, self.cert, binary, ciphertext, expected)
 
     def test_cli_failure_does_not_print_private_input(self):
         marker = b'private-input-must-not-appear'

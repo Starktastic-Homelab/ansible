@@ -1,4 +1,5 @@
 """Offline evidence checks; no cluster, guest, credentials or host deployment."""
+import base64
 import copy
 import importlib.util
 from pathlib import Path
@@ -48,7 +49,13 @@ class RetirementTests(unittest.TestCase):
         filter_loader.add_directory(str(ROOT / 'filter_plugins'))
         tasks = DataLoader().load_from_file(str(ROOT / 'roles/k3s_node_retirement/tasks/main.yml'), trusted_as_template=True)
         block = next(t['block'] for t in tasks if 'block' in t)
-        variables = {'k3s_node_retirement_candidate': self.candidate(), 'k3s_node_retirement_expected': self.expected,
+        # Render the role's actual expected identity; Ansible tags the | int result.
+        expected_template = next(t['vars']['k3s_node_retirement_expected'] for t in tasks if 'block' in t)
+        expected = Templar(variables={'inventory_hostname': 'worker', 'proxmox_vmid': '982',
+                                     'proxmox_node': 'pve', 'k3s_node_retirement_guest': {
+                                         'content': base64.b64encode(NEW.encode()).decode()}}).template(expected_template)
+        self.assertIsInstance(expected['vmid'], int)
+        variables = {'k3s_node_retirement_candidate': self.candidate(), 'k3s_node_retirement_expected': expected,
                      'k3s_node_retirement_configs': {'results': self.configs}}
         for key in ('permissions_before', 'permissions_after', 'acls_before', 'acls_after', 'resources_before', 'resources_after'):
             variables['k3s_node_retirement_'+key] = {'json': {'data':self.evidence[key]}}
@@ -58,6 +65,11 @@ class RetirementTests(unittest.TestCase):
         rendered = Templar(variables=variables).template(deletion)
         self.assertEqual(rendered, {'state':'absent', 'api_version':'v1', 'kind':'Node', 'name':'worker',
                                     'delete_options':{'preconditions':{'uid':UID}}})
+
+    def test_noninteger_expected_vmid_refuses(self):
+        for vmid in [True, False, '982', 982.0, None]:
+            with self.subTest(vmid=vmid), self.assertRaises(ValueError):
+                self.mod.verified(self.candidate(), dict(self.expected, vmid=vmid), self.evidence)
 
     def test_absent_or_same_generation_needs_no_retirement(self):
         self.assertEqual(self.mod.candidate([], 'worker', NEW), {})

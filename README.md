@@ -867,3 +867,11 @@ identity checks do not prove that a token's secret is valid after external rotat
 Offline checks: `python3 scripts/tests/test_proxmox_csi_storage.py`. These render
 native Ansible conditions and verify refusal/opt-in wiring; they do not execute
 PVE commands or qualify permissions and persistence on the live runner.
+
+The read-only CSI activation preflight also accepts an optional `sealed_config_b64`
+(the base64-encoded **encrypted SealedSecret**, never a plaintext Secret) and
+`config_sha256` (SHA256 of the original `config.yaml` bytes). Supply both to prove
+that the actual `csi-proxmox/proxmox-csi-config` payload can be recovered with the
+external Vault key. The decrypted data stays inside the temporary runner process;
+only success or a generic failure is logged. Omitting both retains the synthetic
+probe and API visibility checks. This workflow does not activate CSI.

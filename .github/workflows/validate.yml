@@ -48,6 +48,9 @@ jobs:
       - name: Test Proxmox CSI bootstrap rendering
         run: python3 scripts/tests/test_proxmox_csi_bootstrap.py
 
+      - name: Test verified worker Node retirement
+        run: python3 scripts/tests/test_node_retirement.py
+
       - name: Test post-install drain recovery
         run: python3 scripts/tests/test_drain_recovery.py
 

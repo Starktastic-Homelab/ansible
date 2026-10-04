@@ -65,6 +65,23 @@
   roles:
     - role: k3s_masters
 
+# Kubeconfig now addresses the current control plane. Retire stale worker
+# identities before an agent with a fresh node password attempts to join.
+- name: Retire verified replaced worker Nodes
+  any_errors_fatal: true
+  hosts: workers
+  serial: 1
+  become: true
+  gather_facts: false
+  tags:
+    - k3s
+    - workers
+  roles:
+    - role: k3s_node_retirement
+      when:
+        - k3s_node_retirement_enabled | default(false) | bool
+        - not ansible_check_mode
+
 - name: Prepare reviewed worker storage identities
   any_errors_fatal: true
   hosts: workers

@@ -576,6 +576,34 @@ the failed dispatch with its original payload. Do not repeat drain/apply to infe
 the original list. Integrated replacement remains subject to disposable-lab
 qualification before Proxmox CSI activation.
 
+Worker retirement is staged separately with `k3s_node_retirement_enabled: false`.
+When enabled after disposable-lab qualification, Ansible compares the current
+worker's SMBIOS UUID with its Kubernetes Node before joining the agent. A missing
+Node or unchanged generation is a no-op. A stale generation requires a matching
+replacement VM and complete current Proxmox inventory proving the old UUID is
+absent, including stopped VMs and templates. Native Kubernetes deletion uses the
+observed Node UID as a precondition; K3s removes its own node-password Secret.
+The role never stops VMs, forces storage detach, or deletes password Secrets.
+
+Verification uses the existing `PROXMOX_URL`, `PROXMOX_USER`, `PROXMOX_TOKEN_ID`
+and `PROXMOX_TOKEN_SECRET` environment settings. The read-only prerequisites are
+propagated `VM.Audit` at `/vms`, propagated `Pool.Audit` at `/pool`, and `Sys.Audit`
+at `/access`. It checks the full ACL list and effective child permissions, then
+refuses incomplete visibility, missing/locked configs, duplicate UUIDs or drift.
+A restrictive pool override without inherited `Pool.Audit` conservatively blocks
+the check. It does not grant privileges or use the CSI runtime token. API requests
+verify TLS by default; provide `k3s_node_retirement_ca_path` for a private CA.
+Disabling certificate verification is an explicit isolated-lab override only.
+
+The role verifies existing maintenance ownership before evidence collection and
+immediately before deletion. The normal root is `/maintenance`; disposable labs
+may set `k3s_node_retirement_maintenance_root` to their externally coordinated lab
+root. Read failures, changed Node UID or uncertain evidence stop worker joining,
+scheduling recovery and bootstrap; workflow ownership stays held on failure.
+No concurrent manual VM/ACL mutation is allowed during that operation. Check mode
+skips retirement and cannot qualify recovery. This role does not restore cordons
+after Node recreation or replace the full-control-plane cohort safety policy.
+
 After a failed/cancelled operation: inspect `operation.json` on VM300 (protect its
 nonce from logs), identify the exact repository/run/attempt and current stage,
 ensure the owner process is gone, inspect infrastructure/workload state, and

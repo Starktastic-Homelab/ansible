@@ -1,0 +1,169 @@
+---
+- name: Read the connected worker generation
+  ansible.builtin.slurp:
+    src: /sys/class/dmi/id/product_uuid
+  register: k3s_node_retirement_guest
+
+- name: Inspect the worker Node on the current control plane
+  delegate_to: localhost
+  become: false
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+    name: "{{ inventory_hostname }}"
+  register: k3s_node_retirement_node
+
+- name: Identify a stale worker generation
+  ansible.builtin.set_fact:
+    k3s_node_retirement_candidate: >-
+      {{ k3s_node_retirement_node.resources | k3s_retirement_candidate(inventory_hostname,
+         k3s_node_retirement_guest.content | b64decode | trim) }}
+
+- name: Verify the old generation is gone before retiring its Node
+  when: k3s_node_retirement_candidate | length > 0
+  delegate_to: localhost
+  become: false
+  vars:
+    k3s_node_retirement_url: >-
+      {{ lookup('ansible.builtin.env', 'PROXMOX_URL') | regex_replace('/+$', '')
+         | regex_replace('/api2/json$', '') }}/api2/json
+    k3s_node_retirement_expected:
+      name: "{{ inventory_hostname }}"
+      vmid: "{{ proxmox_vmid | int }}"
+      node: "{{ proxmox_node }}"
+      uuid: "{{ k3s_node_retirement_guest.content | b64decode | trim }}"
+  module_defaults:
+    ansible.builtin.uri:
+      method: GET
+      return_content: true
+      status_code: 200
+      follow_redirects: none
+      use_proxy: false
+      validate_certs: "{{ k3s_node_retirement_validate_certs }}"
+      ca_path: "{{ k3s_node_retirement_ca_path | default(omit, true) }}"
+      headers:
+        Authorization: >-
+          PVEAPIToken={{ lookup('ansible.builtin.env', 'PROXMOX_USER') }}!{{
+          lookup('ansible.builtin.env', 'PROXMOX_TOKEN_ID') }}={{
+          lookup('ansible.builtin.env', 'PROXMOX_TOKEN_SECRET') }}
+  block:
+    - name: Require the deployment API identity and expected VM identity
+      ansible.builtin.assert:
+        that:
+          - k3s_node_retirement_url | urlsplit('scheme') == 'https'
+          - k3s_node_retirement_url | urlsplit('username') == none
+          - k3s_node_retirement_url | urlsplit('query') == ''
+          - k3s_node_retirement_url | urlsplit('fragment') == ''
+          - lookup('ansible.builtin.env', 'PROXMOX_USER') | length > 0
+          - lookup('ansible.builtin.env', 'PROXMOX_TOKEN_ID') | length > 0
+          - lookup('ansible.builtin.env', 'PROXMOX_TOKEN_SECRET') | length > 0
+          - proxmox_vmid is defined
+          - proxmox_node is defined
+        fail_msg: Verified retirement needs the deployment API credentials and Proxmox inventory identity.
+      no_log: true
+
+    - name: Verify maintenance ownership before reading retirement evidence
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ playbook_dir }}/scripts/maintenance_lock.py"
+          - verify
+          - --root
+          - "{{ k3s_node_retirement_maintenance_root }}"
+      changed_when: false
+
+    - name: Read effective permissions including propagation
+      ansible.builtin.uri:
+        url: "{{ k3s_node_retirement_url }}/access/permissions"
+      register: k3s_node_retirement_permissions_before
+      no_log: true
+
+    - name: Read ACL paths that a filtered permission map might omit
+      ansible.builtin.uri:
+        url: "{{ k3s_node_retirement_url }}/access/acl"
+      register: k3s_node_retirement_acls_before
+      no_log: true
+
+    - name: Require complete VM and pool visibility before inventory reads
+      ansible.builtin.assert:
+        that:
+          - k3s_node_retirement_permissions_before.json.data | k3s_retirement_complete_visibility(k3s_node_retirement_acls_before.json.data)
+        fail_msg: Cannot prove complete Proxmox inventory; no Node may be retired.
+
+    - name: Read every VM resource without an application pool filter
+      ansible.builtin.uri:
+        url: "{{ k3s_node_retirement_url }}/cluster/resources?type=vm"
+      register: k3s_node_retirement_resources_before
+      no_log: true
+
+    - name: Read current generation of every QEMU VM including stopped guests and templates
+      ansible.builtin.uri:
+        url: "{{ k3s_node_retirement_url }}/nodes/{{ item.node | urlencode }}/qemu/{{ item.vmid }}/config?current=1"
+      loop: "{{ k3s_node_retirement_resources_before.json.data | selectattr('type', 'equalto', 'qemu') | list }}"
+      loop_control:
+        label: "{{ item.vmid }}"
+      register: k3s_node_retirement_configs
+      no_log: true
+
+    - name: Recheck VM resource identity after reading configurations
+      ansible.builtin.uri:
+        url: "{{ k3s_node_retirement_url }}/cluster/resources?type=vm"
+      register: k3s_node_retirement_resources_after
+      no_log: true
+
+    - name: Recheck effective permissions after reading configurations
+      ansible.builtin.uri:
+        url: "{{ k3s_node_retirement_url }}/access/permissions"
+      register: k3s_node_retirement_permissions_after
+      no_log: true
+
+    - name: Recheck ACL paths after reading configurations
+      ansible.builtin.uri:
+        url: "{{ k3s_node_retirement_url }}/access/acl"
+      register: k3s_node_retirement_acls_after
+      no_log: true
+
+    - name: Require a matching replacement and an absent old VM generation
+      ansible.builtin.set_fact:
+        k3s_node_retirement_verified: >-
+          {{ k3s_node_retirement_candidate | k3s_retirement_verified(k3s_node_retirement_expected,
+             {'permissions_before': k3s_node_retirement_permissions_before.json.data,
+              'permissions_after': k3s_node_retirement_permissions_after.json.data,
+              'acls_before': k3s_node_retirement_acls_before.json.data,
+              'acls_after': k3s_node_retirement_acls_after.json.data,
+              'resources_before': k3s_node_retirement_resources_before.json.data,
+              'resources_after': k3s_node_retirement_resources_after.json.data,
+              'configs': k3s_node_retirement_configs.results}) }}
+      no_log: true
+
+    - name: Verify maintenance ownership immediately before Node retirement
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ playbook_dir }}/scripts/maintenance_lock.py"
+          - verify
+          - --root
+          - "{{ k3s_node_retirement_maintenance_root }}"
+      changed_when: false
+
+    - name: Delete only the verified stale Node UID
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: Node
+        name: "{{ k3s_node_retirement_verified.name }}"
+        delete_options:
+          preconditions:
+            uid: "{{ k3s_node_retirement_verified.uid }}"
+
+    - name: Wait for the stale Node UID to disappear
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Node
+        name: "{{ inventory_hostname }}"
+      register: k3s_node_retirement_remaining
+      until: >-
+        k3s_node_retirement_remaining.resources | selectattr('metadata.uid', 'equalto',
+        k3s_node_retirement_verified.uid) | list | length == 0
+      retries: 24
+      delay: 5

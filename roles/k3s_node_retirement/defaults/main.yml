@@ -1,0 +1,7 @@
+---
+# Stage until disposable replacement qualification is complete.
+k3s_node_retirement_enabled: false
+k3s_node_retirement_validate_certs: true
+# Optional CA file on the Ansible runner, never on the worker.
+k3s_node_retirement_ca_path: ""
+k3s_node_retirement_maintenance_root: /maintenance

@@ -1,0 +1,79 @@
+name: Read-only CSI activation preflight
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: csi-activation-preflight
+  cancel-in-progress: false
+jobs:
+  preflight:
+    if: github.ref == 'refs/heads/main'
+    runs-on: self-hosted
+    timeout-minutes: 15
+    container:
+      image: python:trixie
+    env:
+      PROXMOX_URL: ${{ secrets.PROXMOX_URL }}
+      PROXMOX_USER: ${{ secrets.PROXMOX_USER }}
+      PROXMOX_TOKEN_ID: ${{ secrets.PROXMOX_TOKEN_ID }}
+      PROXMOX_TOKEN_SECRET: ${{ secrets.PROXMOX_TOKEN_SECRET }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the reviewed Apps public sealing certificate
+        uses: actions/checkout@v7
+        with:
+          repository: Starktastic-Homelab/apps
+          ref: 9a32641c261fb3d72ed2bfc2598f5acc57c891d6
+          path: preflight-apps
+          persist-credentials: false
+          sparse-checkout: scripts/sealed-secrets-cert.pem
+          sparse-checkout-cone-mode: false
+      - name: Verify runner identity
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          assert Path('/sys/class/dmi/id/product_uuid').read_text().strip().lower() == 'cc1aeeb7-4827-466c-9d4b-5dc6c881f193'
+          PY
+      - name: Install native clients
+        run: |
+          pip install -r requirements.txt
+          python3 - <<'PY'
+          import hashlib, io, tarfile, urllib.request
+          from pathlib import Path
+          data = urllib.request.urlopen('https://github.com/bitnami/sealed-secrets/releases/download/v0.40.0/kubeseal-0.40.0-linux-amd64.tar.gz', timeout=60).read()
+          assert hashlib.sha256(data).hexdigest() == '9314c35916646e9d59c8f06b1314574b4e79c4d76f079433607ed7b697bb5eb7'
+          with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+              member = next(m for m in archive.getmembers() if m.name in ('kubeseal', './kubeseal'))
+              binary = Path('/usr/local/bin/kubeseal')
+              binary.write_bytes(archive.extractfile(member).read())
+              binary.chmod(0o755)
+          PY
+      - name: Check native recovery with synthetic keys
+        env:
+          KUBESEAL_BINARY: /usr/local/bin/kubeseal
+        run: python3 scripts/tests/test_sealing_recovery.py
+      - name: Prepare ephemeral Vault access
+        env:
+          VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+        run: |
+          python3 - <<'PY'
+          import os, tempfile
+          with tempfile.NamedTemporaryFile(mode='w', prefix='csi-preflight-vault-', dir=os.environ['RUNNER_TEMP'], delete=False) as handle:
+              handle.write(os.environ['VAULT_PASSWORD'])
+          with open(os.environ['GITHUB_ENV'], 'a') as environment:
+              environment.write('ANSIBLE_VAULT_PASSWORD_FILE=' + handle.name + '\n')
+          PY
+      - name: Verify actual deployment visibility and external-key recovery
+        run: |
+          ansible-playbook -i localhost, csi-activation-preflight.yml \
+            -e "preflight_apps_certificate=$GITHUB_WORKSPACE/preflight-apps/scripts/sealed-secrets-cert.pem" \
+            -e preflight_kubeseal=/usr/local/bin/kubeseal
+      - name: Remove temporary Vault access
+        if: always()
+        run: |
+          if [ -n "${ANSIBLE_VAULT_PASSWORD_FILE:-}" ]; then
+            rm -f -- "$ANSIBLE_VAULT_PASSWORD_FILE"
+          fi

@@ -592,8 +592,30 @@ at `/access`. It checks the full ACL list and effective child permissions, then
 refuses incomplete visibility, missing/locked configs, duplicate UUIDs or drift.
 A restrictive pool override without inherited `Pool.Audit` conservatively blocks
 the check. It does not grant privileges or use the CSI runtime token. API requests
-verify TLS by default; provide `k3s_node_retirement_ca_path` for a private CA.
-Disabling certificate verification is an explicit isolated-lab override only.
+verify TLS by default. The homelab configuration sets
+`k3s_node_retirement_ca_path` to the public `files/proxmox-api-trust.pem` on the
+Ansible runner. This trusts the exact PVE API leaf certificate: the existing PVE
+CA lacks the key-usage extension required by Python's strict verifier, while
+native partial-chain validation accepts this explicitly trusted leaf. Certificate
+expiry and IP/hostname verification remain enabled; no TLS flags or upstream
+client code are changed. Other installations may override the path with their
+own valid CA bundle. Disabling verification remains an isolated-lab override only.
+
+The leaf was independently read through authenticated Proxmox SSH and matched
+to a strict TLS handshake from VM300 on 2026-10-05 (Asia/Jerusalem). Its SHA256 is
+`991939462464635f91d2a089924eab1055637e8bd48d7771a26cb2b378b41a1c`, and it expires
+2027-06-14. It covers API address `10.9.9.20`. Before renewing/replacing the API
+certificate, review and deploy its new public trust anchor through the same
+authenticated route, then verify the actual deployment client's connection.
+An unrecognized replacement certificate or expired trust anchor must block
+retirement. This file contains no private key and does not enable retirement,
+CSI, topology changes or VM replacement. Ordinary k3s rebuilds do not replace
+the Proxmox host's API certificate.
+
+The successful handshake checked stock Python3.13 TLS behavior; production
+deployment credentials, full inventory visibility and the complete Ansible
+retirement path remain activation checks. Python documents these default
+[strict and partial-chain flags](https://docs.python.org/3.13/library/ssl.html#ssl.create_default_context).
 
 The role verifies existing maintenance ownership before evidence collection and
 immediately before deletion. The normal root is `/maintenance`; disposable labs

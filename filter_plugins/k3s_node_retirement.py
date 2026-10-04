@@ -59,7 +59,7 @@ def _resources(resources):
         if not isinstance(resource, dict):
             raise ValueError('Malformed VM resource')
         vmid = resource.get('vmid')
-        if (type(vmid) is not int or vmid < 100 or vmid in result
+        if (not isinstance(vmid, int) or isinstance(vmid, bool) or vmid < 100 or vmid in result
                 or resource.get('type') not in ('qemu', 'lxc')
                 or not all(isinstance(resource.get(k), str) and resource[k] for k in ('node', 'name'))):
             raise ValueError('Incomplete or duplicate VM resource identity')
@@ -107,7 +107,7 @@ def verified(stale, expected, evidence):
         raise ValueError('A VM configuration is missing from verification')
     vmid = expected['vmid']
     replacement = before.get(vmid, {})
-    if (type(vmid) is not int or replacement.get('template') not in (None, 0)
+    if (not isinstance(vmid, int) or isinstance(vmid, bool) or replacement.get('template') not in (None, 0)
             or replacement.get('name') != expected['name'] or replacement.get('node') != expected['node']
             or configs.get(vmid) != new_uuid):
         raise ValueError('Replacement VM does not match the SSH guest and inventory')

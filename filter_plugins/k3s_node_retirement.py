@@ -118,4 +118,5 @@ class FilterModule:
     def filters(self):
         return {'k3s_retirement_candidate': candidate,
                 'k3s_retirement_complete_visibility': complete_visibility,
+                'k3s_retirement_resources': _resources,
                 'k3s_retirement_verified': verified}

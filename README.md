@@ -617,6 +617,20 @@ deployment credentials, full inventory visibility and the complete Ansible
 retirement path remain activation checks. Python documents these default
 [strict and partial-chain flags](https://docs.python.org/3.13/library/ssl.html#ssl.create_default_context).
 
+Before enabling retirement, the manually dispatched **Read-only CSI activation
+preflight** workflow uses the same deployment API and Vault secrets on VM300.
+It checks strict API TLS, the existing complete-visibility filter, readable QEMU
+configurations and stable permissions/inventory. It also seals and recovers a
+synthetic Secret with native kubeseal and the external Vault key, requiring its
+certificate to match the pinned Apps public certificate. It does not use the
+live Kubernetes sealing key, delete Nodes or run a cluster deployment. A failure
+blocks activation; it never broadens API privileges. Temporary private-key files
+and the job's Vault password file are removed, and secret-bearing tasks suppress
+output. The workflow pins the public certificate to Apps commit
+`9a32641c261fb3d72ed2bfc2598f5acc57c891d6`; review that pin when the bootstrap key
+is intentionally rotated. This is a one-time activation check, not a new routine
+rebuild checkpoint.
+
 The role verifies existing maintenance ownership before evidence collection and
 immediately before deletion. The normal root is `/maintenance`; disposable labs
 may set `k3s_node_retirement_maintenance_root` to their externally coordinated lab

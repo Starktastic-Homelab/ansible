@@ -51,6 +51,9 @@ jobs:
       - name: Test verified worker Node retirement
         run: python3 scripts/tests/test_node_retirement.py
 
+      - name: Test activation preflight inventory drift
+        run: python3 scripts/tests/test_csi_preflight.py
+
       - name: Test post-install drain recovery
         run: python3 scripts/tests/test_drain_recovery.py
 
@@ -119,7 +122,7 @@ jobs:
           OUTPUT=$(ansible-playbook -i inventory/proxmox.yml \
             --vault-password-file .vault_pass \
             --private-key private_key.pem \
-            --syntax-check k3s.yml ser2net.yml i915-sriov.yml i915-acceptance.yml proxmox-csi-storage.yml 2>&1)
+            --syntax-check k3s.yml ser2net.yml i915-sriov.yml i915-acceptance.yml proxmox-csi-storage.yml csi-activation-preflight.yml 2>&1)
           EXIT_CODE=$?
           set -e
 

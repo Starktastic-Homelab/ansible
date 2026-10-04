@@ -1,0 +1,113 @@
+---
+- name: Verify deployment API visibility and external sealing recovery without changing hosts
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    preflight_api: >-
+      {{ lookup('ansible.builtin.env', 'PROXMOX_URL') | regex_replace('/+$', '')
+         | regex_replace('/api2/json$', '') }}/api2/json
+  module_defaults:
+    ansible.builtin.uri:
+      method: GET
+      return_content: true
+      status_code: 200
+      follow_redirects: none
+      use_proxy: false
+      validate_certs: true
+      ca_path: "{{ k3s_node_retirement_ca_path }}"
+      headers:
+        Authorization: >-
+          PVEAPIToken={{ lookup('ansible.builtin.env', 'PROXMOX_USER') }}!{{ lookup('ansible.builtin.env',
+          'PROXMOX_TOKEN_ID') }}={{ lookup('ansible.builtin.env', 'PROXMOX_TOKEN_SECRET') }}
+  tasks:
+    - name: Prove native sealed-secret recovery using only the external Vault key
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ playbook_dir }}/scripts/verify_sealing_recovery.py"
+          - "{{ preflight_apps_certificate }}"
+          - "{{ preflight_kubeseal }}"
+        stdin: "{{ {'key': sealed_secrets_key_b64, 'certificate': sealed_secrets_crt_b64} | to_json }}"
+      changed_when: false
+      no_log: true
+
+    - name: Report external-key recovery
+      ansible.builtin.debug:
+        msg: Native sealed-secret recovery passed using the external Vault key and pinned Apps certificate.
+
+    - name: Require the expected API endpoint and deployment credentials
+      ansible.builtin.assert:
+        that:
+          - preflight_api == 'https://10.9.9.20:8006/api2/json'
+          - lookup('ansible.builtin.env', 'PROXMOX_USER') | length > 0
+          - lookup('ansible.builtin.env', 'PROXMOX_TOKEN_ID') | length > 0
+          - lookup('ansible.builtin.env', 'PROXMOX_TOKEN_SECRET') | length > 0
+      no_log: true
+
+    - name: Read effective permissions
+      ansible.builtin.uri:
+        url: "{{ preflight_api }}/access/permissions"
+      register: preflight_permissions
+      no_log: true
+
+    - name: Read every ACL path
+      ansible.builtin.uri:
+        url: "{{ preflight_api }}/access/acl"
+      register: preflight_acls
+      no_log: true
+
+    - name: Require the same complete visibility used by verified retirement
+      ansible.builtin.assert:
+        that:
+          - preflight_permissions.json.data | k3s_retirement_complete_visibility(preflight_acls.json.data)
+        fail_msg: Deployment identity cannot prove complete Proxmox visibility; do not activate retirement.
+
+    - name: Read full VM inventory
+      ansible.builtin.uri:
+        url: "{{ preflight_api }}/cluster/resources?type=vm"
+      register: preflight_resources
+      no_log: true
+
+    - name: Read each QEMU configuration including stopped guests and templates
+      ansible.builtin.uri:
+        url: "{{ preflight_api }}/nodes/{{ item.node | urlencode }}/qemu/{{ item.vmid }}/config?current=1"
+      loop: "{{ preflight_resources.json.data | selectattr('type', 'equalto', 'qemu') | list }}"
+      loop_control:
+        label: "{{ item.vmid }}"
+      no_log: true
+
+    - name: Recheck effective permissions
+      ansible.builtin.uri:
+        url: "{{ preflight_api }}/access/permissions"
+      register: preflight_permissions_after
+      no_log: true
+
+    - name: Recheck ACL paths
+      ansible.builtin.uri:
+        url: "{{ preflight_api }}/access/acl"
+      register: preflight_acls_after
+      no_log: true
+
+    - name: Recheck inventory identities
+      ansible.builtin.uri:
+        url: "{{ preflight_api }}/cluster/resources?type=vm"
+      register: preflight_resources_after
+      no_log: true
+
+    - name: Refuse visibility or inventory drift
+      ansible.builtin.assert:
+        that:
+          - preflight_permissions_after.json.data | k3s_retirement_complete_visibility(preflight_acls_after.json.data)
+          - preflight_permissions.json.data == preflight_permissions_after.json.data
+          - (preflight_acls.json.data | map('to_json', sort_keys=true) | sort) == (preflight_acls_after.json.data |
+            map('to_json', sort_keys=true) | sort)
+          - (preflight_resources.json.data | k3s_retirement_resources) == (preflight_resources_after.json.data |
+            k3s_retirement_resources)
+        fail_msg: Proxmox visibility or inventory changed; repeat the read-only preflight.
+
+    - name: Report completed read-only gates
+      ansible.builtin.debug:
+        msg:
+          Strict API TLS, complete deployment-token visibility and external sealing-key recovery passed; no host or
+          cluster changes performed.

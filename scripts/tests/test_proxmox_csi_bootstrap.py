@@ -97,8 +97,11 @@ class BootstrapTests(unittest.TestCase):
                 with self.subTest(selector=selector, operation=operation["name"]):
                     self.assertTrue(task.evaluate_tags([selector], [], {}))
 
-    def test_source_defaults_leave_feature_disabled(self):
-        self.assertIs(read("group_vars/all/proxmox_csi.yml")["proxmox_csi_enabled"], False)
+    def test_production_activation_keeps_explicit_opt_out(self):
+        settings = read("group_vars/all/proxmox_csi.yml")
+        self.assertIs(settings["proxmox_csi_enabled"], True)
+        self.assertIs(settings["k3s_node_retirement_enabled"], True)
+        self.assertEqual(settings["proxmox_csi_region"], "homelab")
         task = read("roles/k3s_common/tasks/main.yml")[0]
         self.assertFalse(Templar(variables=self.variables()).evaluate_expression(
             trust_as_template(task["when"])))

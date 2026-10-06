@@ -1,5 +1,10 @@
 # Supervised read-only maintenance runner
 
+Historical record: the iSCSI inspection executor, request dispatcher, installer
+and service entry point are retired. Commands below document previous behavior
+and must not be used for current storage. Installed immutable runtimes/manifests
+remain preserved as evidence. Native workflow maintenance locking remains active.
+
 Status: the synthetic executor passed disposable-VM systemd qualification on
 2026-09-30. See [qualification evidence](maintenance-executor-qualification-2026-09-30.md).
 The original read-only executor was installed and accepted on VM300 on

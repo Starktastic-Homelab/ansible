@@ -93,9 +93,8 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(self.allowed('Refuse an unrelated existing pool',
                 proxmox_csi_storage_owner_id=9999, proxmox_csi_storage_pool_detail={'stdout':json.dumps(data)}),expected)
 
-    def test_group_membership_is_requested_and_refused_in_both_roles(self):
-        for role, refusal in [('proxmox_csi_storage','Refuse inherited group privileges or a disabled principal'),
-                              ('storage_fencing','Reject group grants or a disabled existing principal')]:
+    def test_group_membership_is_requested_and_refused(self):
+        for role, refusal in [('proxmox_csi_storage','Refuse inherited group privileges or a disabled principal')]:
             tasks=read('roles/'+role+'/tasks/main.yml')
             with self.subTest(role=role):
                 command=next(t['ansible.builtin.command'] for t in tasks

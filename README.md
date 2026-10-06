@@ -537,7 +537,7 @@ VM300 was bootstrapped and checked across real containers on September 21, 2026.
 See the [qualification record](docs/maintenance-runner-qualification-2026-09-21.md)
 for evidence and the remaining workflow/reboot test limits.
 
-Storage maintenance, fencing and infrastructure replacement share VM300's
+Infrastructure replacement and configuration share VM300's
 `/var/lib/homelab-maintenance`, mounted as `/maintenance` in mutating job
 containers. An absent/mismatched runner marker blocks execution. The record is
 independent of K3s and NAS availability; it survives job cancellation and reboot.
@@ -658,6 +658,13 @@ its identity blocks maintenance until the shared lock domain is recovered and
 all possible writers/infrastructure jobs have been reconciled. Do not provision
 a second independent runner marker to bypass a held operation.
 
+The retired iSCSI status/preflight executor, request dispatcher/installer and
+user-service template are removed. `maintenance-runner.yml` retains the VM300
+instance marker, operation directory and runner group access. Preserve installed
+immutable runtimes, manifests and operation receipts as historical evidence; do
+not modify them in place or reuse old receipts as current writer authority.
+The generic maintenance helper and native deployment locking remain in use.
+
 ### Proxmox CSI bootstrap preparation
 
 `group_vars/all/proxmox_csi.yml` stages the native topology prerequisites for the
@@ -691,7 +698,7 @@ worker install guard only checks whether the k3s binary exists. A fresh control 
 with surviving old workers is therefore **not qualified for CSI activation**: this
 PR adds neither fencing nor a safe partial-datastore-replacement workflow. The full
 rebuild lab does not prove that scenario safe. Retain the existing maintenance lock
-and iSCSI safeguards until the integrated replacement path is qualified.
+and the verified Node-retirement/full-cohort replacement safeguards.
 
 Before activation, the remaining shared scope is: a dedicated NAS export and Proxmox
 NFS registration, an external reserved image-owner ID, scoped API permissions and
@@ -709,93 +716,6 @@ It renders with Ansible's own templating engine, checks exact disabled master/wo
 configuration bytes, inventory-specific new/existing Node labels, and rejects empty,
 malformed or overlong topology values, and checks bootstrap tag selection. It never connects to a host or Kubernetes API.
 
-### Worker iSCSI enrollment
-
-The new `iscsi_initiator` role is disabled on routine deploys. After the shared
-lock is qualified, explicitly dispatch deployment with `enroll_iscsi_workers`
-only after reviewing durable `/maintenance/operations/enrollment/<hostname>.json`
-records for both workers. This keeps a merge from silently enrolling a reused
-initiator identity. Enrollment installs `open-iscsi`/e2fsprogs, sets a unique
-reviewed per-worker IQN, checks idle sessions before any identity change/restart,
-checks the storage route and 25 GiB free disk prerequisite, and labels only a
-verified current VM generation. It never logs out a session.
-
-Each review records the exact `generation` (hostname, VMID, SMBIOS UUID, storage
-IP and IQN), `reviewed_by`, and `previous` generation. Initial use additionally
-requires `first_enrollment: true` after verifying that no existing VM uses that
-IQN. Changed generation requires an exact prior-generation `retirement` record:
-`kind` fenced/destroyed, `generation`, `verified: true`, private `evidence` path
-and `reviewed_by`. Review the real power-off/destruction evidence while holding
-the same maintenance lock; this operator record is **not** proof by itself.
-A new VM having zero sessions does not establish that its predecessor stopped.
-Do not accept a stale fence receipt or concurrent GUI restart.
-
-After joining, a separate `-observed.json` adds the actual Kubernetes node UID.
-It does not change the reviewed enrollment, and explicitly denies writer
-authorization. The Apps release gate must separately bind namespace UID, native
-volume identity and this exact single worker generation. Bootstrap still
-restores Sealed Secrets key material before Apps can recover sealed credentials.
-
-### Scoped fencing and qualification
-
-`storage-fencing.yml` is a separate manually invoked account-definition playbook.
-It is not imported by `k3s.yml`. Run it under the same maintenance ownership with
-an approved external `storage_fencing_secret_destination` beneath
-`/maintenance/private/`. It defines `iscsi-fence@pve!retained`, separated privileges,
-and only `VM.Audit VM.PowerMgmt` at `/vms/201` and `/vms/202`, for both user and
-token, without propagation. It refuses broader existing grants and group
-membership. A token/store mismatch fails rather than rotating a lost secret.
-The private directory, trusted Proxmox CA and independent leaf fingerprint must
-be prepared outside Git. Account application and credential qualification are
-separate approved live operations.
-
-The manual `storage-fencing` workflow accepts reviewed records on the runner,
-not arbitrary commands. Records contain node, VMID, VM name and SMBIOS UUID.
-It checks current configuration, pending changes and power status, journals
-intent before one stop, polls only its own token's task, then verifies exact
-identity and stopped state. Timeout/lost reply keeps ownership and requires the
-same intent's explicit `reconcile` operation. A successful receipt is published
-only after durable writing. A fresh read of the exact stopped VM is still
-required immediately before replacement release; never treat a receipt as
-permission for a later unattended failover. `VM.PowerMgmt` itself also permits
-start/reboot; the wrapper only exposes stop.
-
-Configure the `storage-maintenance` environment's reviewer protections before
-live use. For continuation, supply the original owner, exact recorded stage and
-its nonce through the protected environment secret, never plaintext workflow
-inputs. The workflow deliberately keeps the lock after fencing. Preserve each
-operation's intent and receipt; archive them under the operation ID only after
-recovery completes, before a later independent fence uses the canonical paths.
-
-Qualification procedure, under a separately approved operation:
-
-1. Save effective **user and token** permissions. Require exactly the two worker
-   VM paths and two named privileges, no root/node/storage grants. Use the actual
-   token for worker config/current reads and protected VM read-denial checks.
-   Negative checks for VMs 100/200/300 are read-only; never POST to those VMs.
-2. Verify an unused VMID >=900 from the cluster VM inventory. Record a random
-   UUID and `owned-fence-test-<unique-id>` name. Create one stopped **128 MiB,
-   diskless, networkless** VM on the existing node. Recheck config has no disk or
-   NIC. This is a manual administrative step; the token cannot allocate VMs.
-3. Add temporary propagation=false grants for the same user and separated token
-   at that one VM path, saving the exact ACL delta. Add `qualification` fields
-   `approved: true`, `diskless: true`, `networkless: true`, `memory_mib: 128` to
-   its reviewed expected record. The command checks the actual config too.
-4. Start only that owned empty VM administratively. Test wrong-UUID refusal
-   before any stop, then real token stop/own-task polling/current-state readback.
-   Run fault injection locally for timeouts; never create uncertainty by
-   interrupting production. Confirm reconciliation performs no second stop.
-5. Recheck test VM name/UUID and stopped state, remove only the recorded temporary
-   grants, then delete only that owned diskless VM. Verify the ID and both ACL
-   entries are gone and the final effective permissions are again worker-only.
-   Save cleanup evidence before releasing ownership.
-
-This qualifies the credential route, not a production partition recovery. No
-production power-off, account creation or test VM allocation was performed while
-preparing these changes. API permission semantics and command options follow
-[Proxmox's access-control source](https://github.com/proxmox/pve-docs/blob/master/pveum.adoc)
-and [pveum synopsis](https://github.com/proxmox/pve-docs/blob/master/generated/pveum.1-synopsis.adoc).
-
 ## Shared Proxmox CSI storage setup (manual, inactive)
 
 `proxmox-csi-storage.yml` prepares shared infrastructure once, using native PVE
@@ -810,8 +730,8 @@ The role has only the stock non-replication privileges, granted to that pool,
 that storage and the external image-owner ID. It has no VM power-management or
 VM-allocation rights. The pool must contain only k3s QEMU VMs, never storage or
 unrelated guests. Existing conflicting definitions are refused, not overwritten.
-Both this setup and the existing fencing setup request full PVE user information
-so their group-membership refusal can detect inherited privileges.
+This setup requests full PVE user information
+so its group-membership refusal can detect inherited privileges.
 
 Proxmox removes VM-specific grants when a VM is deleted. The companion Terraform
 `k3s_resource_pool` input gives replacement VMs native pool membership while the

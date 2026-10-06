@@ -67,6 +67,7 @@
     group: "{{ maintenance_runner_group }}"
     mode: "2770"
 
-- name: Install the explicitly enabled read-only executor
-  ansible.builtin.include_tasks: executor.yml
-  when: maintenance_runner_executor_enabled | bool
+- name: Remove retired iSCSI inspection executor entry point
+  ansible.builtin.file:
+    path: /etc/systemd/user/homelab-maintenance@.service
+    state: absent

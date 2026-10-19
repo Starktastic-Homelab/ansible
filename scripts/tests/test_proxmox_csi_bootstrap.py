@@ -49,9 +49,12 @@ class BootstrapTests(unittest.TestCase):
                 with self.subTest(groups=groups, node=node):
                     config = yaml.safe_load(self.render_config(self.variables(
                         True, group_names=groups, proxmox_node=node)))
-                    self.assertEqual(set(config["node-label"]), {
+                    expected = {
                         "topology.kubernetes.io/region=homelab",
-                        "topology.kubernetes.io/zone=" + node})
+                        "topology.kubernetes.io/zone=" + node}
+                    if "workers" in groups:
+                        expected.add("csi.proxmox.sinextra.dev/max-volume-attachments=29")
+                    self.assertEqual(set(config["node-label"]), expected)
 
     def test_invalid_topology_fails_before_host_configuration(self):
         tasks = read("roles/k3s_common/tasks/main.yml")
@@ -82,6 +85,7 @@ class BootstrapTests(unittest.TestCase):
                 host: {"proxmox_csi_node_labels": values} for host, values in hostvars.items()}})
             self.assertEqual(templar.template(patch["name"]), name)
             self.assertEqual(templar.template(patch["definition"])["metadata"]["labels"], labels)
+            self.assertEqual(labels["csi.proxmox.sinextra.dev/max-volume-attachments"], "29")
         self.assertNotEqual(hostvars["worker-01"], hostvars["worker-02"])
 
     def test_bootstrap_tags_select_the_included_operations(self):

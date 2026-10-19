@@ -665,24 +665,47 @@ immutable runtimes, manifests and operation receipts as historical evidence; do
 not modify them in place or reuse old receipts as current writer authority.
 The generic maintenance helper and native deployment locking remain in use.
 
-### Proxmox CSI bootstrap preparation
+### Proxmox CSI bootstrap
 
-`group_vars/all/proxmox_csi.yml` stages the native topology prerequisites for the
+`group_vars/all/proxmox_csi.yml` enables the native topology prerequisites for the
 [accepted shared integration plan](https://github.com/Starktastic-Homelab/apps/blob/main/docs/superpowers/plans/2026-10-03-proxmox-csi-shared-integration.md).
-It is **disabled by default**. Merging this preparation runs the existing deployment
-workflow but adds no CSI operations and leaves generated k3s configuration unchanged.
+The homelab configuration sets `proxmox_csi_enabled: true`; an explicit false
+override keeps the generated k3s configuration free of CSI labels.
 It does not install CSI, register NFS storage, allocate images, publish credentials,
 or migrate Jellyfin.
 
-The eventual activation change sets `proxmox_csi_enabled: true` and a nonempty
-`proxmox_csi_region` matching the stock driver's `clusters[].region`. Each VM's zone
+The nonempty `proxmox_csi_region` matches the stock driver's `clusters[].region`. Each VM's zone
 comes from the dynamic inventory's `proxmox_node`; no service or VM-to-zone map is
 maintained here. Both values must be valid Kubernetes label values. `k3s_common`
 validates them before configuring that node and writes native `node-label` options.
 Bootstrap also waits for and patches existing Node objects before installing ArgoCD,
 because registration flags do not update labels on already registered nodes.
-Enabling this changes the k3s configuration and can restart existing k3s services;
-that rollout belongs to the separate activation scope. Disabling it later does not
+Workers additionally register and reconcile the stock driver's
+`csi.proxmox.sinextra.dev/max-volume-attachments: "29"` label. The unmodified
+v0.20.0 [attachment loop](https://github.com/sergelogvinov/proxmox-csi-plugin/blob/v0.20.0/pkg/csi/utils.go)
+uses only `scsi1` through `scsi29`; advertising 30 would allow an attachment that
+cannot succeed. The worker OS disk uses `virtio0` and cloud-init uses `ide2`,
+leaving those SCSI slots for CSI. Do not add other disks in that range without
+reducing the allowance. Control-plane labels remain topology-only.
+
+For the first rollout on existing workers, merging this change runs the normal
+deployment, updates the registration configuration and patches the live labels.
+The existing serial worker rollout can restart each k3s agent. After successful
+deployment, refresh the CSI node plugin Pods one at a time (ordinary Pod deletion,
+never a disk detach), waiting for the recreated plugin to become Ready and its
+`CSINode.spec.drivers[].allocatable.count` to report 29 before continuing.
+Existing application Pods and disks stay in place. A label change alone does not
+guarantee that kubelet has refreshed the advertised count. Fresh cluster rebuilds
+receive the label before the plugin is first registered and need no extra step.
+
+The matching Apps capacity alerts use this 29-slot budget. Activate them only
+after both live counts have been verified. Two workers provide 58 total slots;
+they cannot accommodate more than 29 volumes on one surviving worker. Alerts
+provide advance notice, not automatic worker creation. The worker count stays
+under Terraform's existing policy.
+
+Changing these labels updates the k3s configuration and can restart existing k3s services.
+Disabling the integration later does not
 uninstall CSI or remove existing Kubernetes labels; it is not a rollback procedure.
 
 The stock v0.20.0 [node image](https://github.com/sergelogvinov/proxmox-csi-plugin/blob/v0.20.0/Dockerfile)

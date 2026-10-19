@@ -4,9 +4,16 @@ proxmox_csi_enabled: true
 # Must equal the upstream driver's clusters[].region; no lab/production fallback.
 proxmox_csi_region: "homelab"
 # The inventory plugin supplies proxmox_node separately for each VM.
-proxmox_csi_node_labels:
-  topology.kubernetes.io/region: "{{ proxmox_csi_region }}"
-  topology.kubernetes.io/zone: "{{ proxmox_node | default('') }}"
+# Stock v0.20.0 attaches only scsi1..scsi29, despite accepting a label of 30.
+# Worker OS/cloud-init disks must stay on VirtIO/IDE, outside those CSI slots.
+proxmox_csi_node_labels: >-
+  {{ {
+    'topology.kubernetes.io/region': proxmox_csi_region,
+    'topology.kubernetes.io/zone': proxmox_node | default('')
+  } | combine(
+    {'csi.proxmox.sinextra.dev/max-volume-attachments': '29'}
+    if 'workers' in group_names else {}
+  ) }}
 
 # Exact public server certificate, independently verified over Proxmox SSH.
 # Exact-generation retirement runs before agents join; API visibility fails closed.

@@ -73,13 +73,14 @@ jobs:
           # renovate: datasource=github-releases depName=helm/helm
           version: 'v4.3.0'
 
-      - name: Setup SSH Key
+      - name: Prepare private connection credentials
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
         run: |
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > private_key.pem
-          chmod 400 private_key.pem
-
-      - name: Create Ansible Vault password file
-        run: echo "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > .vault_pass
+          umask 077
+          printf '%s\n' "$SSH_PRIVATE_KEY" > private_key.pem
+          printf '%s\n' "$ANSIBLE_VAULT_PASSWORD" > .vault_pass
 
       - name: Acquire external maintenance ownership
         run: python3 maintenance-helper/scripts/maintenance_lock.py acquire --operation ansible-deploy --github-env
@@ -95,28 +96,47 @@ jobs:
       - name: Release ownership after successful configuration
         run: python3 maintenance-helper/scripts/maintenance_lock.py release
 
-      - name: Stage Kubeconfig
-        run: cp ~/.kube/config ./kubeconfig_artifact
+      # Artifacts of this public repo are downloadable by anyone, so only ciphertext leaves the runner.
+      # The vault password already guards the public group_vars/all/secrets.yml, so this adds no new target,
+      # and the org-secret PAT stays off the self-hosted runner.
+      - name: Encrypt kubeconfig for handoff
+        env:
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+        run: |
+          umask 077
+          openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -salt -pass env:ANSIBLE_VAULT_PASSWORD \
+            -in ~/.kube/config -out handoff.enc
 
-      - name: Upload Kubeconfig Artifact
+      - name: Upload encrypted kubeconfig artifact
         uses: actions/upload-artifact@v7
         with:
-          name: kubeconfig
-          path: kubeconfig_artifact
+          name: kubeconfig-handoff
+          path: handoff.enc
           retention-days: 1
+
+      - name: Remove private controller credentials
+        if: always()
+        run: rm -f .vault_pass private_key.pem ~/.kube/config handoff.enc
 
   handoff:
     name: Push kubeconfig to org secret
     needs: provision
     runs-on: ubuntu-latest
     steps:
-      - name: Download Kubeconfig Artifact
+      - name: Download encrypted kubeconfig artifact
         uses: actions/download-artifact@v8
         with:
-          name: kubeconfig
-      
+          name: kubeconfig-handoff
+
+      # Decrypt to a file first: a failed decrypt must stop before gh, never set a partial secret.
       - name: Update org-wide kubeconfig secret
         env:
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
           GH_TOKEN: ${{ secrets.GH_PAT_ORG_SECRET_MANAGER }}
         run: |
-          gh secret set KUBECONFIG_RAW --org Starktastic-Homelab --visibility selected --repos apps,terraform --body "$(cat kubeconfig_artifact)"
+          umask 077
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -pass env:ANSIBLE_VAULT_PASSWORD \
+            -in handoff.enc -out kubeconfig
+          # CBC has no MAC: a wrong key passes the padding check about 1 time in 256.
+          grep -qx 'kind: Config' kubeconfig
+          gh secret set KUBECONFIG_RAW --org Starktastic-Homelab --visibility selected --repos apps,terraform < kubeconfig

@@ -57,6 +57,9 @@ jobs:
       - name: Test deploy workflow ownership
         run: python3 scripts/tests/test_deploy_lock.py
 
+      - name: Test workflow credential handling
+        run: python3 scripts/tests/test_workflow_credentials.py
+
       - name: Run ansible-lint
         run: |
           set +e
@@ -96,13 +99,10 @@ jobs:
       - name: Install Ansible collections
         run: ansible-galaxy collection install -r requirements.yml --force
 
-      - name: Setup SSH Key
-        run: |
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > private_key.pem
-          chmod 400 private_key.pem
-
-      - name: Create Ansible Vault password file
-        run: echo "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > .vault_pass
+      # --syntax-check never connects to hosts or decrypts the vault, so this
+      # pull_request job gets no SSH key or vault password (as in the lint job).
+      - name: Create dummy Ansible Vault password file
+        run: echo "dummy" > .vault_pass
 
       - name: Run Ansible Syntax Check
         env:
@@ -116,7 +116,6 @@ jobs:
           set +e
           OUTPUT=$(ansible-playbook -i inventory/proxmox.yml \
             --vault-password-file .vault_pass \
-            --private-key private_key.pem \
             --syntax-check k3s.yml ser2net.yml i915-sriov.yml i915-acceptance.yml proxmox-csi-storage.yml csi-activation-preflight.yml 2>&1)
           EXIT_CODE=$?
           set -e
@@ -130,3 +129,7 @@ jobs:
             echo '```' >> $GITHUB_STEP_SUMMARY
             exit 1
           fi
+
+      - name: Remove dummy Ansible Vault password file
+        if: always()
+        run: rm -f .vault_pass

@@ -15,7 +15,8 @@ jobs:
     name: Deploy ser2net on Proxmox
     runs-on: self-hosted
     container:
-      image: python:trixie
+      # Match deploy.yml; Ansible 2.21 fails to import under Python 3.15.
+      image: python:3.14-trixie
 
     steps:
       - name: Checkout repository
@@ -35,11 +36,19 @@ jobs:
       - name: Install sshpass for password auth
         run: apt-get update && apt-get install -y sshpass
 
-      - name: Create Ansible Vault password file
-        run: echo "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > .vault_pass
+      - name: Prepare private connection credentials
+        env:
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+        run: |
+          umask 077
+          printf '%s\n' "$ANSIBLE_VAULT_PASSWORD" > .vault_pass
 
       - name: Run ser2net playbook
         run: |
           ansible-playbook -i inventory/hosts.yml \
             --vault-password-file .vault_pass \
             ser2net.yml
+
+      - name: Remove private controller credentials
+        if: always()
+        run: rm -f .vault_pass

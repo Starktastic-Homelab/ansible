@@ -1,0 +1,9 @@
+---
+- name: Configure host-side backup (ZFS replica, restic, health timers)
+  hosts: proxmox_hosts
+  become: true
+  gather_facts: true
+  tags:
+    - proxmox_backup
+  roles:
+    - role: proxmox_backup

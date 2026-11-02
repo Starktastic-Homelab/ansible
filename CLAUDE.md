@@ -8,12 +8,14 @@ packer → terraform → ansible → apps; the system overview is `../CLAUDE.md`
 
 - **Every push to `main` is a full deploy** (`deploy.yml` → `k3s.yml`, ArgoCD helm upgrade, rewrite of
   org secret `KUBECONFIG_RAW`). Path-ignored: `README.md`, `renovate.json`, `group_vars/proxmox_hosts/**`,
-  `roles/ser2net/**`, `ser2net.yml`. Docs-only commits (including this file) need `[skip ci]`.
+  `roles/ser2net/**`, `ser2net.yml`, the `proxmox_backup` role, playbook, workflow and test. Docs-only commits
+  (including this file) need `[skip ci]`.
 - `deploy.yml` also runs on Terraform's `repository_dispatch: infrastructure-changed`. Deploys queue and
   are never cancelled, since an interrupted `helm upgrade` leaves a pending release.
 - **A change to `group_vars/proxmox_hosts/i915_sriov.yml` on `main` reboots the Proxmox host**
   (`i915-sriov-upgrade.yml`), runner included, without taking the maintenance lock.
-- Pushing ser2net files deploys ser2net to the host; `format.yml` pushes Prettier commits to PR branches.
+- Pushing ser2net files deploys ser2net to the host; pushing `proxmox_backup` files deploys the backup role
+  (`proxmox-backup.yml`). `format.yml` pushes Prettier commits to PR branches.
 
 ## Commands
 
@@ -22,7 +24,8 @@ packer → terraform → ansible → apps; the system overview is `../CLAUDE.md`
 pip install -r requirements.txt && ansible-galaxy collection install -r requirements.yml
 python3 -m unittest discover -s scripts/tests -p 'test_maintenance*.py' -v
 python3 scripts/tests/test_<name>.py  # proxmox_csi_bootstrap, node_retirement, csi_preflight, drain_recovery,
-                                      # proxmox_csi_storage, deploy_lock, i915_compat, i915_acceptance
+                                      # proxmox_csi_storage, deploy_lock, i915_compat, i915_acceptance,
+                                      # proxmox_backup
 ansible-lint --offline                # no path argument: `.` silently skips roles/
 ```
 

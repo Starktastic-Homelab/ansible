@@ -1,0 +1,11 @@
+# Managed by ansible (proxmox_backup).
+[Unit]
+Description=Homelab backup timer: {{ item.key }}
+
+[Timer]
+OnCalendar={{ item.value }}
+Persistent=true
+Unit=homelab-backup@{{ item.key }}.service
+
+[Install]
+WantedBy=timers.target

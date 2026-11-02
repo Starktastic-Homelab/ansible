@@ -118,6 +118,7 @@ Seven roles cover the full lifecycle from bare VM to GitOps-ready cluster:
 | **bootstrap_cluster** | CI runner (localhost) | Sealed Secrets key, TLS cert restore from NFS, ArgoCD + OIDC setup, App-of-Apps |
 | **i915_sriov** | Proxmox host | Intel GPU SR-IOV driver lifecycle (install, upgrade, GRUB, sysfs VF config) |
 | **ser2net** | Proxmox host | Expose USB Zigbee dongle as TCP socket for cluster consumption |
+| **proxmox_backup** | Proxmox host | TrueNAS replica pool on a USB disk, restic to a Hetzner Storage Box, healthchecks.io timers (off until `proxmox_backup_enabled`) |
 
 ### Role Execution Order
 
@@ -427,6 +428,7 @@ On a fresh cluster where no NFS backup exists yet, the restore step **gracefully
 |----------|--------|---------|
 | `i915-sriov.yml` | Proxmox host | Install/upgrade Intel SR-IOV GPU driver |
 | `ser2net.yml` | Proxmox host | Configure TCP bridge for USB Zigbee dongle (port 3333) |
+| `proxmox-backup.yml` | Proxmox host | Host-side backup: `usbbk` import, restic and health timers, vzdump storage `usbbk-vz` |
 
 ---
 
@@ -450,6 +452,7 @@ flowchart TD
     subgraph special["Specialized"]
         DRV_CHANGE["i915_sriov.yml change"] --> I915[i915-sriov-upgrade.yml\nGPU driver upgrade + reboot]
         SER_CHANGE["ser2net role change"] --> SER[ser2net.yml\nZigbee gateway deploy]
+        BAK_CHANGE["proxmox_backup role change"] --> BAK[proxmox-backup.yml\nHost backup deploy]
     end
 
     classDef deploy fill:#EE0000,stroke:#CC0000,color:#fff
@@ -468,6 +471,7 @@ flowchart TD
 | **i915-sriov-upgrade** | i915 config change / manual | GPU driver lifecycle on Proxmox host |
 | **i915-compat** | PR (i915 config/role changes) | Blocks merge unless upstream data proves the host ↔ guest driver combination works |
 | **ser2net** | ser2net role change / manual | Zigbee serial bridge configuration |
+| **proxmox-backup** | proxmox_backup role change / manual | Host-side backup role on the Proxmox host |
 
 ---
 

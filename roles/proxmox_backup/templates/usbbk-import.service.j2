@@ -1,0 +1,18 @@
+# Managed by ansible (proxmox_backup). Runs after the guests start, so a missing or hung portable
+# disk never holds up boot or guest start; only multi-user.target waits (bounded by the timeout).
+# cachefile=none keeps the pool out of zpool.cache, or zfs-import-cache would import it early in boot.
+[Unit]
+Description=Import the portable backup pool {{ proxmox_backup_pool }}
+After=zfs-import.target zfs-mount.service pve-guests.service
+ConditionPathExists=/dev/disk/by-id/{{ proxmox_backup_usb_disk_id }}
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=300
+ExecStart=/bin/sh -c 'zpool list {{ proxmox_backup_pool }} >/dev/null 2>&1 || zpool import -N -o cachefile=none -d /dev/disk/by-id {{ proxmox_backup_pool }}'
+ExecStart=/bin/sh -c '[ "$(zfs get -H -o value keystatus {{ proxmox_backup_pool }})" = available ] || zfs load-key {{ proxmox_backup_pool }}'
+ExecStart=/usr/sbin/zfs mount -a
+
+[Install]
+WantedBy=multi-user.target

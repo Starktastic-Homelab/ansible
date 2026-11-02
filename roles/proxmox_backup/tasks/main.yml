@@ -1,0 +1,203 @@
+---
+# Checks come first: a failed check after a unit change would leave its reload handler unrun.
+- name: Require the backup disk and Storage Box settings
+  ansible.builtin.assert:
+    that:
+      - proxmox_backup_usb_disk_id | length > 0
+      - proxmox_backup_storagebox_host | length > 0
+      - proxmox_backup_storagebox_user | length > 0
+      - proxmox_backup_storagebox_hostkey is match('^[a-z0-9-]+ [A-Za-z0-9+/]+=*$')
+  when: proxmox_backup_enabled
+
+- name: Inspect backup secrets
+  ansible.builtin.stat:
+    path: "/etc/homelab-backup/{{ item }}"
+    follow: false
+    get_checksum: false
+  loop: "{{ proxmox_backup_secrets }}"
+  register: proxmox_backup_secret_stats
+  when: proxmox_backup_enabled
+
+- name: Refuse missing or loose backup secrets
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg | default(false)
+      - not item.stat.islnk | default(false)
+      - item.stat.uid | default(-1) == 0
+      - item.stat.mode | default('') == '0600'
+    fail_msg: >-
+      /etc/homelab-backup/{{ item.item }} must be a root-owned regular file with mode 0600. Place it by hand
+      from the key kit; never regenerate a lost secret.
+  loop: "{{ proxmox_backup_secret_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: proxmox_backup_enabled
+
+- name: Install restic and git
+  ansible.builtin.apt:
+    name: [restic, git]
+    state: present
+    update_cache: true
+
+- name: Create the TrueNAS replication user
+  ansible.builtin.user:
+    name: tnrepl
+    system: true
+    home: /var/lib/tnrepl
+    create_home: true
+    shell: /bin/sh
+
+- name: Authorize only the TrueNAS replication key, only from TrueNAS
+  ansible.posix.authorized_key:
+    user: tnrepl
+    key: "{{ proxmox_backup_truenas_pubkey }}"
+    key_options: >-
+      from="{{ proxmox_backup_truenas_sources | join(',') }}",no-pty,no-port-forwarding,no-agent-forwarding,no-X11-forwarding
+    exclusive: true
+  when: proxmox_backup_truenas_pubkey | length > 0
+
+- name: Install the backup script
+  ansible.builtin.copy:
+    src: homelab-backup.py
+    dest: /usr/local/sbin/homelab-backup
+    owner: root
+    group: root
+    mode: "0755"
+
+# Secrets are placed by hand and never managed here; the role only enforces the directory mode.
+- name: Create the backup secrets directory
+  ansible.builtin.file:
+    path: /etc/homelab-backup
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Create the backup config directory
+  ansible.builtin.file:
+    path: /etc/homelab-backup.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy backup config
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/homelab-backup.d/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [sources.json, excludes.txt, ssh_config]
+
+- name: Pin the Storage Box host key
+  ansible.builtin.copy:
+    content: "[{{ proxmox_backup_storagebox_host }}]:23 {{ proxmox_backup_storagebox_hostkey }}\n"
+    dest: /etc/homelab-backup.d/known_hosts
+    owner: root
+    group: root
+    mode: "0644"
+  when: proxmox_backup_storagebox_host | length > 0
+
+- name: Deploy the backup service
+  ansible.builtin.template:
+    src: homelab-backup@.service.j2
+    dest: /etc/systemd/system/homelab-backup@.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Deploy the backup timers
+  ansible.builtin.template:
+    src: homelab-backup.timer.j2
+    dest: "/etc/systemd/system/homelab-backup-{{ item.key }}.timer"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ proxmox_backup_schedules | dict2items }}"
+  notify: Reload systemd
+
+- name: Deploy the backup pool import unit
+  ansible.builtin.template:
+    src: usbbk-import.service.j2
+    dest: /etc/systemd/system/usbbk-import.service
+    owner: root
+    group: root
+    mode: "0644"
+  when: proxmox_backup_usb_disk_id | length > 0
+  notify: Reload systemd
+
+- name: Apply unit changes before enabling
+  ansible.builtin.meta: flush_handlers
+
+- name: Import the backup pool now and at boot
+  ansible.builtin.systemd:
+    name: usbbk-import.service
+    enabled: true
+    state: started
+  when: proxmox_backup_usb_disk_id | length > 0
+
+- name: Read the backup pool cache setting
+  ansible.builtin.command:
+    argv: [zpool, get, -H, -o, value, cachefile, "{{ proxmox_backup_pool }}"]
+  register: proxmox_backup_cachefile
+  changed_when: false
+  failed_when: false
+  when: proxmox_backup_usb_disk_id | length > 0
+
+# cachefile is per import; a pool imported without cachefile=none lands in zpool.cache, and
+# zfs-import-cache would then import the portable disk early in boot.
+- name: Keep the backup pool out of the boot-time import cache
+  ansible.builtin.command:
+    argv: [zpool, set, cachefile=none, "{{ proxmox_backup_pool }}"]
+  when:
+    - proxmox_backup_usb_disk_id | length > 0
+    - proxmox_backup_cachefile.rc == 0
+    - proxmox_backup_cachefile.stdout | trim != 'none'
+  changed_when: true
+
+# tnrepl has a shell here; the vzdump archives and git mirrors on the pool stay root-only.
+- name: Restrict the backup pool to root
+  ansible.builtin.file:
+    path: "/{{ proxmox_backup_pool }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: proxmox_backup_usb_disk_id | length > 0
+
+- name: Read ZFS delegations on the replication target
+  ansible.builtin.command:
+    argv: [zfs, allow, "{{ proxmox_backup_pool }}/tn"]
+  register: proxmox_backup_zfs_allow
+  changed_when: false
+  failed_when: false
+
+- name: Delegate replication receive to tnrepl
+  ansible.builtin.command:
+    argv: [zfs, allow, -u, tnrepl, "{{ proxmox_backup_zfs_permissions | join(',') }}", "{{ proxmox_backup_pool }}/tn"]
+  when:
+    - proxmox_backup_zfs_allow.rc == 0
+    - proxmox_backup_zfs_allow.stdout is not search('user tnrepl ' ~ (proxmox_backup_zfs_permissions | sort | join(',')))
+  changed_when: true
+
+- name: Read registered storage definitions
+  ansible.builtin.command: pvesh get /storage --output-format json
+  register: proxmox_backup_storage_definitions
+  changed_when: false
+
+# is_mountpoint keeps vzdump off the host root disk while the pool is missing.
+- name: Register the backup pool as vzdump storage
+  ansible.builtin.command:
+    argv: [pvesm, add, dir, usbbk-vz, --path, "/{{ proxmox_backup_pool }}/vz", --content, backup, --is_mountpoint, "yes"]
+  when: "'usbbk-vz' not in (proxmox_backup_storage_definitions.stdout | from_json | map(attribute='storage') | list)"
+  changed_when: true
+
+- name: Enable or disable the backup timers
+  ansible.builtin.systemd:
+    name: "homelab-backup-{{ item }}.timer"
+    enabled: "{{ proxmox_backup_enabled }}"
+    state: "{{ 'started' if proxmox_backup_enabled else 'stopped' }}"
+  loop: "{{ proxmox_backup_schedules.keys() | list }}"

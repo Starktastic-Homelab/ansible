@@ -1,0 +1,54 @@
+---
+# Units and config are always installed; timers run and secrets are required only once this is true.
+proxmox_backup_enabled: false
+
+# /dev/disk/by-id name of the portable backup disk (pool usbbk); empty until the disk is attached.
+proxmox_backup_usb_disk_id: ""
+proxmox_backup_pool: usbbk
+
+# TrueNAS replication pushes into usbbk/tn as tnrepl; the key is installed only once set.
+proxmox_backup_truenas_pubkey: ""
+proxmox_backup_truenas_sources: [10.9.9.30, 10.9.8.30]
+proxmox_backup_zfs_permissions: [create, destroy, hold, mount, readonly, receive, release, rollback, userprop]
+
+proxmox_backup_storagebox_host: ""
+proxmox_backup_storagebox_user: ""
+# Host key as "type base64", from ssh-keyscan -p 23.
+proxmox_backup_storagebox_hostkey: ""
+proxmox_backup_repository: sftp:storagebox:repo
+
+proxmox_backup_max_replica_age_h: 8
+proxmox_backup_sources:
+  - { dataset: usbbk/tn/k3s-block, mount: k3s-block, raw_key: true }
+  - { dataset: usbbk/tn/pv, mount: pv, raw_key: true }
+
+# Regenerable data; everything else in the sources goes off-site.
+proxmox_backup_excludes:
+  - /srv/backup-src/k3s-block/images/9999/vm-9999-prometheus.raw
+  - /srv/backup-src/k3s-block/images/9999/vm-9999-loki.raw
+  - /srv/backup-src/k3s-block/images/9999/vm-9999-tempo.raw
+  - /srv/backup-src/k3s-block/images/9999/vm-9999-alertmanager.raw
+  - /srv/backup-src/k3s-block/images/9999/vm-9999-karakeep-meilisearch.raw
+  - /srv/backup-src/immich/thumbs
+  - /srv/backup-src/immich/encoded-video
+
+# Weekly VM300 dump (Garage Terraform state); vzdump runs with --compress 0, so the archive is a plain .vma.
+proxmox_backup_vzdump_glob: /usbbk/vz/dump/vzdump-qemu-300-*.vma
+proxmox_backup_dump_rules:
+  - { glob: /srv/backup-src/pv/databases/pg-backup/pg_dumpall_*.sql.gz, max_age_h: 26, min_count: 1 }
+  - { glob: /srv/backup-src/pv/cert-backup/cert-backup/*.yaml, max_age_h: 26, min_count: 1 }
+  - { glob: "{{ proxmox_backup_vzdump_glob }}", max_age_h: 192, min_count: 1 }
+
+proxmox_backup_git_repos:
+  - https://github.com/Starktastic-Homelab/packer.git
+  - https://github.com/Starktastic-Homelab/terraform.git
+  - https://github.com/Starktastic-Homelab/ansible.git
+  - https://github.com/Starktastic-Homelab/apps.git
+  - https://github.com/Starktastic-Homelab/.github.git
+
+proxmox_backup_schedules:
+  backup: "*-*-* 04:30:00"
+  maint: "Sun *-*-* 05:30:00"
+  health: hourly
+
+proxmox_backup_secrets: [restic.pass, id_storagebox, healthchecks.env, apps.key, usbbk.key]

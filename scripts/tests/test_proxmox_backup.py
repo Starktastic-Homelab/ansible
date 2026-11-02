@@ -214,6 +214,18 @@ class HostSafetyTests(unittest.TestCase):
         self.assertIn(('https://hc.invalid/h', '/fail'), host.pings)
         self.assertNotIn(('https://hc.invalid/h', ''), host.pings)
 
+    def test_vzdump_storage_registers_only_when_mounted(self):
+        # pvesm add activates the storage at once and fails while is_mountpoint's path is not mounted.
+        name = 'Register the backup pool as vzdump storage'
+        absent, present = {'stdout': '[{"storage": "local"}]'}, {'stdout': '[{"storage": "usbbk-vz"}]'}
+        for mounted, definitions, expected in [({'rc': 0}, absent, True), ({'rc': 1}, absent, False),
+                                               ({'rc': 0}, present, False)]:
+            with self.subTest(mounted=mounted, definitions=definitions):
+                self.assertEqual(runs(name, proxmox_backup_vz_mounted=mounted,
+                                      proxmox_backup_storage_definitions=definitions), expected)
+        check = task('Check that the vzdump dataset is mounted')['ansible.builtin.command']['argv']
+        self.assertEqual(check, ['findmnt', '--noheadings', '--mountpoint', '/{{ proxmox_backup_pool }}/vz'])
+
     def test_ping_never_raises_or_logs_the_url(self):
         m = script()
         with tempfile.TemporaryDirectory() as d:

@@ -1,0 +1,13 @@
+# Managed by ansible (proxmox_backup).
+[Unit]
+Description=Homelab backup: %i
+After=network-online.target usbbk-import.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/homelab-backup %i
+# The first upload takes hours.
+TimeoutStartSec=infinity
+Nice=10
+IOSchedulingClass=idle

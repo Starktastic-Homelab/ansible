@@ -1,0 +1,11 @@
+# Managed by ansible (proxmox_backup). restic reaches the Storage Box through this alias only.
+Host storagebox
+  HostName {{ proxmox_backup_storagebox_host }}
+  User {{ proxmox_backup_storagebox_user }}
+  Port 23
+  IdentityFile /etc/homelab-backup/id_storagebox
+  IdentitiesOnly yes
+  UserKnownHostsFile /etc/homelab-backup.d/known_hosts
+  StrictHostKeyChecking yes
+  ServerAliveInterval 60
+  ServerAliveCountMax 10

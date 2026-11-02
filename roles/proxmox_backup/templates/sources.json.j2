@@ -1,0 +1,10 @@
+{{ {
+  'pool': proxmox_backup_pool,
+  'repository': proxmox_backup_repository,
+  'max_replica_age_h': proxmox_backup_max_replica_age_h,
+  'sources': proxmox_backup_sources,
+  'dump_rules': proxmox_backup_dump_rules,
+  'vzdump_glob': proxmox_backup_vzdump_glob,
+  'git_dir': '/' ~ proxmox_backup_pool ~ '/git',
+  'git_repos': proxmox_backup_git_repos,
+} | to_nice_json }}

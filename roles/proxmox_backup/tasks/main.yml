@@ -27,8 +27,8 @@
       - item.stat.uid | default(-1) == 0
       - item.stat.mode | default('') == '0600'
     fail_msg: >-
-      /etc/homelab-backup/{{ item.item }} must be a root-owned regular file with mode 0600. Place it by hand
-      from the key kit; never regenerate a lost secret.
+      /etc/homelab-backup/{{ item.item }} must be a root-owned regular file with mode 0600. Place it by hand from the
+      key kit; never regenerate a lost secret.
   loop: "{{ proxmox_backup_secret_stats.results }}"
   loop_control:
     label: "{{ item.item }}"
@@ -53,7 +53,8 @@
     user: tnrepl
     key: "{{ proxmox_backup_truenas_pubkey }}"
     key_options: >-
-      from="{{ proxmox_backup_truenas_sources | join(',') }}",no-pty,no-port-forwarding,no-agent-forwarding,no-X11-forwarding
+      from="{{ proxmox_backup_truenas_sources | join(',')
+      }}",no-pty,no-port-forwarding,no-agent-forwarding,no-X11-forwarding
     exclusive: true
   when: proxmox_backup_truenas_pubkey | length > 0
 
@@ -180,7 +181,8 @@
     argv: [zfs, allow, -u, tnrepl, "{{ proxmox_backup_zfs_permissions | join(',') }}", "{{ proxmox_backup_pool }}/tn"]
   when:
     - proxmox_backup_zfs_allow.rc == 0
-    - proxmox_backup_zfs_allow.stdout is not search('user tnrepl ' ~ (proxmox_backup_zfs_permissions | sort | join(',')))
+    - proxmox_backup_zfs_allow.stdout is not search('user tnrepl ' ~ (proxmox_backup_zfs_permissions | sort |
+      join(',')))
   changed_when: true
 
 - name: Read registered storage definitions
@@ -191,7 +193,8 @@
 # is_mountpoint keeps vzdump off the host root disk while the pool is missing.
 - name: Register the backup pool as vzdump storage
   ansible.builtin.command:
-    argv: [pvesm, add, dir, usbbk-vz, --path, "/{{ proxmox_backup_pool }}/vz", --content, backup, --is_mountpoint, "yes"]
+    argv:
+      [pvesm, add, dir, usbbk-vz, --path, "/{{ proxmox_backup_pool }}/vz", --content, backup, --is_mountpoint, "yes"]
   when: "'usbbk-vz' not in (proxmox_backup_storage_definitions.stdout | from_json | map(attribute='storage') | list)"
   changed_when: true
 

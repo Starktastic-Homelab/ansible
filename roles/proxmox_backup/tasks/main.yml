@@ -190,12 +190,22 @@
   register: proxmox_backup_storage_definitions
   changed_when: false
 
-# is_mountpoint keeps vzdump off the host root disk while the pool is missing.
+- name: Check that the vzdump dataset is mounted
+  ansible.builtin.command:
+    argv: [findmnt, --noheadings, --mountpoint, "/{{ proxmox_backup_pool }}/vz"]
+  register: proxmox_backup_vz_mounted
+  changed_when: false
+  failed_when: false
+
+# pvesm add activates the storage at once, and is_mountpoint refuses an unmounted path, so register it only
+# once the pool is mounted. is_mountpoint then keeps vzdump off the host root disk whenever the pool is missing.
 - name: Register the backup pool as vzdump storage
   ansible.builtin.command:
     argv:
       [pvesm, add, dir, usbbk-vz, --path, "/{{ proxmox_backup_pool }}/vz", --content, backup, --is_mountpoint, "yes"]
-  when: "'usbbk-vz' not in (proxmox_backup_storage_definitions.stdout | from_json | map(attribute='storage') | list)"
+  when:
+    - proxmox_backup_vz_mounted.rc == 0
+    - "'usbbk-vz' not in (proxmox_backup_storage_definitions.stdout | from_json | map(attribute='storage') | list)"
   changed_when: true
 
 - name: Enable or disable the backup timers

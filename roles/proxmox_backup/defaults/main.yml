@@ -7,9 +7,13 @@ proxmox_backup_usb_disk_id: "usb-G-DRIVE_mobile_SSD_B10180605416-0:0"
 proxmox_backup_pool: usbbk
 
 # TrueNAS replication pushes into usbbk/tn as tnrepl; the key is installed only once set.
-proxmox_backup_truenas_pubkey: ""
+# keychaincredential pve-usbbk (id 1) on TrueNAS.
+# yamllint disable-line rule:line-length
+proxmox_backup_truenas_pubkey: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC0gEb5DEN7rJyOgW2Ua6sO9VkLg88bqeQnoNA+CL5zscWex1PAqGDUoHLJXRY04uCLmTG8GG7kLaPCN+sR+yAksfeElpC2/AOFJSrDlmbK1nuKtEkWojvFyAm1yE7U3+vadZlFhOCTJMYf6zMm5o/ShZ34/zCX5OrpFxoB/Jn7243t3y4mmn+qCp/fvGUoeTsnciFZI6zfqdqYA55yIRTaQnO6hy+0DtacG1Mo48XUywv1eDgu6Z+lRd0VsdB8QXKalt/3JLGRtNqaIpX2Q0FFTsJOgvNC9cTV7qSOM0DEmsxYwlnQojgi6X8b87meDaDIu21RCPGuEF6CV1vXJU8CHBxzmZZtR6VPKBoDte8sQ6YvGunxsJ9/QTAcgKu8sSk0cV3EYQqbICHTELig4QUbqPp299VBGWj/yDhgObKH7Qfxgn/xPFfRZRHbgLZIqKCIQHnpUMmKRS5etLrT8zdmBmHj95sVIHUHw4PmtyU1vMNCp0KI9CQRtZrEuI4RG80= root@truenas"
 proxmox_backup_truenas_sources: [10.9.9.30, 10.9.8.30]
-proxmox_backup_zfs_permissions: [create, destroy, hold, mount, readonly, receive, release, rollback, userprop]
+# One permission per property TrueNAS sends with properties: true (quota and reservations are excluded on its side).
+proxmox_backup_zfs_permissions:
+  [copies, create, destroy, hold, mount, readonly, receive, release, rollback, snapdir, sync, userprop, xattr]
 
 proxmox_backup_storagebox_host: ""
 proxmox_backup_storagebox_user: ""

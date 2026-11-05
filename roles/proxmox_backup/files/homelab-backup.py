@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Host-side backup: back up the newest replicated snapshots with restic and report to healthchecks.io.
+"""Host-side backup: back up the newest replicated snapshots and read-only NFS shares with restic, and report
+to healthchecks.io.
 
 Usage: homelab-backup {backup|maint|health}. Managed by the ansible role proxmox_backup.
 """
@@ -20,6 +21,9 @@ MOUNT_ROOT = Path('/srv/backup-src')
 PROC_MOUNTS = Path('/proc/mounts')
 LOCK = Path('/run/lock/homelab-backup.lock')
 LOG = []
+# soft: reads fail with EIO once the connection drops instead of blocking. A server that hangs while still
+# connected never times out over NFSv4; the unit's TimeoutStartSec bounds that.
+NFS_OPTIONS = 'ro,soft,nfsvers=4.1,nosuid,nodev,noexec'
 CHECKS = {'backup': 'HC_BACKUP', 'maint': 'HC_MAINT', 'health': 'HC_HEALTH'}
 
 
@@ -40,7 +44,9 @@ def run(argv):
 def sh(argv):
     result = run(argv)
     if result.returncode:
-        raise RuntimeError(f'{" ".join(argv[:2])} exited {result.returncode}: {result.stderr.strip()[-500:]}')
+        error = RuntimeError(f'{" ".join(argv[:2])} exited {result.returncode}: {result.stderr.strip()[-500:]}')
+        error.returncode = result.returncode  # upload() tells restic's incomplete snapshot (3) from a failure
+        raise error
     return result.stdout
 
 
@@ -128,6 +134,40 @@ def unmount_all():
         sh(['umount', point])
 
 
+def mount_point(name):
+    target = MOUNT_ROOT / name
+    target.mkdir(parents=True, exist_ok=True)
+    MOUNT_ROOT.chmod(0o700)  # tnrepl has a shell here; mounted sources stay root-only
+    return str(target)
+
+
+def upload(cfg, paths, tag):
+    """One restic snapshot. Exit 3 still writes it, minus files it couldn't read: report that and carry on."""
+    try:
+        restic(cfg, *restic_backup_argv(paths, str(CONF / 'excludes.txt'), tag))
+    except RuntimeError as error:
+        if getattr(error, 'returncode', None) != 3:
+            raise
+        return [f'{tag} snapshot is incomplete; restore from an older one if those files matter: {error}']
+    return []
+
+
+def mount_shares(cfg):
+    mounted, problems = [], []
+    for share in cfg['nfs_sources']:
+        target = mount_point(share['mount'])
+        try:
+            sh(['mount', '-t', 'nfs', '-o', NFS_OPTIONS, share['share'], target])
+        except RuntimeError as error:
+            problems.append(str(error))
+            continue
+        if (Path(target) / share['marker']).exists():
+            mounted.append(target)
+        else:
+            problems.append(f'{share["share"]} has no {share["marker"]}; refusing to back up an empty share')
+    return mounted, problems
+
+
 def mirror(cfg):
     problems = []
     for url in cfg['git_repos']:
@@ -149,20 +189,20 @@ def backup(cfg):
             dataset = source['dataset']
             if source['raw_key'] and sh(['zfs', 'get', '-H', '-o', 'value', 'keystatus', dataset]).strip() != 'available':
                 sh(['zfs', 'load-key', '-L', f'file://{SECRETS}/apps.key', dataset])
-            target = MOUNT_ROOT / source['mount']
-            target.mkdir(parents=True, exist_ok=True)
-            MOUNT_ROOT.chmod(0o700)  # tnrepl has a shell here; snapshot contents stay root-only
-            sh(['mount', '-t', 'zfs', '-o', 'ro', fresh_snapshot(cfg, listing, dataset), str(target)])
+            sh(['mount', '-t', 'zfs', '-o', 'ro', fresh_snapshot(cfg, listing, dataset), mount_point(source['mount'])])
+        problems = mirror(cfg) + upload(cfg, [str(MOUNT_ROOT), '/etc', cfg['git_dir'], '/root'], 'daily')
+        if dumps := glob.glob(cfg['vzdump_glob']):
+            problems += upload(cfg, [max(dumps, key=os.path.getmtime)], 'vzdump')
+        # Shares go last, in their own snapshot, so a slow or broken share can't hold back the uploads above.
+        shares, share_problems = mount_shares(cfg)
         entries = []
-        for rule in cfg['dump_rules']:
+        for rule in cfg['dump_rules']:  # checked after the shares are mounted: some dumps live on them
             for path in glob.glob(rule['glob']):
                 stat = os.stat(path)
                 entries.append((path, stat.st_size, int(stat.st_mtime)))
-        problems = dump_problems(entries, int(time.time()), cfg['dump_rules']) + mirror(cfg)
-        excludes = str(CONF / 'excludes.txt')
-        restic(cfg, *restic_backup_argv([str(MOUNT_ROOT), '/etc', cfg['git_dir'], '/root'], excludes, 'daily'))
-        if dumps := glob.glob(cfg['vzdump_glob']):
-            restic(cfg, *restic_backup_argv([max(dumps, key=os.path.getmtime)], excludes, 'vzdump'))
+        problems += share_problems + dump_problems(entries, int(time.time()), cfg['dump_rules'])
+        if shares:
+            problems += upload(cfg, shares, 'nfs')
         return problems
     finally:
         unmount_all()
@@ -173,7 +213,8 @@ def maint(cfg):
         raise Refused('; '.join(problems))
     # Group by tags: each weekly vzdump has a different path, so the default host,paths grouping keeps them all.
     group = ['--host', 'pve', '--group-by', 'host,tags']
-    restic(cfg, 'forget', *group, '--tag', 'daily', '--keep-daily', '14', '--keep-weekly', '8', '--keep-monthly', '12')
+    for tag in ('daily', 'nfs'):
+        restic(cfg, 'forget', *group, '--tag', tag, '--keep-daily', '14', '--keep-weekly', '8', '--keep-monthly', '12')
     restic(cfg, 'forget', *group, '--tag', 'vzdump', '--keep-last', '1')
     restic(cfg, 'prune')
     restic(cfg, 'check', '--read-data-subset', '5%')

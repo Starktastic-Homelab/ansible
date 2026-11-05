@@ -34,9 +34,9 @@
     label: "{{ item.item }}"
   when: proxmox_backup_enabled
 
-- name: Install restic and git
+- name: Install restic, git and the NFS client
   ansible.builtin.apt:
-    name: [restic, git]
+    name: [restic, git, nfs-common]
     state: present
     update_cache: true
 

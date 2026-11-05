@@ -38,7 +38,7 @@ jobs:
     name: Verify installed GPU hardware
     runs-on: self-hosted
     container:
-      image: python:trixie
+      image: python:3.14-trixie
     defaults:
       run:
         shell: bash

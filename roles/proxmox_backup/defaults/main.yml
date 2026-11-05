@@ -2,8 +2,8 @@
 # Units and config are always installed; timers run and secrets are required only once this is true.
 proxmox_backup_enabled: false
 
-# /dev/disk/by-id name of the portable backup disk (pool usbbk); empty until the disk is attached.
-proxmox_backup_usb_disk_id: ""
+# /dev/disk/by-id name of the portable backup disk (pool usbbk): WD G-DRIVE mobile SSD, 1 TB.
+proxmox_backup_usb_disk_id: "usb-G-DRIVE_mobile_SSD_B10180605416-0:0"
 proxmox_backup_pool: usbbk
 
 # TrueNAS replication pushes into usbbk/tn as tnrepl; the key is installed only once set.

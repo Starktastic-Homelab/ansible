@@ -15,10 +15,17 @@
       "enabled": false
     },
     {
-      "description": "Exclude the host GPU regression under investigation; review later driver updates manually",
+      "description": "Host GPU driver: 2026.09.16 is the known regression and 2026.10.28 drops the host's 6.17 kernel (#294). A bump reboots the Proxmox host, so new releases wait on the Dependency Dashboard; upgrade the kernel and driver together by hand in a maintenance window",
       "matchPackageNames": ["strongtz/i915-sriov-dkms"],
       "allowedVersions": "!/^v?2026\\.09\\.16$/",
+      "dependencyDashboardApproval": true,
       "automerge": false
+    },
+    {
+      "description": "ansible-core 2.21 (ansible 14) fails to import on Python 3.15 (dataclasses._is_type removed, #291); lift together with the ansible 15 / ansible-core 2.22 upgrade",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["python"],
+      "allowedVersions": "<3.15"
     }
   ],
   "customManagers": [

@@ -19,7 +19,7 @@ jobs:
     name: Install i915 SR-IOV and schedule required reboot
     runs-on: self-hosted
     container:
-      image: python:trixie
+      image: python:3.14-trixie
     env:
       PROXMOX_URL: ${{ secrets.PROXMOX_URL }}
       PROXMOX_USER: ${{ secrets.PROXMOX_USER }}

@@ -21,6 +21,10 @@ proxmox_backup_max_replica_age_h: 8
 proxmox_backup_sources:
   - { dataset: usbbk/tn/k3s-block, mount: k3s-block, raw_key: true }
   - { dataset: usbbk/tn/pv, mount: pv, raw_key: true }
+# Write-once data too large for the portable disk (Immich originals) is read live over NFS instead:
+# { share: "server:/path", mount: <dir>, marker: <file under the share> }. A run whose marker is missing
+# refuses to upload, so an empty export never becomes today's snapshot.
+proxmox_backup_nfs_sources: []
 
 # Regenerable data; everything else in the sources goes off-site.
 proxmox_backup_excludes:

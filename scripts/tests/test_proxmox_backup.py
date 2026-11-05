@@ -41,24 +41,37 @@ def runs(name, **values):
 
 class FakeHost:
     """Stands in for zpool/zfs/mount/git/restic; records every command in order."""
-    def __init__(self, tmp, snapshot_age_s=H, pool='ONLINE', mounts=''):
+    def __init__(self, tmp, snapshot_age_s=H, pool='ONLINE', mounts='', nfs_sources=(), vzdump=False,
+                 restic_rc=None, nfs_mount_rc=0):
         self.calls, self.pings = [], []
-        self.snapshot_age_s, self.pool = snapshot_age_s, pool
-        (tmp / 'mounts').write_text(mounts)
+        self.restic_rc, self.nfs_mount_rc = restic_rc or {}, nfs_mount_rc
+        self.snapshot_age_s, self.pool, self.mounts = snapshot_age_s, pool, tmp / 'mounts'
+        self.mounts.write_text(mounts)
         (tmp / 'healthchecks.env').write_text('HC_BACKUP=https://hc.invalid/b\nHC_HEALTH=https://hc.invalid/h\n')
         (tmp / 'excludes.txt').write_text('')
         dumps = tmp / 'dumps'
         dumps.mkdir()
         (dumps / 'pg_dumpall_1.sql.gz').write_bytes(b'x')
+        if vzdump:
+            (dumps / 'vzdump-1.vma').write_bytes(b'x')
         (tmp / 'sources.json').write_text(json.dumps({
             'pool': 'usbbk', 'max_replica_age_h': 8, 'git_dir': str(tmp / 'git'),
             'repository': 'sftp:storagebox:repo', 'vzdump_glob': str(dumps / 'vzdump-*.vma'),
             'git_repos': ['https://example.invalid/apps.git'],
             'sources': [{'dataset': 'usbbk/tn/pv', 'mount': 'pv', 'raw_key': True}],
+            'nfs_sources': list(nfs_sources),
             'dump_rules': [{'glob': str(dumps / 'pg_dumpall_*.sql.gz'), 'max_age_h': 10**9, 'min_count': 1}]}))
 
     def run(self, argv):
         self.calls.append(list(argv))
+        if argv[:3] == ['mount', '-t', 'nfs'] and self.nfs_mount_rc:
+            return subprocess.CompletedProcess(argv, self.nfs_mount_rc, '', 'mount.nfs: Connection refused\n')
+        if argv[0] == 'restic' and 'backup' in argv:
+            rc = self.restic_rc.get(argv[argv.index('--tag') + 1], 0)
+            return subprocess.CompletedProcess(argv, rc, '', 'error: lstat /x: no such file or directory\n' if rc else '')
+        if argv[0] in ('mount', 'umount'):  # keep the fake /proc/mounts in step, as the kernel would
+            lines = [l for l in self.mounts.read_text().splitlines(True) if l.split()[1] != argv[-1]]
+            self.mounts.write_text(''.join(lines) + (f'{argv[-2]} {argv[-1]} {argv[2]} ro 0 0\n' if argv[0] == 'mount' else ''))
         if argv[:2] == ['zpool', 'list']:
             ok = self.pool == 'ONLINE'
             return subprocess.CompletedProcess(argv, 0 if ok else 1, self.pool + '\n' if ok else '',
@@ -152,6 +165,68 @@ class ResticTests(unittest.TestCase):
         self.assertEqual(host.calls[-1][:1], ['umount'])
         self.assertIn(('https://hc.invalid/b', ''), host.pings)
 
+    def test_nfs_shares_upload_last_in_their_own_snapshot_and_a_broken_share_blocks_nothing(self):
+        share = {'share': '10.9.9.30:/mnt/main/immich', 'mount': 'immich', 'marker': 'upload/.immich'}
+        self.assertEqual(json.loads(render('sources.json.j2'))['nfs_sources'], [])
+        self.assertEqual(json.loads(render('sources.json.j2', proxmox_backup_nfs_sources=[share]))['nfs_sources'], [share])
+        m = script()
+        for case in ('populated', 'empty', 'unmountable'):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as d:
+                tmp = Path(d)
+                host = FakeHost(tmp, nfs_sources=[share], vzdump=True, nfs_mount_rc=32 if case == 'unmountable' else 0)
+                host.install(m, tmp)
+                if case == 'populated':  # mount is stubbed, so the marker stands in for the share's contents
+                    (tmp / 'src/immich/upload').mkdir(parents=True)
+                    (tmp / 'src/immich/upload/.immich').touch()
+                else:  # a share problem must not swallow the run's other problems
+                    (tmp / 'dumps/pg_dumpall_1.sql.gz').write_bytes(b'')
+                code = m.main(['backup'])
+                mount = host.calls[host.index('mount', '-t', 'nfs')]
+                self.assertEqual(mount[-2:], ['10.9.9.30:/mnt/main/immich', f'{tmp}/src/immich'])
+                self.assertTrue({'ro', 'soft'} <= set(mount[mount.index('-o') + 1].split(',')), mount)
+                uploads = [(i, c[c.index('--tag') + 1]) for i, c in enumerate(host.calls) if c[:1] == ['restic'] and 'backup' in c]
+                # The replicas go first: a slow or broken share must not hold them back.
+                self.assertEqual([t for _, t in uploads], ['daily', 'vzdump'] + (['nfs'] if case == 'populated' else []))
+                self.assertLess(uploads[1][0], host.index('mount', '-t', 'nfs'))
+                self.assertEqual(code != 0, case != 'populated', m.LOG)
+                self.assertIn(('https://hc.invalid/b', '' if case == 'populated' else '/fail'), host.pings)
+                problems = [l for l in m.LOG if l.startswith('PROBLEM: ')]
+                if case != 'populated':
+                    self.assertTrue(any('empty:' in p for p in problems), problems)
+                    self.assertTrue(any(('upload/.immich' if case == 'empty' else 'exited 32') in p for p in problems), problems)
+                self.assertEqual(host.mounts.read_text(), '', 'every mount must be unmounted')
+
+    def test_incomplete_snapshot_is_reported_and_the_run_carries_on(self):
+        m = script()
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            host = FakeHost(tmp, vzdump=True, restic_rc={'daily': 3})
+            host.install(m, tmp)
+            (tmp / 'dumps/pg_dumpall_1.sql.gz').write_bytes(b'')  # its problem must survive the restic one
+            self.assertNotEqual(m.main(['backup']), 0)
+        problems = [l for l in m.LOG if l.startswith('PROBLEM: ')]
+        self.assertTrue(any('daily' in p and 'incomplete' in p for p in problems), problems)
+        self.assertTrue(any('empty:' in p for p in problems), problems)
+        self.assertIn('vzdump', [c[c.index('--tag') + 1] for c in host.calls if c[:1] == ['restic'] and 'backup' in c])
+        self.assertIn(('https://hc.invalid/b', '/fail'), host.pings)
+        with tempfile.TemporaryDirectory() as d:  # any other restic failure still stops the run
+            tmp = Path(d)
+            host = FakeHost(tmp, vzdump=True, restic_rc={'daily': 1})
+            host.install(m, tmp)
+            self.assertNotEqual(m.main(['backup']), 0)
+        self.assertEqual(len([c for c in host.calls if c[:1] == ['restic'] and 'backup' in c]), 1)
+
+    def test_maint_keeps_nfs_snapshots_on_the_daily_schedule(self):
+        m = script()
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            host = FakeHost(tmp)
+            host.install(m, tmp)
+            self.assertEqual(m.main(['maint']), 0, m.LOG)
+        forgets = {c[c.index('--tag') + 1]: c[c.index('--tag') + 2:] for c in host.calls if 'forget' in c}
+        keep = ['--keep-daily', '14', '--keep-weekly', '8', '--keep-monthly', '12']
+        self.assertEqual(forgets, {'daily': keep, 'nfs': keep, 'vzdump': ['--keep-last', '1']})
+
     def test_excludes_cover_regenerable_images(self):
         # restic skips blank and '#' lines in an exclude file.
         lines = [l for l in render('excludes.txt.j2').splitlines() if l.strip() and not l.startswith('#')]
@@ -225,6 +300,10 @@ class HostSafetyTests(unittest.TestCase):
                                       proxmox_backup_storage_definitions=definitions), expected)
         check = task('Check that the vzdump dataset is mounted')['ansible.builtin.command']['argv']
         self.assertEqual(check, ['findmnt', '--noheadings', '--mountpoint', '/{{ proxmox_backup_pool }}/vz'])
+
+    def test_a_hung_run_is_stopped_before_the_next_one_is_due(self):
+        # Over NFSv4 a hung-but-connected server never times out a soft read; the unit has to bound the run.
+        self.assertIn('TimeoutStartSec=23h', render('homelab-backup@.service.j2'))
 
     def test_ping_never_raises_or_logs_the_url(self):
         m = script()

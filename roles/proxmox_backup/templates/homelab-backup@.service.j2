@@ -7,7 +7,8 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/homelab-backup %i
-# The first upload takes hours.
-TimeoutStartSec=infinity
+# Stops a run hung on NFS or SFTP before the next one is due. A first upload that needs longer runs under
+# systemd-run instead (see the backup runbook).
+TimeoutStartSec=23h
 Nice=10
 IOSchedulingClass=idle

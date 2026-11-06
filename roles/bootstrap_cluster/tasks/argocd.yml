@@ -52,13 +52,26 @@
         replicas: 1
       repoServer:
         replicas: 1
+      # metrics.enabled adds the metrics Services. apps owns their ServiceMonitors
+      # (infra-configs), because the chart skips its own when the Prometheus CRDs
+      # don't exist yet, as on a fresh cluster. For the appset it also renders a
+      # NetworkPolicy that admits only the metrics port, so the appset Git webhook
+      # port (7000) is blocked. Nothing uses that webhook today. The chart opens it
+      # when applicationSet.ingress.enabled or applicationSet.httproute.enabled is
+      # set; any other route, such as a Traefik IngressRoute, needs its own rule.
       applicationSet:
         replicas: 1
+        metrics:
+          enabled: true
       redis:
         enabled: true
       configs:
         params:
           applicationsetcontroller.enable.progressive.syncs: "true"
+          # Exports argocd_app_condition for apps' ArgoCDAppComparisonFailing alert.
+          # A failed server-side diff already shows as sync_status Unknown; this adds
+          # the ComparisonErrors that keep Synced or OutOfSync, such as health errors.
+          controller.metrics.application.conditions: ComparisonError
         secret:
           argocdServerAdminPassword: "{{ argocd_admin_password_hash }}"
           # The chart defaults this to `now`, so every render differs, helm-diff
@@ -98,6 +111,8 @@
           create: false
         secret:
           create: false
+        metrics:
+          enabled: true
   # release_values carries the admin password hash and the OIDC client secret.
   no_log: true
   register: bootstrap_cluster_argocd

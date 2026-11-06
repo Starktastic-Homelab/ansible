@@ -52,13 +52,21 @@
         replicas: 1
       repoServer:
         replicas: 1
+      # metrics.enabled renders only the metrics Services. apps owns their
+      # ServiceMonitors (infra-configs), because the chart skips its own when the
+      # Prometheus CRDs don't exist yet, as on a fresh cluster.
       applicationSet:
         replicas: 1
+        metrics:
+          enabled: true
       redis:
         enabled: true
       configs:
         params:
           applicationsetcontroller.enable.progressive.syncs: "true"
+          # Exports argocd_app_condition for apps' ArgoCDAppComparisonFailing alert:
+          # a failed server-side diff dry-run leaves sync_status Unknown, not OutOfSync.
+          controller.metrics.application.conditions: ComparisonError
         secret:
           argocdServerAdminPassword: "{{ argocd_admin_password_hash }}"
           # The chart defaults this to `now`, so every render differs, helm-diff
@@ -98,6 +106,8 @@
           create: false
         secret:
           create: false
+        metrics:
+          enabled: true
   # release_values carries the admin password hash and the OIDC client secret.
   no_log: true
   register: bootstrap_cluster_argocd

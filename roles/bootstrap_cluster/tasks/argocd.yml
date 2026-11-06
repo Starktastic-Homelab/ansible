@@ -52,9 +52,12 @@
         replicas: 1
       repoServer:
         replicas: 1
-      # metrics.enabled renders only the metrics Services. apps owns their
-      # ServiceMonitors (infra-configs), because the chart skips its own when the
-      # Prometheus CRDs don't exist yet, as on a fresh cluster.
+      # metrics.enabled adds the metrics Services. apps owns their ServiceMonitors
+      # (infra-configs), because the chart skips its own when the Prometheus CRDs
+      # don't exist yet, as on a fresh cluster. For the appset it also renders a
+      # NetworkPolicy that admits only the metrics port, so the appset Git webhook
+      # port (7000) is blocked. Nothing uses that webhook today. Enabling
+      # applicationSet.ingress opens it; any other route needs its own policy rule.
       applicationSet:
         replicas: 1
         metrics:

@@ -73,6 +73,10 @@ Changing a contract means changing both sides together; see `../CLAUDE.md`.
 - → terraform, apps: org secret `KUBECONFIG_RAW` (`handoff` job in `deploy.yml`).
 - ↔ packer: `group_vars/proxmox_hosts/i915_sriov.yml`, `roles/i915_sriov/defaults/main.yml`,
   `.github/workflows/i915-compat.yml`; `scripts/i915_compat.py` and its test match packer's byte for byte.
+- → apps metrics: `argocd.yml` enables the applicationset and notifications metrics Services and
+  sets `configs.params.controller.metrics.application.conditions: ComparisonError`. apps scrapes them
+  (`infrastructure/configs/templates/argocd/servicemonitor-chart-metrics.yaml`) and alerts on them
+  (`services/operations/kube-prometheus-stack/manifests/custom-rules.yaml`).
 - → apps: `roles/bootstrap_cluster/tasks/{argocd,main,restore-certs}.yml`, worker labels in
   `roles/k3s_workers/tasks/main.yml`, CSI topology in `group_vars/all/proxmox_csi.yml`, NFS in
   `group_vars/all/vars.yml`.

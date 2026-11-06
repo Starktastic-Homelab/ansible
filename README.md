@@ -548,6 +548,15 @@ independent of K3s and NAS availability; it survives job cancellation and reboot
 No age-based takeover or unconditional unlock exists. Prohibit concurrent manual
 Proxmox GUI start/recreate operations during a maintenance operation.
 
+VM300 has 4096 MiB with a balloon floor of 4096 MiB, set by hand on November 6,
+2026 (`qm set 300 --balloon 4096`; VM300 is not in Terraform). It is the host's
+only ballooned VM, and with the host near full, auto-ballooning had held it at the
+old 1024 MiB floor. That OOM-killed helm-diff during the ArgoCD 3.6 chart upgrade:
+the runner still had helm-diff 3.15.7, whose diff needed about 3.4 GB for the
+ArgoCD CRDs. `bootstrap_cluster` now reinstalls helm-diff whenever it differs from
+the pin. Measure a large chart diff on the current helm-diff before lowering the
+floor.
+
 Before merging workflows, run `maintenance-runner.yml` against an explicitly
 reviewed `maintenance_runner` inventory host for **VM300**, after confirming its
 address, SSH route, service user and SMBIOS UUID. Set `maintenance_runner_user`

@@ -202,7 +202,7 @@ states the two sides need not match:
 | Side | Kernel | Driver | Upstream range |
 |------|--------|--------|----------------|
 | **Host** (this repo) | 6.17.13-13-pve | `2026.09.14` | 6.17 – 7.2 |
-| **Guest** (packer repo) | 6.12 (Debian 13) | `2026.03.05.7` | 6.12 – 6.19 |
+| **Guest** (packer repo) | 6.12 (Debian 13) | `2025.12.10.2` | 6.12 – 6.18 |
 
 Three axes are validated, all from upstream data for the exact tags — never
 from version ordering, equality or a curated allowlist:
@@ -223,7 +223,7 @@ observed failures, not a host/guest compatibility allowlist.
 ```bash
 python3 scripts/i915_compat.py \
   --host-version 2026.09.14 --host-kernel 6.17.13-13-pve \
-  --guest-version 2026.03.05.7 --guest-kernel 6.12
+  --guest-version 2025.12.10.2 --guest-kernel 6.12
 # exit 0 = metadata/policy passed, hardware NOT TESTED
 # exit 1 = unsupported or blocked · 2 = metadata cannot be established
 ```
@@ -236,6 +236,16 @@ was not tested. A green metadata check is not approval to call an upgrade
 operationally verified. Moving the guest to a newer release line is a
 packer-repo change; the host only needs a driver whose range covers
 `i915_sriov_pinned_kernel`.
+
+The versions may differ, but the guest image assumes the PF runs Xe_LP CCS:
+host `2026.09.14` enables it, and the packer repo's `scripts/bootstrap.sh`
+boots the guests with `i915.xelp_enable_ccs=1` to match. Without that
+parameter the `2025.12.10.x` guest ran a 48-bit PPGTT with no `ccs0` and hung
+`rcs0` under OpenCL and OpenVINO (`GPU HANG ecode 12:1`, 2026-11-06). Host
+releases from `2026.09.16` leave CCS off unless the host cmdline adds
+`i915.xelp_enable_ccs=1`, so a host bump must either add it here or drop the
+guest parameter in packer, decided in the same change. `i915_compat.py` and
+the acceptance probes check neither.
 
 The required-check names are versioned in `.github/required-status-checks.json`.
 After the named checks exist and pass, an authorized administrator can apply
@@ -316,7 +326,10 @@ application volumes. They do not depend on Jellyfin or Immich deployments.
 Each worker must encode at least 30 frames through low-power H.264, low-power
 HEVC, and synthetic HEVC Main10/PQ hardware decoding plus VA-API tone mapping
 and hardware encoding. Exit zero without the required frame evidence is not
-acceptance. Temporary namespaces/jobs and private kubeconfigs are cleaned in
+acceptance. The probes use VA-API only, not OpenCL or OpenVINO, so a PF/VF CCS
+mismatch passes them. After a guest image or host driver change, also run a
+Jellyfin HDR transcode (`tonemap_opencl`) and an Immich ML job on each worker,
+then check that `journalctl -k -b | grep -c 'GPU HANG'` prints 0 there. Temporary namespaces/jobs and private kubeconfigs are cleaned in
 nested `always` blocks; diagnostic artifacts contain no kubeconfig or SSH/Vault
 credentials.
 

@@ -44,6 +44,7 @@ Playbook runs need the real vault, SSH key and `PROXMOX_*` env; the inventory qu
 
 Run the touched area's tests and `ansible-lint --offline`; for playbook changes, ask to run `--check`.
 Report what ran. GPU work is done only when `i915-acceptance.yml` passes post-reboot; never reboot twice.
+A new guest image (replaced VMs) uses `current-stack` mode instead, plus the OpenCL/OpenVINO check in README.
 
 ## Gotchas and past decisions
 
@@ -60,6 +61,9 @@ Report what ran. GPU work is done only when `i915-acceptance.yml` passes post-re
 - Maintenance lock (README "External maintenance coordination"): failed runs keep it; never remove one for being old.
 - apps owns ArgoCD's notifications ConfigMap/Secret (`create: false`, `bootstrap_cluster/tasks/argocd.yml`).
 - Keep host i915 pins as double-quoted YAML (`key: "value"`): packer regex-reads them.
+- Guest CCS: packer boots the K3s VMs with `i915.xelp_enable_ccs=1`, which assumes the host PF runs CCS
+  (`2026.09.14` does; `2026.09.16`+ only with the same param on the host). A host i915 bump picks host
+  param vs dropping the guest param in the same change (README "Host and guest driver versions differ on purpose").
 - `docs/iscsi-*.md` and `docs/superpowers/` are history; #286 retired the iSCSI executor.
 
 ## Contracts

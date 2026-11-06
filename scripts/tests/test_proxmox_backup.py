@@ -167,8 +167,11 @@ class ResticTests(unittest.TestCase):
 
     def test_nfs_shares_upload_last_in_their_own_snapshot_and_a_broken_share_blocks_nothing(self):
         share = {'share': '10.9.9.30:/mnt/main/immich', 'mount': 'immich', 'marker': 'upload/.immich'}
-        self.assertEqual(json.loads(render('sources.json.j2'))['nfs_sources'], [])
-        self.assertEqual(json.loads(render('sources.json.j2', proxmox_backup_nfs_sources=[share]))['nfs_sources'], [share])
+        rendered = json.loads(render('sources.json.j2'))  # Immich has lived in main/immich since 2026-11-06
+        self.assertEqual(rendered['nfs_sources'], [share])
+        self.assertIn({'glob': '/srv/backup-src/immich/backups/immich-db-backup-*.sql.gz', 'max_age_h': 26, 'min_count': 1},
+                      rendered['dump_rules'])
+        self.assertEqual(json.loads(render('sources.json.j2', proxmox_backup_nfs_sources=[]))['nfs_sources'], [])
         m = script()
         for case in ('populated', 'empty', 'unmountable'):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as d:

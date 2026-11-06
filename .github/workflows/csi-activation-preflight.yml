@@ -21,7 +21,7 @@ jobs:
     runs-on: self-hosted
     timeout-minutes: 15
     container:
-      image: python:trixie
+      image: python:3.14-trixie
     env:
       CSI_PREFLIGHT_SEALED_CONFIG_B64: ${{ inputs.sealed_config_b64 }}
       CSI_PREFLIGHT_CONFIG_SHA256: ${{ inputs.config_sha256 }}

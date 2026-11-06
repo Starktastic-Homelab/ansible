@@ -29,9 +29,11 @@ proxmox_backup_sources:
   - { dataset: usbbk/tn/k3s-block, mount: k3s-block, raw_key: true }
   - { dataset: usbbk/tn/pv, mount: pv, raw_key: true }
 # Write-once data too large for the portable disk (Immich originals) is read live over NFS instead:
-# { share: "server:/path", mount: <dir>, marker: <file under the share> }. A run whose marker is missing
-# refuses to upload, so an empty export never becomes today's snapshot.
-proxmox_backup_nfs_sources: []
+# { share: "server:/path", mount: <dir>, marker: <file under the share> }. A share whose marker is missing
+# is skipped and reported, so an empty export never becomes today's snapshot.
+proxmox_backup_nfs_sources:
+  # TrueNAS dataset main/immich, exported read-only to pve (NFS share 14) on the storage network.
+  - { share: "10.9.9.30:/mnt/main/immich", mount: immich, marker: upload/.immich }
 
 # Regenerable data; everything else in the sources goes off-site.
 proxmox_backup_excludes:
@@ -48,6 +50,8 @@ proxmox_backup_vzdump_glob: /usbbk/vz/dump/vzdump-qemu-300-*.vma
 proxmox_backup_dump_rules:
   - { glob: /srv/backup-src/pv/databases/pg-backup/pg_dumpall_*.sql.gz, max_age_h: 26, min_count: 1 }
   - { glob: /srv/backup-src/pv/cert-backup/cert-backup/*.yaml, max_age_h: 26, min_count: 1 }
+  # Immich's own nightly database dump (02:00), on the share above.
+  - { glob: /srv/backup-src/immich/backups/immich-db-backup-*.sql.gz, max_age_h: 26, min_count: 1 }
   - { glob: "{{ proxmox_backup_vzdump_glob }}", max_age_h: 192, min_count: 1 }
 
 proxmox_backup_git_repos:

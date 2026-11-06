@@ -50,16 +50,47 @@
     - bootstrap
     - restore-certs
 
-- name: Install helm-diff plugin
-  kubernetes.core.helm_plugin:
-    plugin_path: https://github.com/databus23/helm-diff
+# helm_plugin state=present treats any installed version as done, and the runner's
+# container home persists between jobs, so a new pin never reached VM300: it kept
+# helm-diff 3.15.7, whose quadratic-memory diff (linear since 3.15.9) needed 3.4 GB
+# for the ArgoCD 3.6 CRDs and was OOM-killed on 2026-11-06. Reinstall on mismatch.
+# Ask the binary, not plugin.yaml: a failed install hook leaves plugin.yaml at the
+# pin with no bin/diff, which `helm plugin list` would still report as installed.
+- name: Install the pinned helm-diff plugin
+  vars:
     # renovate: datasource=github-releases depName=databus23/helm-diff
-    plugin_version: "3.15.15"
-    verify: false
-    state: present
+    bootstrap_cluster_helm_diff_version: "3.15.15"
   tags:
     - bootstrap
     - helm
+  block:
+    - name: Read the installed helm-diff binary version
+      ansible.builtin.command: helm diff version
+      register: bootstrap_cluster_helm_diff_before
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Remove helm-diff when its binary is missing or not the pinned version
+      kubernetes.core.helm_plugin:
+        plugin_name: diff
+        state: absent
+      when: bootstrap_cluster_helm_diff_before.stdout | trim != bootstrap_cluster_helm_diff_version
+
+    - name: Install helm-diff plugin
+      kubernetes.core.helm_plugin:
+        plugin_path: https://github.com/databus23/helm-diff
+        plugin_version: "{{ bootstrap_cluster_helm_diff_version }}"
+        verify: false
+        state: present
+
+    # Check mode installs nothing, so the old binary would fail this check.
+    - name: Check the helm-diff binary is the pinned version
+      ansible.builtin.command: helm diff version
+      register: bootstrap_cluster_helm_diff_after
+      changed_when: false
+      failed_when: bootstrap_cluster_helm_diff_after.stdout | trim != bootstrap_cluster_helm_diff_version
+      when: not ansible_check_mode
 
 - name: Setup ArgoCD
   ansible.builtin.include_tasks: argocd.yml

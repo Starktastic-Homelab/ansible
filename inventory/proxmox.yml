@@ -2,6 +2,10 @@
 plugin: community.proxmox.proxmox
 validate_certs: false
 want_facts: true
+# community.proxmox 2.1.0 added a 5 s request timeout; a guest whose API call
+# times out drops out of its tag groups with only a warning, so a deploy would
+# silently skip that node.
+api_timeout: 30
 
 keyed_groups:
   - key: proxmox_tags_parsed

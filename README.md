@@ -469,6 +469,7 @@ On a fresh cluster where no NFS backup exists yet, the restore step **gracefully
 | `i915-sriov.yml` | Proxmox host | Install/upgrade Intel SR-IOV GPU driver |
 | `ser2net.yml` | Proxmox host | Configure TCP bridge for USB Zigbee dongle (port 3333) |
 | `proxmox-backup.yml` | Proxmox host | Host-side backup: `usbbk` import, restic and health timers, vzdump storage `usbbk-vz` |
+| `proxmox-guest-startup.yml` | Proxmox host | Guest boot order: TrueNAS (VM 100) starts first and waits 180 s so `k3s-block` NFS is up before the workers (`group_vars/proxmox_hosts/guest_startup.yml`) |
 
 ---
 
@@ -512,6 +513,7 @@ flowchart TD
 | **i915-compat** | PR (i915 config/role changes) | Blocks merge unless upstream data proves the host ↔ guest driver combination works |
 | **ser2net** | ser2net role change / manual | Zigbee serial bridge configuration |
 | **proxmox-backup** | proxmox_backup role change / manual | Host-side backup role on the Proxmox host |
+| **proxmox-guest-startup** | guest startup role/vars change / manual | Guest boot order and delays on the Proxmox host (no restart) |
 
 ---
 

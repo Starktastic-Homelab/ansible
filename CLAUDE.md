@@ -8,14 +8,16 @@ packer → terraform → ansible → apps; the system overview is `../CLAUDE.md`
 
 - **Every push to `main` is a full deploy** (`deploy.yml` → `k3s.yml`, ArgoCD helm upgrade, rewrite of
   org secret `KUBECONFIG_RAW`). Path-ignored: `README.md`, `renovate.json`, `group_vars/proxmox_hosts/**`,
-  `roles/ser2net/**`, `ser2net.yml`, the `proxmox_backup` role, playbook, workflow and test. Docs-only commits
-  (including this file) need `[skip ci]`.
+  `roles/ser2net/**`, `ser2net.yml`, the `proxmox_guest_startup` role, playbook and workflow, the `proxmox_backup`
+  role, playbook, workflow and test. Docs-only commits (including this file) need `[skip ci]`.
 - `deploy.yml` also runs on Terraform's `repository_dispatch: infrastructure-changed`. Deploys queue and
   are never cancelled, since an interrupted `helm upgrade` leaves a pending release.
 - **A change to `group_vars/proxmox_hosts/i915_sriov.yml` on `main` reboots the Proxmox host**
   (`i915-sriov-upgrade.yml`), runner included, without taking the maintenance lock.
 - Pushing ser2net files deploys ser2net to the host; pushing `proxmox_backup` files deploys the backup role
-  (`proxmox-backup.yml`). `format.yml` pushes Prettier commits to PR branches.
+  (`proxmox-backup.yml`); pushing the guest startup role, playbook or `group_vars/proxmox_hosts/guest_startup.yml`
+  sets guest boot order (`proxmox-guest-startup.yml`, effective next host boot). `format.yml` pushes Prettier
+  commits to PR branches.
 
 ## Commands
 

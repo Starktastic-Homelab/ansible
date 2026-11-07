@@ -1,0 +1,8 @@
+---
+# Proxmox boot order for guests that others depend on (qm --startup syntax).
+# TrueNAS (VM 100) serves k3s-block over NFS, which holds the K3s workers' disks.
+# Its NFS answered 72-82 s after VM 100 started on the 2026-11-07 boot, and PVE
+# starts the next guests right away, so the workers failed to autostart. Wait
+# 180 s before the unordered guests. Terraform ignores startup on the K3s VMs.
+proxmox_guest_startup:
+  "100": "order=1,up=180"

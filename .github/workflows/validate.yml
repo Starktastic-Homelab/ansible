@@ -119,7 +119,7 @@ jobs:
           set +e
           OUTPUT=$(ansible-playbook -i inventory/proxmox.yml \
             --vault-password-file .vault_pass \
-            --syntax-check k3s.yml ser2net.yml i915-sriov.yml i915-acceptance.yml proxmox-csi-storage.yml csi-activation-preflight.yml proxmox-backup.yml 2>&1)
+            --syntax-check k3s.yml ser2net.yml i915-sriov.yml i915-acceptance.yml proxmox-csi-storage.yml csi-activation-preflight.yml proxmox-backup.yml proxmox-guest-startup.yml 2>&1)
           EXIT_CODE=$?
           set -e
 

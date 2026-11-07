@@ -5,7 +5,11 @@
   become: false
   vars:
     i915_acceptance_artifacts_dir: "{{ playbook_dir }}/artifacts/i915"
-    i915_acceptance_probe_image: "lscr.io/linuxserver/jellyfin:12.1ubu2604-ls50@sha256:51252e7a416e703cdc3cd91e8a54673a2430cc80409be8a38abe511411577b95"
+    # The probe never starts Jellyfin: it overrides the command and uses the image as a toolbox for
+    # jellyfin-ffmpeg, the iHD VA-API driver and the Intel OpenCL runtime. It tests the kernel/driver path, so it
+    # may differ from production Jellyfin (linuxserver 12.4 plus the jellyfin-opencl-intel DOCKER_MODS).
+    # Bump this pin when production Jellyfin moves so the two userspaces don't drift far apart.
+    i915_acceptance_probe_image: "jellyfin/jellyfin:12.4-amd64.20261026-211555@sha256:7da5184caa38c553f219f6772476540081f392a68049e2b68c923f6daf877f8e"
   tasks:
     - name: Require an explicit validation mode and declared target
       ansible.builtin.assert:
@@ -35,15 +39,22 @@
           - python3
           - -c
           - |
-            import json, os, socket
+            import json, os, socket, subprocess
             from pathlib import Path
             module = Path("/sys/module/i915/version")
+            ccs = Path("/sys/module/i915/parameters/xelp_enable_ccs")
+            kernel_log = subprocess.run(
+                ["journalctl", "-k", "-b", "-o", "cat", "--no-pager"],
+                capture_output=True, text=True, check=True,
+            ).stdout
             print(json.dumps({
                 "node_name": socket.gethostname().split(".")[0],
                 "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
                 "machine_id": Path("/etc/machine-id").read_text().strip(),
                 "kernel": os.uname().release,
                 "module": module.read_text().strip() if module.is_file() else "",
+                "gpu_hangs": sum("GPU HANG" in line for line in kernel_log.splitlines()),
+                "xelp_enable_ccs": ccs.read_text().strip() if ccs.is_file() else "",
             }))
       delegate_to: "{{ item }}"
       become: true
@@ -227,7 +238,7 @@
                 namespace: "{{ i915_acceptance_namespace.result.metadata.name }}"
               spec:
                 backoffLimit: 0
-                activeDeadlineSeconds: 180
+                activeDeadlineSeconds: 240
                 ttlSecondsAfterFinished: 600
                 template:
                   metadata:
@@ -293,11 +304,39 @@
             name: "gpu-{{ i915_acceptance_machines[item].node_name }}"
             namespace: "{{ i915_acceptance_namespace.result.metadata.name }}"
             wait: true
-            wait_timeout: 210
+            wait_timeout: 270
             wait_condition:
               type: Complete
               status: "True"
           loop: "{{ groups['workers'] }}"
+
+        # The nonroot probe pod cannot read the host kernel log, so count hangs from the worker itself.
+        - name: Recount since-boot kernel GPU hangs on every worker after the probes
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -c
+              - |
+                import subprocess
+                log = subprocess.run(
+                    ["journalctl", "-k", "-b", "-o", "cat", "--no-pager"],
+                    capture_output=True, text=True, check=True,
+                ).stdout
+                print(sum("GPU HANG" in line for line in log.splitlines()))
+          delegate_to: "{{ item }}"
+          become: true
+          loop: "{{ groups['workers'] }}"
+          register: i915_acceptance_hangs_after
+          changed_when: false
+
+        - name: Save the post-probe GPU hang counts
+          ansible.builtin.copy:
+            dest: "{{ i915_acceptance_artifacts_dir }}/gpu-hangs-after.json"
+            mode: "0600"
+            content: >-
+              {{ dict(i915_acceptance_hangs_after.results | map(attribute='item')
+                      | zip(i915_acceptance_hangs_after.results | map(attribute='stdout') | map('from_json')))
+                 | to_nice_json }}
 
       always:
         - name: Preserve diagnostics while guaranteeing resource cleanup
@@ -369,6 +408,7 @@
           {{ ['python3', playbook_dir + '/scripts/i915_acceptance.py', 'accept']
              + i915_acceptance_args
              + ['--probe-logs', i915_acceptance_artifacts_dir + '/probe-logs.json',
+                '--hangs-after', i915_acceptance_artifacts_dir + '/gpu-hangs-after.json',
                 '--output', i915_acceptance_artifacts_dir + '/acceptance.json'] }}
       changed_when: false
       register: i915_acceptance_result

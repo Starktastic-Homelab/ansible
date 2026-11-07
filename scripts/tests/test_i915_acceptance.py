@@ -23,6 +23,8 @@ def snapshot():
             "machine_id": f"{index:032x}",
             "kernel": "6.17.13-13-pve" if name == "pve" else "6.12.107+deb13-amd64",
             "module": "2026.09.14-sriov" if name == "pve" else "2026.03.05.7-sriov",
+            "gpu_hangs": 0,
+            "xelp_enable_ccs": "1",
         }
     machines["kube-master-01"]["module"] = ""
     return {
@@ -54,10 +56,15 @@ def probes(state):
                 "h264_low_power": 30,
                 "hevc_low_power": 30,
                 "hdr_decode_tonemap_encode": 30,
+                "hdr_opencl_tonemap_encode": 30,
             },
         }
         for name in state["inventory"]["workers"]
     ]
+
+
+def hangs(state):
+    return {name: state["machines"][name]["gpu_hangs"] for name in state["inventory"]["workers"]}
 
 
 def after_reboot(before):
@@ -77,7 +84,7 @@ class TestAcceptance(unittest.TestCase):
 
     def test_current_stack_does_not_claim_a_verified_reboot(self):
         state = snapshot()
-        report = self.runtime.build_report(state, probes(state))
+        report = self.runtime.build_report(state, probes(state), hangs(state))
         self.assertEqual(report["mode"], "current-stack")
         self.assertFalse(report["fresh_boots_verified"])
         self.assertEqual(report["workers"], ["kube-worker-01", "kube-worker-02"])
@@ -87,7 +94,7 @@ class TestAcceptance(unittest.TestCase):
         before["machines"]["pve"]["module"] = "2026.08.12.1-sriov"
         after = after_reboot(before)
         after["machines"]["pve"]["module"] = "2026.09.14-sriov"
-        report = self.runtime.build_report(after, probes(after), before)
+        report = self.runtime.build_report(after, probes(after), hangs(after), before)
         self.assertEqual(report["mode"], "post-reboot")
         self.assertTrue(report["fresh_boots_verified"])
 
@@ -98,7 +105,7 @@ class TestAcceptance(unittest.TestCase):
                 after = after_reboot(before)
                 after["machines"][name]["boot_id"] = before["machines"][name]["boot_id"]
                 with self.assertRaisesRegex(ValueError, "boot"):
-                    self.runtime.build_report(after, probes(after), before)
+                    self.runtime.build_report(after, probes(after), hangs(after), before)
 
     def test_wrong_loaded_host_driver_is_rejected(self):
         state = snapshot()
@@ -141,7 +148,7 @@ class TestAcceptance(unittest.TestCase):
         after = after_reboot(before)
         after["machines"]["kube-worker-02"]["machine_id"] = "f" * 32
         with self.assertRaisesRegex(ValueError, "machine"):
-            self.runtime.build_report(after, probes(after), before)
+            self.runtime.build_report(after, probes(after), hangs(after), before)
 
     def test_different_target_from_deployment_evidence_is_rejected(self):
         before = snapshot()
@@ -149,14 +156,14 @@ class TestAcceptance(unittest.TestCase):
         after["expected"]["host_version"] = "2026.09.15"
         after["machines"]["pve"]["module"] = "2026.09.15-sriov"
         with self.assertRaisesRegex(ValueError, "target|expected"):
-            self.runtime.build_report(after, probes(after), before)
+            self.runtime.build_report(after, probes(after), hangs(after), before)
 
     def test_missing_or_duplicate_worker_probe_is_rejected(self):
         state = snapshot()
         results = probes(state)
         for bad in (results[:1], [results[0], results[0]]):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
-                self.runtime.build_report(state, bad)
+                self.runtime.build_report(state, bad, hangs(state))
 
     def test_zero_frames_or_missing_codec_is_not_success(self):
         state = snapshot()
@@ -165,11 +172,11 @@ class TestAcceptance(unittest.TestCase):
                 results = probes(state)
                 results[0]["frames"][check] = 0
                 with self.assertRaisesRegex(ValueError, "frame"):
-                    self.runtime.build_report(state, results)
+                    self.runtime.build_report(state, results, hangs(state))
         results = probes(state)
         del results[0]["frames"]["hdr_decode_tonemap_encode"]
         with self.assertRaises(ValueError):
-            self.runtime.build_report(state, results)
+            self.runtime.build_report(state, results, hangs(state))
 
     def test_probe_must_match_the_observed_node_boot_and_nonroot_user(self):
         state = snapshot()
@@ -178,7 +185,30 @@ class TestAcceptance(unittest.TestCase):
                 results = probes(state)
                 results[0][field] = value
                 with self.assertRaises(ValueError):
-                    self.runtime.build_report(state, results)
+                    self.runtime.build_report(state, results, hangs(state))
+
+    def test_gpu_hang_during_the_probe_blocks_acceptance(self):
+        state = snapshot()
+        state["machines"]["kube-worker-01"]["gpu_hangs"] = 2
+        report = self.runtime.build_report(state, probes(state), hangs(state))
+        self.assertEqual(report["gpu_hangs_after"]["kube-worker-01"], 2)
+        grown = hangs(state)
+        grown["kube-worker-01"] = 3
+        with self.assertRaisesRegex(ValueError, "GPU HANG"):
+            self.runtime.build_report(state, probes(state), grown)
+
+    def test_missing_hang_or_ccs_evidence_is_rejected(self):
+        state = snapshot()
+        partial = hangs(state)
+        del partial["kube-worker-02"]
+        with self.assertRaisesRegex(ValueError, "hang"):
+            self.runtime.build_report(state, probes(state), partial)
+        for field in ("gpu_hangs", "xelp_enable_ccs"):
+            with self.subTest(field=field):
+                state = snapshot()
+                del state["machines"]["kube-worker-02"][field]
+                with self.assertRaises(ValueError):
+                    self.runtime.build_report(state, probes(state), hangs(snapshot()))
 
     def test_probe_log_requires_one_complete_result_record(self):
         expected = probes(snapshot())[0]

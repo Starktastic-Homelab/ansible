@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       i915_sriov_version:
-        description: 'i915 SR-IOV driver version to install (e.g., 2026.09.14). Leave empty to use version from group_vars.'
+        description: 'i915 SR-IOV driver version to install (e.g., 2026.11.05). Leave empty to use version from group_vars.'
         required: false
         type: string
 

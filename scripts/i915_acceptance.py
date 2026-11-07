@@ -95,6 +95,23 @@ def validate_structure(snapshot):
 def validate_capture(snapshot):
     validate_structure(snapshot)
     expected, machines = snapshot["expected"], snapshot["machines"]
+    nodes = snapshot.get("cluster_nodes")
+    require(
+        isinstance(nodes, list) and nodes and all(isinstance(node, str) and node for node in nodes)
+        and len(set(nodes)) == len(nodes),
+        "Missing or malformed Kubernetes node list",
+    )
+    # A guest whose Proxmox API call fails stays in the inventory but drops out of its tag groups, so its node
+    # would otherwise go unprobed.
+    k3s_machines = snapshot["inventory"]["masters"] + snapshot["inventory"]["workers"]
+    tagged = {machines[name]["node_name"] for name in k3s_machines}
+    require(
+        set(nodes) == tagged,
+        "Kubernetes nodes differ from the inventory masters and workers (in Kubernetes only: %s; inventory only: %s). "
+        "A node in Kubernetes only is a guest whose Proxmox facts failed (look for 'Could not gather Proxmox guest "
+        "facts' in the inventory warnings) or a leftover Node of a removed VM, which must be deleted."
+        % (sorted(set(nodes) - tagged), sorted(tagged - set(nodes))),
+    )
     host_version = release_name(expected["host_version"])
     require(host_version not in BLOCKED_HOST_RELEASES, "Blocked host driver target: %s" % host_version)
     try:

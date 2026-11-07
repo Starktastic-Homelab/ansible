@@ -44,6 +44,7 @@ def snapshot(masters=("kube-master-01",)):
             "workers": ["kube-worker-01", "kube-worker-02"],
         },
         "machines": machines,
+        "cluster_nodes": [*masters, "kube-worker-01", "kube-worker-02"],
     }
 
 
@@ -232,6 +233,45 @@ class TestAcceptance(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Duplicate Kubernetes node"):
                     self.runtime.validate_capture(state)
 
+    def test_kubernetes_nodes_must_match_the_tagged_inventory(self):
+        # A guest whose Proxmox API call fails stays in the inventory but drops out of its tag groups
+        # (community.proxmox fact_gathering_failed), so without this its node would pass unprobed.
+        dropped = snapshot()
+        dropped["inventory"]["workers"].remove("kube-worker-02")
+        del dropped["machines"]["kube-worker-02"]
+        untagged_join = snapshot()
+        untagged_join["cluster_nodes"].append("kube-worker-03")
+        never_joined = snapshot()
+        never_joined["cluster_nodes"].remove("kube-worker-01")
+        for case, state, missing in (("dropped", dropped, "kube-worker-02"),
+                                     ("untagged", untagged_join, "kube-worker-03"),
+                                     ("not joined", never_joined, "kube-worker-01")):
+            for check in (self.runtime.validate_capture, self.runtime.validate_snapshot):
+                with self.subTest(case=case, check=check.__name__):
+                    with self.assertRaisesRegex(ValueError, "Kubernetes nodes.*%s" % missing):
+                        check(state)
+
+    def test_missing_or_malformed_kubernetes_node_list_is_rejected(self):
+        tagged = snapshot()["cluster_nodes"]
+        # The last two have the tagged set, so only the shape check can reject them.
+        for value in (None, [], "kube-master-01", ["kube-master-01", ""], [1], tuple(tagged), tagged + tagged[-1:]):
+            with self.subTest(cluster_nodes=value):
+                state = snapshot()
+                if value is None:
+                    del state["cluster_nodes"]
+                else:
+                    state["cluster_nodes"] = value
+                with self.assertRaisesRegex(ValueError, "malformed Kubernetes node list"):
+                    self.runtime.validate_capture(state)
+
+    def test_baseline_from_before_the_node_list_still_validates(self):
+        before = snapshot()
+        before["machines"]["pve"]["module"] = "2026.08.12.1-sriov"
+        after = after_reboot(before)
+        after["machines"]["pve"]["module"] = "2026.09.14-sriov"
+        del before["cluster_nodes"]
+        self.assertTrue(self.runtime.build_report(after, probes(after), hangs(after), before)["fresh_boots_verified"])
+
     def test_worker_without_render_node_group_is_rejected_before_probing(self):
         # Intel OpenCL opens /dev/dri/by-path/*-render, which keeps the worker's render group (2026-11-07).
         for value in (None, [], ["992"], [992, 992], [-1], 992, [True], [[992]]):
@@ -315,6 +355,13 @@ class TestOrchestration(unittest.TestCase):
             playbook, r"(?m)^  connection:\s+local(?:\s|$)",
             "Play-level local transport also affects delegated hosts; use implicit localhost instead.",
         )
+
+    def test_kubernetes_node_list_is_saved_in_every_mode(self):
+        playbook = (SCRIPTS.parent / "i915-acceptance.yml").read_text()
+        read = playbook.index("- jsonpath={.items[*].metadata.name}")
+        self.assertLess(read, playbook.index("Finish baseline capture without touching the GPU or cluster"))
+        self.assertLess(read, playbook.index("name: Save the runtime snapshot"))
+        self.assertIn("'cluster_nodes': i915_acceptance_cluster_nodes.stdout.split()", playbook)
 
     def test_probe_job_joins_the_observed_render_node_groups(self):
         playbook = (SCRIPTS.parent / "i915-acceptance.yml").read_text()

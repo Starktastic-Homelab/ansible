@@ -335,7 +335,12 @@ and masters included, must answer over SSH in every mode. In current-stack and
 post-reboot every Kubernetes node must also be `Ready` before the jobs run. An
 unreachable master therefore fails every mode rather than being skipped: the
 snapshot must hold evidence for every tagged machine, and post-reboot also needs
-a fresh boot on every machine that capture recorded.
+a fresh boot on every machine that capture recorded. Every mode also lists the
+nodes Kubernetes knows from a master and fails if they differ from the tagged
+masters and workers. A guest whose Proxmox API call fails drops out of its tag
+groups with only a warning, and its node would otherwise pass without a probe.
+A Node left over from a VM that Terraform removed fails the same check; delete it
+from the runner (`k3s kubectl delete node <name>`) before an upgrade.
 
 Each worker must encode at least 30 frames through low-power H.264, low-power
 HEVC, synthetic HEVC Main10/PQ hardware decoding plus VA-API tone mapping and

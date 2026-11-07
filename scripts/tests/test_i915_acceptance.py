@@ -14,9 +14,9 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 
 
-def snapshot():
+def snapshot(masters=("kube-master-01",)):
     machines = {}
-    for index, name in enumerate(("pve", "kube-master-01", "kube-worker-01", "kube-worker-02"), 1):
+    for index, name in enumerate(("pve", *masters, "kube-worker-01", "kube-worker-02"), 1):
         machines[name] = {
             "node_name": name,
             "boot_id": f"00000000-0000-4000-8000-{index:012d}",
@@ -27,7 +27,9 @@ def snapshot():
             "xelp_enable_ccs": "1",
             "render_gids": [992],
         }
-    machines["kube-master-01"]["module"] = ""
+    for name in masters:
+        # What a live master reports: no GPU, so no i915 module, CCS parameter or render node.
+        machines[name].update(module="", xelp_enable_ccs="", render_gids=[])
     return {
         "schema": 1,
         "expected": {
@@ -38,7 +40,7 @@ def snapshot():
         },
         "inventory": {
             "hosts": ["pve"],
-            "masters": ["kube-master-01"],
+            "masters": list(masters),
             "workers": ["kube-worker-01", "kube-worker-02"],
         },
         "machines": machines,
@@ -210,6 +212,25 @@ class TestAcceptance(unittest.TestCase):
                 del state["machines"]["kube-worker-02"][field]
                 with self.assertRaises(ValueError):
                     self.runtime.build_report(state, probes(state), hangs(snapshot()))
+
+    def test_several_masters_pass_every_mode(self):
+        # inventory/proxmox.yml groups masters by tag, so an HA control plane is a longer list, not a new shape.
+        before = snapshot(("kube-master-01", "kube-master-02", "kube-master-03"))
+        before["machines"]["pve"]["module"] = "2026.08.12.1-sriov"
+        self.runtime.validate_capture(before)
+        after = after_reboot(before)
+        after["machines"]["pve"]["module"] = "2026.09.14-sriov"
+        report = self.runtime.build_report(after, probes(after), hangs(after), before)
+        self.assertTrue(report["fresh_boots_verified"])
+        self.assertEqual(report["workers"], ["kube-worker-01", "kube-worker-02"])
+
+    def test_two_machines_claiming_one_kubernetes_node_are_rejected(self):
+        for clash in ("kube-master-02", "kube-worker-01"):
+            with self.subTest(clash=clash):
+                state = snapshot(("kube-master-01", "kube-master-02"))
+                state["machines"]["kube-master-01"]["node_name"] = state["machines"][clash]["node_name"]
+                with self.assertRaisesRegex(ValueError, "Duplicate Kubernetes node"):
+                    self.runtime.validate_capture(state)
 
     def test_worker_without_render_node_group_is_rejected_before_probing(self):
         # Intel OpenCL opens /dev/dri/by-path/*-render, which keeps the worker's render group (2026-11-07).

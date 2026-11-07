@@ -88,8 +88,8 @@ def validate_structure(snapshot):
             "Invalid machine ID for %s" % name,
         )
         require(isinstance(machine.get("module"), str), "Missing loaded module evidence for %s" % name)
-    worker_names = [machines[name]["node_name"] for name in inventory["workers"]]
-    require(len(set(worker_names)) == len(worker_names), "Duplicate Kubernetes worker names")
+    node_names = [machines[name]["node_name"] for name in inventory["masters"] + inventory["workers"]]
+    require(len(set(node_names)) == len(node_names), "Duplicate Kubernetes node names")
 
 
 def validate_capture(snapshot):

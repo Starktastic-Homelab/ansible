@@ -329,6 +329,14 @@ nodes, read from the worker. The device plugin bind-mounts those nodes with the
 worker's `render` group, Intel OpenCL opens only them, and without the group it
 reports no platform (`-1001`).
 
+Masters and workers come from the Proxmox tags (`inventory/proxmox.yml`), so
+adding masters needs no change here. Every inventory machine, the Proxmox host
+and masters included, must answer over SSH in every mode. In current-stack and
+post-reboot every Kubernetes node must also be `Ready` before the jobs run. An
+unreachable master therefore fails every mode rather than being skipped: the
+snapshot must hold evidence for every tagged machine, and post-reboot also needs
+a fresh boot on every machine that capture recorded.
+
 Each worker must encode at least 30 frames through low-power H.264, low-power
 HEVC, synthetic HEVC Main10/PQ hardware decoding plus VA-API tone mapping and
 hardware encoding, and a synthetic 10-bit PQ clip tone-mapped by

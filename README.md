@@ -244,8 +244,9 @@ parameter the `2025.12.10.x` guest ran a 48-bit PPGTT with no `ccs0` and hung
 `rcs0` under OpenCL and OpenVINO (`GPU HANG ecode 12:1`, 2026-11-06). Host
 releases from `2026.09.16` leave CCS off unless the host cmdline adds
 `i915.xelp_enable_ccs=1`, so a host bump must either add it here or drop the
-guest parameter in packer, decided in the same change. `i915_compat.py` and
-the acceptance probes check neither.
+guest parameter in packer, decided in the same change. `i915_compat.py`
+checks neither; the acceptance probe's OpenCL arm (below) catches the
+mismatch at runtime.
 
 The required-check names are versioned in `.github/required-status-checks.json`.
 After the named checks exist and pass, an authorized administrator can apply
@@ -319,17 +320,23 @@ reboot. This recovery does not address the separate SQLite contention.
 `i915-acceptance.yml` reads the loaded kernel/module, boot ID and machine ID
 over the existing infrastructure inventory. It then checks that Kubernetes
 reports those same node identities and runs a short GPU Job on **every**
-inventory worker. The jobs use a pinned diagnostic FFmpeg image as UID 1000,
-request the existing `gpu.intel.com/i915` device-plugin resource, and mount no
+inventory worker. The jobs run the pinned official `jellyfin/jellyfin` image
+(its jellyfin-ffmpeg and bundled Intel OpenCL runtime) as UID 1000, request
+the existing `gpu.intel.com/i915` device-plugin resource, and mount no
 application volumes. They do not depend on Jellyfin or Immich deployments.
 
 Each worker must encode at least 30 frames through low-power H.264, low-power
-HEVC, and synthetic HEVC Main10/PQ hardware decoding plus VA-API tone mapping
-and hardware encoding. Exit zero without the required frame evidence is not
-acceptance. The probes use VA-API only, not OpenCL or OpenVINO, so a PF/VF CCS
-mismatch passes them. After a guest image or host driver change, also run a
-Jellyfin HDR transcode (`tonemap_opencl`) and an Immich ML job on each worker,
-then check that `journalctl -k -b | grep -c 'GPU HANG'` prints 0 there. Temporary namespaces/jobs and private kubeconfigs are cleaned in
+HEVC, synthetic HEVC Main10/PQ hardware decoding plus VA-API tone mapping and
+hardware encoding, and a synthetic 10-bit PQ clip tone-mapped by
+`tonemap_opencl` (VA-API to OpenCL interop) and encoded with `h264_vaapi`.
+Exit zero without the required frame evidence is not acceptance. The OpenCL
+arm drives the compute path that a PF/VF CCS mismatch hangs (`rcs0`,
+2026-11-06), which the VA-API arms pass. The playbook also reads each worker's
+`/sys/module/i915/parameters/xelp_enable_ccs` and its since-boot
+`GPU HANG` count from `journalctl -k -b` before and after the jobs, and fails
+if the count changes. OpenVINO (Immich ML) is still untested, so after a guest
+image or host driver change also run an Immich ML job on each worker.
+Temporary namespaces/jobs and private kubeconfigs are cleaned in
 nested `always` blocks; diagnostic artifacts contain no kubeconfig or SSH/Vault
 credentials.
 

@@ -16,7 +16,7 @@ from pathlib import Path
 from i915_compat import BLOCKED_HOST_RELEASES, Unknown, http_get, parse_series
 
 PROBE_PREFIX = "I915_GPU_RESULT="
-GPU_CHECKS = {"h264_low_power", "hevc_low_power", "hdr_decode_tonemap_encode"}
+GPU_CHECKS = {"h264_low_power", "hevc_low_power", "hdr_decode_tonemap_encode", "hdr_opencl_tonemap_encode"}
 EXPECTED_FIELDS = {"host_version", "host_kernel", "guest_version", "guest_kernel_series"}
 ROLES = {"hosts", "masters", "workers"}
 GUEST_CONFIG_URL = "https://raw.githubusercontent.com/Starktastic-Homelab/packer/main/debian.auto.pkrvars.hcl"
@@ -155,9 +155,10 @@ def parse_probe_log(log):
     return result
 
 
-def build_report(snapshot, gpu_results, baseline=None):
+def build_report(snapshot, gpu_results, hangs_after, baseline=None):
     validate_snapshot(snapshot, baseline)
     require(isinstance(gpu_results, list), "GPU results must be a list")
+    require(isinstance(hangs_after, dict), "Post-probe GPU hang counts must be an object")
     expected_workers = {
         snapshot["machines"][name]["node_name"]: snapshot["machines"][name]
         for name in snapshot["inventory"]["workers"]
@@ -183,6 +184,15 @@ def build_report(snapshot, gpu_results, baseline=None):
                 type(count) is int and count >= 30,
                 "Insufficient encoded frames for %s on %s" % (check, node),
             )
+    for name in snapshot["inventory"]["workers"]:
+        machine = snapshot["machines"][name]
+        require(isinstance(machine.get("xelp_enable_ccs"), str), "Missing xelp_enable_ccs evidence for %s" % name)
+        before, after = machine.get("gpu_hangs"), hangs_after.get(name)
+        require(
+            type(before) is int and before >= 0 and type(after) is int and after >= 0,
+            "Missing kernel GPU hang count for %s" % name,
+        )
+        require(after == before, "Kernel GPU HANG count changed during the probe on %s: %d -> %d" % (name, before, after))
     require(observed == set(expected_workers), "Missing GPU worker results")
     return {
         "schema": 1,
@@ -192,6 +202,7 @@ def build_report(snapshot, gpu_results, baseline=None):
         "workers": sorted(expected_workers),
         "runtime": snapshot,
         "gpu_results": gpu_results,
+        "gpu_hangs_after": hangs_after,
     }
 
 
@@ -203,6 +214,7 @@ def main(argv=None):
     parser.add_argument("--mode", choices=("current-stack", "post-reboot"))
     parser.add_argument("--baseline")
     parser.add_argument("--probe-logs", help="JSON array of complete GPU pod log strings")
+    parser.add_argument("--hangs-after", help="JSON object of since-boot kernel GPU HANG counts per worker after the probes")
     parser.add_argument("--output")
     args = parser.parse_args(argv)
     if args.host_version is not None and args.action != "target":
@@ -215,8 +227,8 @@ def main(argv=None):
         parser.error("post-reboot mode requires the deployment's --baseline")
     if args.mode == "current-stack" and args.baseline:
         parser.error("a reboot baseline requires --mode post-reboot")
-    if args.action == "accept" and not args.probe_logs:
-        parser.error("accept requires --probe-logs from every expected worker")
+    if args.action == "accept" and not (args.probe_logs and args.hangs_after):
+        parser.error("accept requires --probe-logs and --hangs-after from every expected worker")
     try:
         snapshot = json.loads(Path(args.snapshot).read_text()) if args.snapshot else None
         baseline = json.loads(Path(args.baseline).read_text()) if args.baseline else None
@@ -240,7 +252,8 @@ def main(argv=None):
         else:
             logs = json.loads(Path(args.probe_logs).read_text())
             require(isinstance(logs, list), "Probe logs must be a JSON array")
-            result = build_report(snapshot, [parse_probe_log(log) for log in logs], baseline)
+            hangs_after = json.loads(Path(args.hangs_after).read_text())
+            result = build_report(snapshot, [parse_probe_log(log) for log in logs], hangs_after, baseline)
             print(json.dumps(result, indent=2))
             if baseline is None:
                 print("Current-stack diagnostics only; reboot freshness was NOT CHECKED.")

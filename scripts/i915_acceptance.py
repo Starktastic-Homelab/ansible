@@ -88,8 +88,8 @@ def validate_structure(snapshot):
             "Invalid machine ID for %s" % name,
         )
         require(isinstance(machine.get("module"), str), "Missing loaded module evidence for %s" % name)
-    worker_names = [machines[name]["node_name"] for name in inventory["workers"]]
-    require(len(set(worker_names)) == len(worker_names), "Duplicate Kubernetes worker names")
+    node_names = [machines[name]["node_name"] for name in inventory["masters"] + inventory["workers"]]
+    require(len(set(node_names)) == len(node_names), "Duplicate Kubernetes node names")
 
 
 def validate_capture(snapshot):
@@ -116,6 +116,15 @@ def validate_capture(snapshot):
 def validate_snapshot(snapshot, baseline=None):
     validate_capture(snapshot)
     expected, machines = snapshot["expected"], snapshot["machines"]
+    for name in snapshot["inventory"]["workers"]:
+        gids = machines[name].get("render_gids")
+        # The nonroot probe joins these groups: Intel OpenCL opens /dev/dri/by-path/*-render, which keeps
+        # the worker's render group, and reports no platform (-1001) when it cannot.
+        require(
+            isinstance(gids, list) and gids and all(type(gid) is int and gid >= 0 for gid in gids)
+            and len(set(gids)) == len(gids),
+            "Missing render-node group evidence for %s" % name,
+        )
     for name in snapshot["inventory"]["hosts"]:
         machine = machines[name]
         require(

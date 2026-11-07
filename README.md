@@ -189,8 +189,8 @@ The `i915_sriov` role manages the full GPU driver lifecycle on the Proxmox host:
 
 - **Metadata and known-bad policy gate** — before anything destructive, `scripts/i915_compat.py` rejects reproduced runtime regressions and checks the exact release's declared kernel support; blocked, unknown or unsupported combinations abort with the host untouched. This does not test hardware
 - **DKMS driver** install/upgrade from GitHub releases
-- **Kernel pinning** — `i915_sriov_pinned_kernel` (e.g. `6.17.13-13-pve`) is the authoritative desired host kernel; the role builds and verifies the DKMS module for it *before* pinning it via `proxmox-boot-tool` and rebooting into it
-- **GRUB parameters**: `intel_iommu=on i915.enable_guc=3 i915.max_vfs=7 module_blacklist=xe`
+- **Kernel pinning** — `i915_sriov_pinned_kernel` (e.g. `7.0.14-28-pve`) is the authoritative desired host kernel; the role builds and verifies the DKMS module for it *before* pinning it via `proxmox-boot-tool` and rebooting into it
+- **Kernel parameters**: `intel_iommu=on i915.enable_guc=3 i915.max_vfs=7 module_blacklist=xe i915.xelp_enable_ccs=1`, appended to `/etc/kernel/cmdline` on a systemd-boot host (this one: UEFI, ZFS root) or written to `/etc/default/grub` otherwise
 - **sysfs configuration** to create 7 virtual functions on boot
 
 #### Host and guest driver versions differ on purpose
@@ -201,7 +201,7 @@ states the two sides need not match:
 
 | Side | Kernel | Driver | Upstream range |
 |------|--------|--------|----------------|
-| **Host** (this repo) | 6.17.13-13-pve | `2026.09.14` | 6.17 – 7.2 |
+| **Host** (this repo) | 7.0.14-28-pve | `2026.11.05` | 6.18 – 7.3 |
 | **Guest** (packer repo) | 6.12 (Debian 13) | `2025.12.10.2` | 6.12 – 6.18 |
 
 Three axes are validated, all from upstream data for the exact tags — never
@@ -222,7 +222,7 @@ observed failures, not a host/guest compatibility allowlist.
 
 ```bash
 python3 scripts/i915_compat.py \
-  --host-version 2026.09.14 --host-kernel 6.17.13-13-pve \
+  --host-version 2026.11.05 --host-kernel 7.0.14-28-pve \
   --guest-version 2025.12.10.2 --guest-kernel 6.12
 # exit 0 = metadata/policy passed, hardware NOT TESTED
 # exit 1 = unsupported or blocked · 2 = metadata cannot be established
@@ -238,15 +238,15 @@ packer-repo change; the host only needs a driver whose range covers
 `i915_sriov_pinned_kernel`.
 
 The versions may differ, but the guest image assumes the PF runs Xe_LP CCS:
-host `2026.09.14` enables it, and the packer repo's `scripts/bootstrap.sh`
-boots the guests with `i915.xelp_enable_ccs=1` to match. Without that
-parameter the `2025.12.10.x` guest ran a 48-bit PPGTT with no `ccs0` and hung
-`rcs0` under OpenCL and OpenVINO (`GPU HANG ecode 12:1`, 2026-11-06). Host
-releases from `2026.09.16` leave CCS off unless the host cmdline adds
-`i915.xelp_enable_ccs=1`, so a host bump must either add it here or drop the
-guest parameter in packer, decided in the same change. `i915_compat.py`
-checks neither; the acceptance probe's OpenCL arm (below) catches the
-mismatch at runtime.
+the packer repo's `scripts/bootstrap.sh` boots the guests with
+`i915.xelp_enable_ccs=1`, and the host must match. Without that parameter the
+`2025.12.10.x` guest ran a 48-bit PPGTT with no `ccs0` and hung `rcs0` under
+OpenCL and OpenVINO (`GPU HANG ecode 12:1`, 2026-11-06). Host releases from
+`2026.09.16` leave CCS off unless the host cmdline adds
+`i915.xelp_enable_ccs=1`, so `i915_sriov_grub_params` carries it. Dropping it
+here means dropping the guest parameter in packer in the same change.
+`i915_compat.py` checks neither; the acceptance probe's OpenCL arm (below)
+catches the mismatch at runtime.
 
 The required-check names are versioned in `.github/required-status-checks.json`.
 After the named checks exist and pass, an authorized administrator can apply
@@ -260,7 +260,7 @@ gh api --method PATCH \
 
 #### Host-driver recovery and GPU acceptance
 
-The host pin `2026.09.14` restored hardware encoding after the VA-API
+The host pin `2026.09.14` once restored hardware encoding after the VA-API
 initialization failures observed on both workers with `2026.09.16`.
 Renovate excludes the bad release and disables automerge for host-driver
 updates; the checker also rejects it in CI and before direct Ansible
@@ -284,8 +284,11 @@ dkms status
 proxmox-boot-tool kernel list
 ```
 
-For this rollback, expect kernel `6.17.13-13-pve` and loaded module
-`2026.09.14-sriov`. Keep the guest images, GPU device plugin, and application
+Expect the pinned kernel (`7.0.14-28-pve`), loaded module `2026.11.05-sriov`
+and `/sys/module/i915/parameters/xelp_enable_ccs` = `Y`. Rolling back to a
+6.17 kernel also means reinstalling `2026.09.14`: `2026.11.05` builds only
+for 6.18 – 7.3, so the old kernel boots the stock i915 with no VFs.
+Keep the guest images, GPU device plugin, and application
 encoding settings unchanged. Wait for the nodes and workloads to recover,
 then confirm Jellyfin and Immich run on different workers with
 `kubectl -n media get pods -o wide`.

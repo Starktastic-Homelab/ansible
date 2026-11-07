@@ -111,7 +111,7 @@
 
 - name: Install kernel headers for target kernel
   ansible.builtin.apt:
-    name: "pve-headers-{{ i915_sriov_target_kernel }}"
+    name: "proxmox-headers-{{ i915_sriov_target_kernel }}"
     state: present
 
 # --- Driver installation ---
@@ -194,33 +194,48 @@
     - kernel pinned
     - reboot required
 
-# --- GRUB configuration ---
+# --- Kernel command line ---
+# A proxmox-boot-tool UEFI host (systemd-boot, e.g. ZFS root) boots from
+# /etc/kernel/cmdline and ignores /etc/default/grub; other hosts boot via GRUB.
+
+- name: Get proxmox-boot-tool status
+  ansible.builtin.command: proxmox-boot-tool status
+  register: i915_sriov_boot_tool_status
+  changed_when: false
+
+- name: Select the boot loader whose command line this host uses
+  ansible.builtin.set_fact:
+    i915_sriov_systemd_boot: "{{ 'configured with: uefi' in i915_sriov_boot_tool_status.stdout }}"
+
+- name: Read current systemd-boot command line
+  ansible.builtin.slurp:
+    src: /etc/kernel/cmdline
+  register: i915_sriov_kernel_cmdline_content
+  when: i915_sriov_systemd_boot
+
+# shortcut: only appends missing tokens, so a different value of the same key
+# (e.g. i915.max_vfs=2) stays and the kernel sees both; edit by hand if that ever applies.
+- name: Append missing required parameters to /etc/kernel/cmdline
+  ansible.builtin.copy:
+    dest: /etc/kernel/cmdline
+    content: "{{ (i915_sriov_cmdline_current + i915_sriov_cmdline_missing) | join(' ') }}\n"
+    mode: "0644"
+    backup: true
+  vars:
+    i915_sriov_cmdline_current: "{{ (i915_sriov_kernel_cmdline_content.content | b64decode).split() }}"
+    i915_sriov_cmdline_missing: "{{ i915_sriov_grub_params.split() | reject('in', i915_sriov_cmdline_current) | list }}"
+  when:
+    - i915_sriov_systemd_boot
+    - i915_sriov_cmdline_missing | length > 0
+  notify:
+    - kernel pinned
+    - reboot required
 
 - name: Read current GRUB configuration
   ansible.builtin.slurp:
     src: /etc/default/grub
   register: i915_sriov_grub_content
-
-- name: Decode GRUB content
-  ansible.builtin.set_fact:
-    i915_sriov_grub_config: "{{ i915_sriov_grub_content.content | b64decode }}"
-
-- name: Check for required GRUB parameters
-  ansible.builtin.set_fact:
-    i915_sriov_grub_params_present:
-      intel_iommu: "{{ 'intel_iommu=on' in i915_sriov_grub_config }}"
-      enable_guc: "{{ 'i915.enable_guc=3' in i915_sriov_grub_config }}"
-      max_vfs: "{{ 'i915.max_vfs=' in i915_sriov_grub_config }}"
-      module_blacklist: "{{ 'module_blacklist=xe' in i915_sriov_grub_config }}"
-
-- name: Display GRUB parameter status
-  ansible.builtin.debug:
-    msg: |
-      GRUB parameters present:
-        intel_iommu=on: {{ i915_sriov_grub_params_present.intel_iommu }}
-        i915.enable_guc=3: {{ i915_sriov_grub_params_present.enable_guc }}
-        i915.max_vfs: {{ i915_sriov_grub_params_present.max_vfs }}
-        module_blacklist=xe: {{ i915_sriov_grub_params_present.module_blacklist }}
+  when: not i915_sriov_systemd_boot
 
 - name: Update GRUB_CMDLINE_LINUX_DEFAULT with required parameters
   ansible.builtin.lineinfile:
@@ -229,8 +244,8 @@
     line: 'GRUB_CMDLINE_LINUX_DEFAULT="{{ i915_sriov_grub_params }} quiet"'
     backup: true
   when:
-    not (i915_sriov_grub_params_present.intel_iommu and i915_sriov_grub_params_present.enable_guc and
-    i915_sriov_grub_params_present.max_vfs and i915_sriov_grub_params_present.module_blacklist)
+    - not i915_sriov_systemd_boot
+    - i915_sriov_grub_params.split() | reject('in', i915_sriov_grub_content.content | b64decode) | list | length > 0
   notify:
     - grub updated
     - initramfs updated

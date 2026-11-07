@@ -61,9 +61,11 @@ A new guest image (replaced VMs) uses `current-stack` mode instead, plus the Ope
 - Maintenance lock (README "External maintenance coordination"): failed runs keep it; never remove one for being old.
 - apps owns ArgoCD's notifications ConfigMap/Secret (`create: false`, `bootstrap_cluster/tasks/argocd.yml`).
 - Keep host i915 pins as double-quoted YAML (`key: "value"`): packer regex-reads them.
-- Guest CCS: packer boots the K3s VMs with `i915.xelp_enable_ccs=1`, which assumes the host PF runs CCS
-  (`2026.09.14` does; `2026.09.16`+ only with the same param on the host). A host i915 bump picks host
-  param vs dropping the guest param in the same change (README "Host and guest driver versions differ on purpose").
+- Guest CCS: packer boots the K3s VMs with `i915.xelp_enable_ccs=1`, which needs the host PF to run CCS.
+  Host `2026.09.16`+ only does with the same param, so `i915_sriov_grub_params` carries it; dropping it means
+  dropping the guest param in the same change (README "Host and guest driver versions differ on purpose").
+- The Proxmox host boots systemd-boot from `/etc/kernel/cmdline` (UEFI, ZFS root); `/etc/default/grub` is
+  ignored there. The role appends missing params to the file and runs `proxmox-boot-tool refresh`.
 - `docs/iscsi-*.md` and `docs/superpowers/` are history; #286 retired the iSCSI executor.
 
 ## Contracts

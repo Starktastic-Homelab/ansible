@@ -316,19 +316,38 @@
                           sizeLimit: 64Mi
           loop: "{{ groups['workers'] }}"
 
-        - name: Require successful completion from every worker
+        # Watch Failed as well as Complete: with backoffLimit 0 a probe that dies at once must not hold the play 270 s.
+        - name: Wait until every worker's probe Job has completed or failed
           kubernetes.core.k8s_info:
             kubeconfig: "{{ i915_acceptance_kubeconfig_file.path }}"
             api_version: batch/v1
             kind: Job
-            name: "gpu-{{ i915_acceptance_machines[item].node_name }}"
             namespace: "{{ i915_acceptance_namespace.result.metadata.name }}"
-            wait: true
-            wait_timeout: 270
-            wait_condition:
-              type: Complete
-              status: "True"
-          loop: "{{ groups['workers'] }}"
+            hidden_fields: [metadata.managedFields, spec]
+          register: i915_acceptance_jobs
+          # A Job never has both Complete=True and Failed=True, so the count reaches the worker count only when all end.
+          until: >-
+            i915_acceptance_jobs.resources | default([]) | map(attribute='status.conditions', default=[])
+              | flatten(levels=1) | selectattr('type', 'in', ['Complete', 'Failed'])
+              | selectattr('status', 'equalto', 'True') | list | length == groups['workers'] | length
+          retries: 54
+          delay: 5
+
+        - name: Require successful completion from every worker
+          ansible.builtin.assert:
+            quiet: true
+            that: i915_acceptance_end.type == 'Complete'
+            fail_msg: "Job {{ item.0 }} failed: {{ i915_acceptance_end.reason }} ({{ i915_acceptance_end.message }})"
+          vars:
+            i915_acceptance_end: >-
+              {{ item.1 | selectattr('type', 'in', ['Complete', 'Failed']) | selectattr('status', 'equalto', 'True')
+                 | first }}
+          # Loop over (name, conditions) pairs so a failed item does not print the whole Job object.
+          loop: >-
+            {{ i915_acceptance_jobs.resources | map(attribute='metadata.name')
+               | zip(i915_acceptance_jobs.resources | map(attribute='status.conditions')) | list }}
+          loop_control:
+            label: "{{ item.0 }}"
 
         # The nonroot probe pod cannot read the host kernel log, so count hangs from the worker itself.
         - name: Recount since-boot kernel GPU hangs on every worker after the probes

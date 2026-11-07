@@ -70,6 +70,22 @@
       loop_control:
         label: "{{ item.item }}"
 
+    # A guest whose Proxmox API call fails drops out of its tag groups with only a warning (inventory/proxmox.yml),
+    # so the validator compares the cluster's own node list with the tagged masters and workers.
+    - name: Read the Kubernetes node names from the control plane
+      ansible.builtin.command:
+        argv:
+          - k3s
+          - kubectl
+          - get
+          - nodes
+          - -o
+          - jsonpath={.items[*].metadata.name}
+      delegate_to: "{{ groups['masters'][0] }}"
+      become: true
+      register: i915_acceptance_cluster_nodes
+      changed_when: false
+
     - name: Create the validation evidence directory
       ansible.builtin.file:
         path: "{{ i915_acceptance_artifacts_dir }}"
@@ -90,7 +106,8 @@
             'schema': 1,
             'expected': i915_acceptance_expected,
             'inventory': i915_acceptance_inventory,
-            'machines': i915_acceptance_machines
+            'machines': i915_acceptance_machines,
+            'cluster_nodes': i915_acceptance_cluster_nodes.stdout.split()
           } | to_nice_json }}
 
     - name: Validate and preserve the pre-change baseline

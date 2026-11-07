@@ -1,0 +1,19 @@
+---
+# Apply proxmox_guest_startup ({vmid: "order=N,up=S"}) to existing guests.
+# Takes effect at the next host boot; nothing is restarted.
+
+- name: Read guest configs
+  ansible.builtin.command:
+    argv: [pvesh, get, "/nodes/{{ inventory_hostname }}/qemu/{{ item.key }}/config", --output-format, json]
+  loop: "{{ proxmox_guest_startup | dict2items }}"
+  register: proxmox_guest_startup_configs
+  changed_when: false
+
+- name: Set guest startup order and delay
+  ansible.builtin.command:
+    argv: [qm, set, "{{ item.item.key }}", --startup, "{{ item.item.value }}"]
+  loop: "{{ proxmox_guest_startup_configs.results }}"
+  loop_control:
+    label: "{{ item.item.key }}: {{ item.item.value }}"
+  when: (item.stdout | from_json).startup | default('') != item.item.value
+  changed_when: true

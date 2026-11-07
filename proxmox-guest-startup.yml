@@ -1,0 +1,9 @@
+---
+- name: Configure Proxmox guest startup order
+  hosts: proxmox_hosts
+  become: true
+  gather_facts: false
+  tags:
+    - proxmox_guest_startup
+  roles:
+    - role: proxmox_guest_startup

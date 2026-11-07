@@ -285,7 +285,7 @@ proxmox-boot-tool kernel list
 ```
 
 Expect the pinned kernel (`7.0.14-28-pve`), loaded module `2026.11.05-sriov`
-and `/sys/module/i915/parameters/xelp_enable_ccs` = `Y`. Rolling back to a
+and `/sys/module/i915/parameters/xelp_enable_ccs` = `1` (the guests show `Y`). Rolling back to a
 6.17 kernel also means reinstalling `2026.09.14`: `2026.11.05` builds only
 for 6.18 – 7.3, so the old kernel boots the stock i915 with no VFs.
 Keep the guest images, GPU device plugin, and application

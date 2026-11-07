@@ -15,7 +15,7 @@
       "enabled": false
     },
     {
-      "description": "Host GPU driver: 2026.09.16 is the known regression and 2026.10.28 drops the host's 6.17 kernel (#294). A bump reboots the Proxmox host, so new releases wait on the Dependency Dashboard; upgrade the kernel and driver together by hand in a maintenance window",
+      "description": "Host GPU driver: 2026.09.16 is the known regression. A bump reboots the Proxmox host and may need a newer kernel (#312 moved to 2026.11.05 on 7.0), so new releases wait on the Dependency Dashboard; change the driver, i915_sriov_pinned_kernel and the host CCS param together by hand in a maintenance window",
       "matchPackageNames": ["strongtz/i915-sriov-dkms"],
       "allowedVersions": "!/^v?2026\\.09\\.16$/",
       "dependencyDashboardApproval": true,

@@ -25,6 +25,7 @@ def snapshot():
             "module": "2026.09.14-sriov" if name == "pve" else "2026.03.05.7-sriov",
             "gpu_hangs": 0,
             "xelp_enable_ccs": "1",
+            "render_gids": [992],
         }
     machines["kube-master-01"]["module"] = ""
     return {
@@ -210,6 +211,25 @@ class TestAcceptance(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.runtime.build_report(state, probes(state), hangs(snapshot()))
 
+    def test_worker_without_render_node_group_is_rejected_before_probing(self):
+        # Intel OpenCL opens /dev/dri/by-path/*-render, which keeps the worker's render group (2026-11-07).
+        for value in (None, [], ["992"], [992, 992], [-1], 992, [True], [[992]]):
+            with self.subTest(render_gids=value):
+                state = snapshot()
+                if value is None:
+                    del state["machines"]["kube-worker-02"]["render_gids"]
+                else:
+                    state["machines"]["kube-worker-02"]["render_gids"] = value
+                with self.assertRaisesRegex(ValueError, "render"):
+                    self.runtime.validate_snapshot(state)
+
+    def test_baseline_from_before_render_gid_evidence_still_validates(self):
+        before = snapshot()
+        for machine in before["machines"].values():
+            del machine["render_gids"]
+        self.runtime.validate_capture(before)
+        self.runtime.validate_snapshot(after_reboot(snapshot()), before)
+
     def test_probe_log_requires_one_complete_result_record(self):
         expected = probes(snapshot())[0]
         log = "Probe starting\nI915_GPU_RESULT=" + json.dumps(expected) + "\n"
@@ -273,6 +293,15 @@ class TestOrchestration(unittest.TestCase):
         self.assertNotRegex(
             playbook, r"(?m)^  connection:\s+local(?:\s|$)",
             "Play-level local transport also affects delegated hosts; use implicit localhost instead.",
+        )
+
+    def test_probe_job_joins_the_observed_render_node_groups(self):
+        playbook = (SCRIPTS.parent / "i915-acceptance.yml").read_text()
+        self.assertIn('glob.glob("/dev/dri/by-path/*-render")', playbook)
+        self.assertRegex(
+            playbook,
+            r"supplementalGroups: \"\{\{ \[0\] \+ i915_acceptance_machines\[item\]\.render_gids \}\}\"",
+            "The nonroot probe must join each worker's render-node group or Intel OpenCL finds no platform.",
         )
 
 

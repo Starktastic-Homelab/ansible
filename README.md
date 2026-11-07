@@ -324,6 +324,10 @@ inventory worker. The jobs run the pinned official `jellyfin/jellyfin` image
 (its jellyfin-ffmpeg and bundled Intel OpenCL runtime) as UID 1000, request
 the existing `gpu.intel.com/i915` device-plugin resource, and mount no
 application volumes. They do not depend on Jellyfin or Immich deployments.
+Each job also joins the group that owns its worker's `/dev/dri/by-path/*-render`
+nodes, read from the worker. The device plugin bind-mounts those nodes with the
+worker's `render` group, Intel OpenCL opens only them, and without the group it
+reports no platform (`-1001`).
 
 Each worker must encode at least 30 frames through low-power H.264, low-power
 HEVC, synthetic HEVC Main10/PQ hardware decoding plus VA-API tone mapping and

@@ -39,7 +39,7 @@
           - python3
           - -c
           - |
-            import json, os, socket, subprocess
+            import glob, json, os, socket, subprocess
             from pathlib import Path
             module = Path("/sys/module/i915/version")
             ccs = Path("/sys/module/i915/parameters/xelp_enable_ccs")
@@ -55,6 +55,7 @@
                 "module": module.read_text().strip() if module.is_file() else "",
                 "gpu_hangs": sum("GPU HANG" in line for line in kernel_log.splitlines()),
                 "xelp_enable_ccs": ccs.read_text().strip() if ccs.is_file() else "",
+                "render_gids": sorted({os.stat(path).st_gid for path in glob.glob("/dev/dri/by-path/*-render")}),
             }))
       delegate_to: "{{ item }}"
       become: true
@@ -254,7 +255,9 @@
                       runAsNonRoot: true
                       runAsUser: 1000
                       runAsGroup: 1000
-                      supplementalGroups: [0]
+                      # The device plugin bind-mounts /dev/dri/by-path/*-render with the worker's render group,
+                      # and Intel OpenCL opens only that node; without the group it finds no platform (-1001).
+                      supplementalGroups: "{{ [0] + i915_acceptance_machines[item].render_gids }}"
                       fsGroup: 1000
                       seccompProfile:
                         type: RuntimeDefault

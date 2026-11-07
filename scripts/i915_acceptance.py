@@ -116,6 +116,15 @@ def validate_capture(snapshot):
 def validate_snapshot(snapshot, baseline=None):
     validate_capture(snapshot)
     expected, machines = snapshot["expected"], snapshot["machines"]
+    for name in snapshot["inventory"]["workers"]:
+        gids = machines[name].get("render_gids")
+        # The nonroot probe joins these groups: Intel OpenCL opens /dev/dri/by-path/*-render, which keeps
+        # the worker's render group, and reports no platform (-1001) when it cannot.
+        require(
+            isinstance(gids, list) and gids and all(type(gid) is int and gid >= 0 for gid in gids)
+            and len(set(gids)) == len(gids),
+            "Missing render-node group evidence for %s" % name,
+        )
     for name in snapshot["inventory"]["hosts"]:
         machine = machines[name]
         require(

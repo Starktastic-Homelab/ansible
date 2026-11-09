@@ -1,6 +1,6 @@
 ---
 # Units and config are always installed; timers run and secrets are required only once this is true.
-proxmox_backup_enabled: false
+proxmox_backup_enabled: true
 
 # /dev/disk/by-id name of the portable backup disk (pool usbbk): WD G-DRIVE mobile SSD, 1 TB.
 proxmox_backup_usb_disk_id: "usb-G-DRIVE_mobile_SSD_B10180605416-0:0"
@@ -18,10 +18,13 @@ proxmox_backup_truenas_sources: [10.9.9.30, 10.9.8.30]
 proxmox_backup_zfs_permissions:
   [copies, create, destroy, hold, mount, readonly, receive, release, rollback, snapdir, sync, userprop, xattr]
 
-proxmox_backup_storagebox_host: ""
-proxmox_backup_storagebox_user: ""
-# Host key as "type base64", from ssh-keyscan -p 23.
-proxmox_backup_storagebox_hostkey: ""
+# Hetzner Storage Box BX11 sub-account (home "restic"); its key is /etc/homelab-backup/id_storagebox.
+proxmox_backup_storagebox_host: u713697-sub1.your-storagebox.de
+proxmox_backup_storagebox_user: u713697-sub1
+# Host key as "type base64", from ssh-keyscan -p 23 -t ed25519; matches Hetzner's published
+# SHA256:XqONwb1S0zuj5A1CDxpOSuD2hnAArV1A3wKY7Z3sdgM.
+# yamllint disable-line rule:line-length
+proxmox_backup_storagebox_hostkey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIICf9svRenC/PLKIL9nk6K/pxQgoiFC41wTNvoIncOxs"
 proxmox_backup_repository: sftp:storagebox:repo
 
 proxmox_backup_max_replica_age_h: 8
@@ -53,6 +56,8 @@ proxmox_backup_dump_rules:
   # Immich's own nightly database dump (02:00), on the share above.
   - { glob: /srv/backup-src/immich/backups/immich-db-backup-*.sql.gz, max_age_h: 26, min_count: 1 }
   - { glob: "{{ proxmox_backup_vzdump_glob }}", max_age_h: 192, min_count: 1 }
+  # Weekly TrueNAS (VM100) boot-disk dump: stays local (the key kit holds its config), but must keep arriving.
+  - { glob: /usbbk/vz/dump/vzdump-qemu-100-*.vma, max_age_h: 192, min_count: 1 }
 
 proxmox_backup_git_repos:
   - https://github.com/Starktastic-Homelab/packer.git

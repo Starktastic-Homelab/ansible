@@ -165,6 +165,11 @@ class ResticTests(unittest.TestCase):
         self.assertEqual(host.calls[-1][:1], ['umount'])
         self.assertIn(('https://hc.invalid/b', ''), host.pings)
 
+    def test_both_weekly_vzdumps_are_checked(self):
+        rules = json.loads(render('sources.json.j2'))['dump_rules']
+        for vm in (100, 300):  # VM100 (TrueNAS boot disk) stays local, but a missing dump must still alert
+            self.assertIn({'glob': f'/usbbk/vz/dump/vzdump-qemu-{vm}-*.vma', 'max_age_h': 192, 'min_count': 1}, rules)
+
     def test_nfs_shares_upload_last_in_their_own_snapshot_and_a_broken_share_blocks_nothing(self):
         share = {'share': '10.9.9.30:/mnt/main/immich', 'mount': 'immich', 'marker': 'upload/.immich'}
         rendered = json.loads(render('sources.json.j2'))  # Immich has lived in main/immich since 2026-11-06

@@ -68,7 +68,8 @@ class FakeHost:
             return subprocess.CompletedProcess(argv, self.nfs_mount_rc, '', 'mount.nfs: Connection refused\n')
         if argv[0] == 'restic' and 'backup' in argv:
             rc = self.restic_rc.get(argv[argv.index('--tag') + 1], 0)
-            return subprocess.CompletedProcess(argv, rc, '', 'error: lstat /x: no such file or directory\n' if rc else '')
+            out = '' if rc else 'Files: 1 new\nAdded to the repository: 1.000 KiB (512 B stored)\nprocessed 1 files\n'
+            return subprocess.CompletedProcess(argv, rc, out, 'error: lstat /x: no such file or directory\n' if rc else '')
         if argv[0] in ('mount', 'umount'):  # keep the fake /proc/mounts in step, as the kernel would
             lines = [l for l in self.mounts.read_text().splitlines(True) if l.split()[1] != argv[-1]]
             self.mounts.write_text(''.join(lines) + (f'{argv[-2]} {argv[-1]} {argv[2]} ro 0 0\n' if argv[0] == 'mount' else ''))
@@ -233,7 +234,22 @@ class ResticTests(unittest.TestCase):
             self.assertEqual(m.main(['maint']), 0, m.LOG)
         forgets = {c[c.index('--tag') + 1]: c[c.index('--tag') + 2:] for c in host.calls if 'forget' in c}
         keep = ['--keep-daily', '14', '--keep-weekly', '8', '--keep-monthly', '12']
-        self.assertEqual(forgets, {'daily': keep, 'nfs': keep, 'vzdump': ['--keep-last', '1']})
+        # Two: a Sunday upload that hits restic exit 3 writes a vzdump snapshot without the dump in it.
+        self.assertEqual(forgets, {'daily': keep, 'nfs': keep, 'vzdump': ['--keep-last', '2']})
+
+    def test_each_upload_logs_what_it_added(self):
+        m = script()  # the weekly vzdump increment is read from these lines (plan Task 5 Step 4)
+        share = {'share': '10.9.9.30:/mnt/main/immich', 'mount': 'immich', 'marker': 'upload/.immich'}
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            host = FakeHost(tmp, nfs_sources=[share], vzdump=True)
+            host.install(m, tmp)
+            (tmp / 'src/immich/upload').mkdir(parents=True)
+            (tmp / 'src/immich/upload/.immich').touch()
+            self.assertEqual(m.main(['backup']), 0, m.LOG)
+        added = [l for l in m.LOG if 'Added to the repository' in l]
+        self.assertEqual(added, [f'{t}: Added to the repository: 1.000 KiB (512 B stored)' for t in ('daily', 'vzdump', 'nfs')])
+        self.assertFalse([l for l in m.LOG if l.startswith(('Files:', 'processed'))], 'only the summary line is logged')
 
     def test_excludes_cover_regenerable_images(self):
         # restic skips blank and '#' lines in an exclude file.

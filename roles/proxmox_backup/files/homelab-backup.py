@@ -144,11 +144,15 @@ def mount_point(name):
 def upload(cfg, paths, tag):
     """One restic snapshot. Exit 3 still writes it, minus files it couldn't read: report that and carry on."""
     try:
-        restic(cfg, *restic_backup_argv(paths, str(CONF / 'excludes.txt'), tag))
+        out = restic(cfg, *restic_backup_argv(paths, str(CONF / 'excludes.txt'), tag))
     except RuntimeError as error:
         if getattr(error, 'returncode', None) != 3:
             raise
         return [f'{tag} snapshot is incomplete; restore from an older one if those files matter: {error}']
+    # restic's own figure for what this snapshot added; the weekly vzdump increment is judged by it.
+    for line in out.splitlines():
+        if line.startswith('Added to the repository'):
+            log(f'{tag}: {line}')
     return []
 
 
@@ -215,7 +219,8 @@ def maint(cfg):
     group = ['--host', 'pve', '--group-by', 'host,tags']
     for tag in ('daily', 'nfs'):
         restic(cfg, 'forget', *group, '--tag', tag, '--keep-daily', '14', '--keep-weekly', '8', '--keep-monthly', '12')
-    restic(cfg, 'forget', *group, '--tag', 'vzdump', '--keep-last', '1')
+    # Two: an upload that hits restic exit 3 still writes a vzdump snapshot, without the dump; keep the one before it.
+    restic(cfg, 'forget', *group, '--tag', 'vzdump', '--keep-last', '2')
     restic(cfg, 'prune')
     restic(cfg, 'check', '--read-data-subset', '5%')
     return []

@@ -66,6 +66,18 @@
     group: root
     mode: "0755"
 
+# The script refuses to back up while a kernel crash record is in /var/lib/systemd/pstore. systemd's own rule
+# (/usr/lib/tmpfiles.d/systemd-pstore.conf) deletes records after 14 days, which would end that pause unread.
+- name: Keep kernel crash records until someone moves them away
+  ansible.builtin.copy:
+    content: |
+      # Managed by ansible (proxmox_backup). No age cleanup: homelab-backup refuses to run while a record is here.
+      d /var/lib/systemd/pstore 0755 root root -
+    dest: /etc/tmpfiles.d/systemd-pstore.conf
+    owner: root
+    group: root
+    mode: "0644"
+
 # Secrets are placed by hand and never managed here; the role only enforces the directory mode.
 - name: Create the backup secrets directory
   ansible.builtin.file:

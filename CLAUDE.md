@@ -16,8 +16,10 @@ packer → terraform → ansible → apps; the system overview is `../CLAUDE.md`
   (`i915-sriov-upgrade.yml`), runner included, without taking the maintenance lock.
 - Pushing ser2net files deploys ser2net to the host; pushing `proxmox_backup` files deploys the backup role
   (`proxmox-backup.yml`); pushing the guest startup role, playbook or `group_vars/proxmox_hosts/guest_startup.yml`
-  sets guest boot order (`proxmox-guest-startup.yml`, effective next host boot). `format.yml` pushes Prettier
-  commits to PR branches.
+  sets guest boot order (`proxmox-guest-startup.yml`, effective next host boot) and the host's reboot-on-crash
+  sysctl and SPL settings (live at once). `format.yml` pushes Prettier commits to PR branches.
+- `deploy.yml` does not path-ignore this file: keep CLAUDE.md edits out of PRs that must deploy a role, since
+  a plain merge would also run the full K3s deploy and a `[skip ci]` merge would skip the role's own workflow.
 
 ## Commands
 

@@ -20,6 +20,7 @@ SECRETS = Path('/etc/homelab-backup')
 MOUNT_ROOT = Path('/srv/backup-src')
 PROC_MOUNTS = Path('/proc/mounts')
 LOCK = Path('/run/lock/homelab-backup.lock')
+PSTORE = Path('/var/lib/systemd/pstore')  # systemd-pstore archives each kernel crash here at boot
 LOG = []
 # soft: reads fail with EIO once the connection drops instead of blocking. A server that hangs while still
 # connected never times out over NFSv4; the unit's TimeoutStartSec bounds that.
@@ -107,6 +108,18 @@ def restic(cfg, *args):
     return sh(['restic', '-o', sftp, *args])
 
 
+def crash_problems(max_age_s=None):
+    """The host rebooted after a kernel crash. Backups stop until someone reads the record and moves it away, so a
+    crash the backup itself sets off (2026-11-10, ZFS arc_evict) costs one reboot, not one every night. With
+    max_age_s, only records archived (at boot) that recently count."""
+    if not PSTORE.is_dir():
+        return []
+    cutoff = time.time() - max_age_s if max_age_s else 0
+    records = sorted(p.name for p in PSTORE.iterdir() if p.stat().st_mtime > cutoff)
+    return [f'kernel crash record in {PSTORE}: {", ".join(records)}. The host rebooted after a kernel crash; backups '
+            f'stay off until the record is read, copied elsewhere and removed from {PSTORE}.'] if records else []
+
+
 def pool_problems(cfg):
     pool = cfg['pool']
     health = run(['zpool', 'list', '-H', '-o', 'health', pool])
@@ -184,7 +197,7 @@ def mirror(cfg):
 
 
 def backup(cfg):
-    if problems := pool_problems(cfg):
+    if problems := crash_problems() + pool_problems(cfg):
         raise Refused('; '.join(problems))
     unmount_all()
     try:
@@ -213,7 +226,7 @@ def backup(cfg):
 
 
 def maint(cfg):
-    if problems := pool_problems(cfg):
+    if problems := crash_problems() + pool_problems(cfg):
         raise Refused('; '.join(problems))
     # Group by tags: each weekly vzdump has a different path, so the default host,paths grouping keeps them all.
     group = ['--host', 'pve', '--group-by', 'host,tags']
@@ -227,7 +240,9 @@ def maint(cfg):
 
 
 def health(cfg):
-    problems = pool_problems(cfg)
+    # Recent records only: one email after a crash reboot, without holding the check down (and silent about new
+    # problems) for as long as backups stay paused.
+    problems = crash_problems(max_age_s=3 * 3600) + pool_problems(cfg)
     status = run(['zpool', 'status', '-x'])
     if status.stdout.strip() != 'all pools are healthy':
         problems.append('zpool status -x: ' + (status.stdout + status.stderr).strip()[-1000:])

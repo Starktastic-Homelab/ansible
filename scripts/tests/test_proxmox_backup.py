@@ -1,6 +1,8 @@
 """Offline checks for the host-side backup: freshness refusals, dump checks, restic argv and boot-safe units."""
 import importlib.util
 import json
+import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -87,6 +89,7 @@ class FakeHost:
     def install(self, module, tmp):
         module.CONF = module.SECRETS = tmp
         module.MOUNT_ROOT, module.PROC_MOUNTS, module.LOCK = tmp / 'src', tmp / 'mounts', tmp / 'lock'
+        module.PSTORE = tmp / 'pstore'
         module.run = self.run
         module.ping = lambda url, suffix='', body='': self.pings.append((url, suffix))
         module.time.time = lambda: NOW
@@ -312,6 +315,29 @@ class HostSafetyTests(unittest.TestCase):
             self.assertNotEqual(m.main(['health']), 0)
         self.assertIn(('https://hc.invalid/h', '/fail'), host.pings)
         self.assertNotIn(('https://hc.invalid/h', ''), host.pings)
+
+    def test_a_kernel_crash_record_stops_backups_until_it_is_moved_away(self):
+        m = script()
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            host = FakeHost(tmp)
+            host.install(m, tmp)
+            record = tmp / 'pstore/1794277905'
+            (record / '001').mkdir(parents=True)
+            os.utime(record, (NOW - H, NOW - H))  # systemd-pstore archived it at boot, an hour ago
+            self.assertNotEqual(m.main(['backup']), 0)
+            self.assertTrue(any('1794277905' in line for line in m.LOG), m.LOG)
+            self.assertNotEqual(m.main(['maint']), 0)
+            self.assertNotEqual(m.main(['health']), 0)
+            self.assertIn(('https://hc.invalid/b', '/fail'), host.pings)
+            self.assertIn(('https://hc.invalid/h', '/fail'), host.pings)
+            # Hours later health is back up, so it can alert on new problems, but backups still refuse.
+            os.utime(record, (NOW - 4 * H, NOW - 4 * H))
+            self.assertEqual(m.main(['health']), 0, m.LOG)
+            self.assertNotEqual(m.main(['backup']), 0)
+            self.assertFalse([c for c in host.calls if c[0] in ('restic', 'mount', 'git')])
+            shutil.rmtree(record)
+            self.assertEqual(m.main(['backup']), 0, m.LOG)
 
     def test_vzdump_storage_registers_only_when_mounted(self):
         # pvesm add activates the storage at once and fails while is_mountpoint's path is not mounted.

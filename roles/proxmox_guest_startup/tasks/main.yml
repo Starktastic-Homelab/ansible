@@ -1,6 +1,6 @@
 ---
-# Apply proxmox_guest_startup ({vmid: "order=N,up=S"}) to existing guests.
-# Takes effect at the next host boot; nothing is restarted.
+# Apply proxmox_guest_startup ({vmid: "order=N,up=S"}) to existing guests, and make the host reboot on a
+# kernel crash. Startup order takes effect at the next host boot; nothing is restarted.
 
 - name: Read guest configs
   ansible.builtin.command:
@@ -16,4 +16,42 @@
   loop_control:
     label: "{{ item.item.key }}: {{ item.item.value }}"
   when: (item.stdout | from_json).startup | default('') != item.item.value
+  changed_when: true
+
+# Crash recovery: a kernel oops or a failed ZFS assertion reboots the host, and the startup order above brings
+# the guests back. Until 2026-11-10 an oops (ZFS arc_evict) killed one thread holding a ZFS lock, and the host
+# stayed up but hung for 4.5 h. Panicking on hung or soft-locked tasks stays off: every TrueNAS restart stalls
+# the hard NFS mounts from VM 100 for minutes, so the host would reboot-loop.
+- name: Reboot 10 s after a kernel oops
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/90-panic-reboot.conf
+    sysctl_set: true
+    state: present
+    reload: true
+  loop:
+    - { key: "kernel.panic_on_oops", value: "1" }
+    - { key: "kernel.panic", value: "10" }
+
+# spl_panic_halt is writable at runtime, so tmpfiles sets it at boot without rebuilding the initramfs.
+- name: Panic instead of halting the thread on a failed ZFS assertion
+  ansible.builtin.copy:
+    dest: /etc/tmpfiles.d/spl-panic-halt.conf
+    content: |
+      # Managed by ansible (proxmox_guest_startup). A halted SPL thread keeps its locks and hangs ZFS.
+      w /sys/module/spl/parameters/spl_panic_halt - - - - 1
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Read the running ZFS assertion setting
+  ansible.builtin.slurp:
+    src: /sys/module/spl/parameters/spl_panic_halt
+  register: proxmox_guest_startup_spl_panic_halt
+
+- name: Apply the ZFS assertion setting to the running kernel
+  ansible.builtin.command:
+    argv: [systemd-tmpfiles, --create, /etc/tmpfiles.d/spl-panic-halt.conf]
+  when: proxmox_guest_startup_spl_panic_halt.content | b64decode | trim != '1'
   changed_when: true

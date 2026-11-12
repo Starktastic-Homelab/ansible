@@ -118,7 +118,7 @@ Seven roles cover the full lifecycle from bare VM to GitOps-ready cluster:
 | **bootstrap_cluster** | CI runner (localhost) | Sealed Secrets key, TLS cert restore from NFS, ArgoCD + OIDC setup, App-of-Apps |
 | **i915_sriov** | Proxmox host | Intel GPU SR-IOV driver lifecycle (install, upgrade, GRUB, sysfs VF config) |
 | **ser2net** | Proxmox host | Expose USB Zigbee dongle as TCP socket for cluster consumption |
-| **proxmox_backup** | Proxmox host | TrueNAS replica pool on a USB disk, restic to a Hetzner Storage Box, healthchecks.io timers (off until `proxmox_backup_enabled`) |
+| **proxmox_backup** | Proxmox host | TrueNAS replica pool on a USB disk, restic to a Hetzner Storage Box, healthchecks.io timers (off until `proxmox_backup_enabled`); runbook: [docs/backup-and-restore.md](docs/backup-and-restore.md) |
 
 ### Role Execution Order
 

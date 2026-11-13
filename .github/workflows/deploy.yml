@@ -78,7 +78,7 @@ jobs:
         uses: azure/setup-helm@v5.1.0
         with:
           # renovate: datasource=github-releases depName=helm/helm
-          version: 'v4.3.1'
+          version: 'v4.3.2'
 
       - name: Prepare private connection credentials
         env:

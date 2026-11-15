@@ -189,7 +189,7 @@ The `i915_sriov` role manages the full GPU driver lifecycle on the Proxmox host:
 
 - **Metadata and known-bad policy gate** — before anything destructive, `scripts/i915_compat.py` rejects reproduced runtime regressions and checks the exact release's declared kernel support; blocked, unknown or unsupported combinations abort with the host untouched. This does not test hardware
 - **DKMS driver** install/upgrade from GitHub releases
-- **Kernel pinning** — `i915_sriov_pinned_kernel` (e.g. `7.0.14-28-pve`) is the authoritative desired host kernel; the role builds and verifies the DKMS module for it *before* pinning it via `proxmox-boot-tool` and rebooting into it
+- **Kernel pinning** — `i915_sriov_pinned_kernel` (e.g. `7.0.14-29-pve`) is the authoritative desired host kernel; the role builds and verifies the DKMS module for it *before* pinning it via `proxmox-boot-tool` and rebooting into it
 - **Kernel parameters**: `intel_iommu=on i915.enable_guc=3 i915.max_vfs=7 module_blacklist=xe i915.xelp_enable_ccs=1`, appended to `/etc/kernel/cmdline` on a systemd-boot host (this one: UEFI, ZFS root) or written to `/etc/default/grub` otherwise
 - **sysfs configuration** to create 7 virtual functions on boot
 
@@ -201,7 +201,7 @@ states the two sides need not match:
 
 | Side | Kernel | Driver | Upstream range |
 |------|--------|--------|----------------|
-| **Host** (this repo) | 7.0.14-28-pve | `2026.11.05` | 6.18 – 7.3 |
+| **Host** (this repo) | 7.0.14-29-pve | `2026.11.05` | 6.18 – 7.3 |
 | **Guest** (packer repo) | 6.12 (Debian 13) | `2025.12.10.2` | 6.12 – 6.18 |
 
 Three axes are validated, all from upstream data for the exact tags — never
@@ -222,7 +222,7 @@ observed failures, not a host/guest compatibility allowlist.
 
 ```bash
 python3 scripts/i915_compat.py \
-  --host-version 2026.11.05 --host-kernel 7.0.14-28-pve \
+  --host-version 2026.11.05 --host-kernel 7.0.14-29-pve \
   --guest-version 2025.12.10.2 --guest-kernel 6.12
 # exit 0 = metadata/policy passed, hardware NOT TESTED
 # exit 1 = unsupported or blocked · 2 = metadata cannot be established
@@ -284,7 +284,7 @@ dkms status
 proxmox-boot-tool kernel list
 ```
 
-Expect the pinned kernel (`7.0.14-28-pve`), loaded module `2026.11.05-sriov`
+Expect the pinned kernel (`7.0.14-29-pve`), loaded module `2026.11.05-sriov`
 and `/sys/module/i915/parameters/xelp_enable_ccs` = `1` (the guests show `Y`). Rolling back to a
 6.17 kernel also means reinstalling `2026.09.14`: `2026.11.05` builds only
 for 6.18 – 7.3, so the old kernel boots the stock i915 with no VFs.
@@ -469,7 +469,7 @@ On a fresh cluster where no NFS backup exists yet, the restore step **gracefully
 | `i915-sriov.yml` | Proxmox host | Install/upgrade Intel SR-IOV GPU driver |
 | `ser2net.yml` | Proxmox host | Configure TCP bridge for USB Zigbee dongle (port 3333) |
 | `proxmox-backup.yml` | Proxmox host | Host-side backup: `usbbk` import, restic and health timers, vzdump storage `usbbk-vz` |
-| `proxmox-guest-startup.yml` | Proxmox host | Guest boot order: TrueNAS (VM 100) starts first and waits 180 s so `k3s-block` NFS is up before the workers (`group_vars/proxmox_hosts/guest_startup.yml`). Also reboots the host 10 s after a kernel oops or failed ZFS assertion instead of hanging |
+| `proxmox-guest-startup.yml` | Proxmox host | Guest boot order: TrueNAS (VM 100) starts first and waits 180 s so `k3s-block` NFS is up before the workers (`group_vars/proxmox_hosts/guest_startup.yml`). Also reboots the host 10 s after a kernel oops or failed ZFS assertion instead of hanging, keeps KSM off, and saves a kdump vmcore to `/var/crash` first |
 
 ---
 

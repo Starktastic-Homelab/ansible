@@ -18,6 +18,7 @@ on:
       - 'roles/proxmox_guest_startup/**'
       - 'proxmox-guest-startup.yml'
       - '.github/workflows/proxmox-guest-startup.yml'
+      - 'scripts/tests/test_proxmox_guest_startup.py'
       - 'roles/proxmox_backup/**'
       - 'proxmox-backup.yml'
       - '.github/workflows/proxmox-backup.yml'

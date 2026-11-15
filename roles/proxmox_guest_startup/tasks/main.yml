@@ -1,7 +1,7 @@
 ---
 # Apply proxmox_guest_startup ({vmid: "order=N,up=S"}) to existing guests, and make the host reboot on a
-# kernel crash, with current CPU microcode. Startup order and microcode take effect at the next host boot;
-# nothing is restarted.
+# kernel crash, with current CPU microcode, KSM off and kdump. Startup order, microcode and kdump take effect at
+# the next host boot; nothing is restarted.
 
 - name: Read guest configs
   ansible.builtin.command:
@@ -65,3 +65,87 @@
     name: intel-microcode
     state: present
     update_cache: true
+
+# KSM off (2026-11-15): two NFS-client oopses (10-23, 11-15) and a ZFS one (11-10) look like memory corruption, and
+# 7.0.14-29 fixes KSM data loss in merged pages. Turning it off rules KSM out for ~1 GiB of RAM. run=2 also unmerges
+# what ksmtuned merged; nothing else starts KSM, and run is 0 after a boot.
+- name: Stop and disable the KSM tuning daemon
+  ansible.builtin.systemd_service:
+    name: ksmtuned
+    state: stopped
+    enabled: false
+
+- name: Read the KSM state
+  ansible.builtin.slurp:
+    src: /sys/kernel/mm/ksm/run
+  register: proxmox_guest_startup_ksm_run
+
+- name: Stop KSM and unmerge shared pages
+  ansible.builtin.command:
+    argv: [sh, -c, "echo 2 > /sys/kernel/mm/ksm/run"]
+  changed_when: true
+  when: proxmox_guest_startup_ksm_run.content | b64decode | trim == '1'
+
+# kdump (2026-11-15): save a vmcore on the next oops, to tell a kernel bug from a CPU fault behind the NFS-client
+# crashes. The crash kernel boots from a small kdump initrd that has no driver for the root pool unless listed here:
+# rpool is a SATA mirror on the onboard AHCI controller, and both drivers are modules.
+- name: Put the root pool's disk drivers in every initramfs
+  ansible.builtin.lineinfile:
+    path: /etc/initramfs-tools/modules
+    line: "{{ item }}"
+  loop: [ahci, sd_mod]
+
+- name: Preseed kdump-tools
+  ansible.builtin.debconf:
+    name: "{{ item.name }}"
+    question: "{{ item.question }}"
+    vtype: boolean
+    value: "{{ item.value }}"
+  loop:
+    - { name: kdump-tools, question: kdump-tools/use_kdump, value: "true" }
+    # Normal reboots stay cold; kdump loads its kernel into the separate crash slot.
+    - { name: kexec-tools, question: kexec-tools/use_grub_config, value: "false" }
+
+# kdump-tools.service fails until the host boots with crashkernel= below; that is expected.
+- name: Install kdump
+  ansible.builtin.apt:
+    name: [kdump-tools, kexec-tools, makedumpfile]
+    state: present
+
+# The crash kernel gets the host's command line plus KDUMP_CMDLINE_APPEND (Debian's default first). It loads no GPU
+# driver and leaves TrueNAS's HBA and NVMe drives alone (they bind to vfio-pci only when VM 100 starts), and reboots
+# if it oopses or can't import rpool. After saving the dump, kdump-tools reboots the host.
+- name: Configure kdump
+  ansible.builtin.lineinfile:
+    path: /etc/default/kdump-tools
+    regexp: "^#?\\s*{{ item.key }}="
+    line: '{{ item.key }}="{{ item.value }}"'
+  loop:
+    - key: MAKEDUMP_ARGS
+      value: "-z -d 31"
+    - key: KDUMP_NUM_DUMPS
+      value: "2"
+    - key: KDUMP_CMDLINE_APPEND
+      value: >-
+        reset_devices systemd.unit=kdump-tools-dump.service nr_cpus=1 irqpoll usbcore.nousb
+        module_blacklist=xe,i915,mpt3sas,nvme panic=10 oops=panic
+  notify: Reload kdump
+
+- name: Read the kernel command line
+  ansible.builtin.slurp:
+    src: /etc/kernel/cmdline
+  register: proxmox_guest_startup_cmdline
+
+# shortcut: systemd-boot hosts only (proxmox-boot-tool UEFI, like pve); a GRUB host needs /etc/default/grub instead.
+# crash_kexec_post_notifiers writes the pstore record before kdump takes over; the backup crash guard relies on it.
+- name: Reserve memory for the crash kernel
+  ansible.builtin.copy:
+    dest: /etc/kernel/cmdline
+    content: "{{ (current + missing) | join(' ') }}\n"
+    mode: "0644"
+    backup: true
+  vars:
+    current: "{{ (proxmox_guest_startup_cmdline.content | b64decode).split() }}"
+    missing: "{{ ['crashkernel=1G', 'crash_kexec_post_notifiers'] | reject('in', current) | list }}"
+  when: missing | length > 0
+  notify: Refresh boot tool

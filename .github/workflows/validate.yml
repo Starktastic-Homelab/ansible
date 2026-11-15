@@ -63,6 +63,9 @@ jobs:
       - name: Test host-side backup checks
         run: python3 scripts/tests/test_proxmox_backup.py
 
+      - name: Test host crash settings
+        run: python3 scripts/tests/test_proxmox_guest_startup.py
+
       - name: Run ansible-lint
         run: |
           set +e

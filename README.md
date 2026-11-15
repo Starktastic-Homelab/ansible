@@ -469,7 +469,7 @@ On a fresh cluster where no NFS backup exists yet, the restore step **gracefully
 | `i915-sriov.yml` | Proxmox host | Install/upgrade Intel SR-IOV GPU driver |
 | `ser2net.yml` | Proxmox host | Configure TCP bridge for USB Zigbee dongle (port 3333) |
 | `proxmox-backup.yml` | Proxmox host | Host-side backup: `usbbk` import, restic and health timers, vzdump storage `usbbk-vz` |
-| `proxmox-guest-startup.yml` | Proxmox host | Guest boot order: TrueNAS (VM 100) starts first and waits 180 s so `k3s-block` NFS is up before the workers (`group_vars/proxmox_hosts/guest_startup.yml`). Also reboots the host 10 s after a kernel oops or failed ZFS assertion instead of hanging |
+| `proxmox-guest-startup.yml` | Proxmox host | Guest boot order: TrueNAS (VM 100) starts first and waits 180 s so `k3s-block` NFS is up before the workers (`group_vars/proxmox_hosts/guest_startup.yml`). Also reboots the host 10 s after a kernel oops or failed ZFS assertion instead of hanging, keeps KSM off, and saves a kdump vmcore to `/var/crash` first |
 
 ---
 

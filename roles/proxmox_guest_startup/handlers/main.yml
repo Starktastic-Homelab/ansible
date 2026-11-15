@@ -1,0 +1,12 @@
+---
+# Takes effect at the next boot; nothing here reboots the host.
+- name: Refresh boot tool
+  ansible.builtin.command:
+    argv: [proxmox-boot-tool, refresh]
+  changed_when: true
+
+# Reloads only a crash kernel that is already loaded (no-op before the first crashkernel= boot).
+- name: Reload kdump
+  ansible.builtin.command:
+    argv: [kdump-config, try-reload]
+  changed_when: true

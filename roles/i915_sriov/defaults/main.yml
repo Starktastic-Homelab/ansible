@@ -15,7 +15,7 @@ i915_sriov_max_vfs: 7
 # release against it. The kernel must already be installed.
 # Leave empty to keep the currently pinned/running kernel (CI can then no
 # longer validate the host axis and will fail closed).
-i915_sriov_pinned_kernel: "7.0.14-28-pve"
+i915_sriov_pinned_kernel: "7.0.14-29-pve"
 
 # Required host kernel parameters, written to /etc/kernel/cmdline on a
 # systemd-boot host or /etc/default/grub otherwise. i915.xelp_enable_ccs=1

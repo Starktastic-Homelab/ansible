@@ -190,7 +190,8 @@
   vars:
     current: "{{ (proxmox_guest_startup_cmdline.content | b64decode).split() }}"
     kept: "{{ current | reject('match', 'crashkernel=') | list }}"
-    crashkernel: "{{ ['crashkernel=' ~ proxmox_guest_startup_crashkernel] if proxmox_guest_startup_kdump_enabled | bool else [] }}"
+    crashkernel:
+      "{{ ['crashkernel=' ~ proxmox_guest_startup_crashkernel] if proxmox_guest_startup_kdump_enabled | bool else [] }}"
     missing: "{{ ['crash_kexec_post_notifiers'] | reject('in', kept) | list }}"
     wanted: "{{ kept + missing + crashkernel }}"
   when: wanted != current

@@ -1,7 +1,7 @@
 ---
 # Apply proxmox_guest_startup ({vmid: "order=N,up=S"}) to existing guests, and make the host reboot on a
-# kernel crash, with current CPU microcode, KSM off and kdump (off by default). Startup order, microcode and kdump
-# take effect at the next host boot; nothing is restarted.
+# kernel crash, with current CPU microcode, KSM off, KFENCE, rasdaemon and kdump (off by default). Startup order,
+# microcode, kdump and the debug command line take effect at the next host boot; nothing is restarted.
 
 - name: Read guest configs
   ansible.builtin.command:
@@ -85,6 +85,51 @@
     argv: [sh, -c, "echo 2 > /sys/kernel/mm/ksm/run"]
   changed_when: true
   when: proxmox_guest_startup_ksm_run.content | b64decode | trim == '1'
+
+# KFENCE can be switched on at runtime. The late enable needs a 2 MiB contiguous pool and fails with ENOMEM on a
+# fragmented host; that is harmless, the command-line token turns it on at the next boot. The kernel stores the
+# sysfs value before it tries the enable, so the value reads back even when the enable failed: only the boot's
+# "kfence: initialized" log line proves KFENCE is on. bash, not sh: dash prints "I/O error" for every errno.
+- name: Read the KFENCE sample interval
+  ansible.builtin.slurp:
+    src: /sys/module/kfence/parameters/sample_interval
+  register: proxmox_guest_startup_kfence
+
+# shortcut: a later "kfence: disabled" in the same boot is not noticed; only matters if someone writes 0 by hand.
+- name: Check that KFENCE is on in the running kernel
+  ansible.builtin.command:
+    argv: [journalctl, -k, -b, -q, --grep, "kfence: initialized"]
+  register: proxmox_guest_startup_kfence_on
+  changed_when: false
+  failed_when: proxmox_guest_startup_kfence_on.rc not in [0, 1]
+
+- name: Apply the KFENCE sample interval to the running kernel
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -c
+      - echo {{ proxmox_guest_startup_kfence_sample_interval | int }} > /sys/module/kfence/parameters/sample_interval
+  register: proxmox_guest_startup_kfence_write
+  changed_when: true
+  failed_when:
+    - proxmox_guest_startup_kfence_write.rc != 0
+    - "'Cannot allocate memory' not in proxmox_guest_startup_kfence_write.stderr"
+  when: >-
+    proxmox_guest_startup_kfence.content | b64decode | trim != proxmox_guest_startup_kfence_sample_interval | string
+    or (proxmox_guest_startup_kfence_sample_interval | int > 0 and proxmox_guest_startup_kfence_on.rc != 0)
+
+# rasdaemon records machine-check events (CPU core, cache, uncore) to tell a hardware fault from a kernel bug: read
+# with ras-mc-ctl --summary / --errors. The board has no ECC, so no DIMM is decoded.
+- name: Install rasdaemon
+  ansible.builtin.apt:
+    name: rasdaemon
+    state: present
+
+- name: Enable and start rasdaemon
+  ansible.builtin.systemd_service:
+    name: rasdaemon
+    enabled: true
+    state: started
 
 # kdump (2026-11-15): save a vmcore on the next oops, to tell a kernel bug from a CPU fault behind the NFS-client
 # crashes. Off by default (defaults/main.yml): the first test OOM'd at 1G and hung in the crash kernel. The crash
@@ -180,7 +225,8 @@
 
 # shortcut: systemd-boot hosts only (proxmox-boot-tool UEFI, like pve); a GRUB host needs /etc/default/grub instead.
 # crash_kexec_post_notifiers writes the pstore record before kdump takes over; the backup crash guard relies on it.
-# Disabled drops crashkernel=, which frees the reservation at the next boot.
+# Disabled drops crashkernel=, which frees the reservation at the next boot. The debug tokens
+# (proxmox_guest_startup_debug_cmdline) are added once; kfence.* tokens not in the list are dropped.
 - name: Set the crash kernel memory reservation
   ansible.builtin.copy:
     dest: /etc/kernel/cmdline
@@ -189,10 +235,12 @@
     backup: true
   vars:
     current: "{{ (proxmox_guest_startup_cmdline.content | b64decode).split() }}"
-    kept: "{{ current | reject('match', 'crashkernel=') | list }}"
+    kept: >-
+      {{ current | reject('match', 'crashkernel=') | reject('match', 'kfence[.]')
+         | reject('in', proxmox_guest_startup_debug_cmdline) | list }}
     crashkernel:
       "{{ ['crashkernel=' ~ proxmox_guest_startup_crashkernel] if proxmox_guest_startup_kdump_enabled | bool else [] }}"
     missing: "{{ ['crash_kexec_post_notifiers'] | reject('in', kept) | list }}"
-    wanted: "{{ kept + missing + crashkernel }}"
+    wanted: "{{ kept + missing + proxmox_guest_startup_debug_cmdline + crashkernel }}"
   when: wanted != current
   notify: Refresh boot tool

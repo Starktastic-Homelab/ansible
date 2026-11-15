@@ -1,5 +1,5 @@
-"""Offline checks for the host crash settings: KSM off, and kdump (off by default) that keeps the pstore record,
-can mount rpool and reboots when the save fails."""
+"""Offline checks for the host crash settings: KSM off, KFENCE and rasdaemon, and kdump (off by default) that keeps
+the pstore record, can mount rpool and reboots when the save fails."""
 import base64
 from pathlib import Path
 import unittest
@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ROLE = ROOT / 'roles/proxmox_guest_startup'
 HOST_CMDLINE = ('root=ZFS=rpool/ROOT/pve-1 boot=zfs intel_iommu=on i915.enable_guc=3 i915.max_vfs=7 '
                 'module_blacklist=xe i915.xelp_enable_ccs=1')
+KFENCE = ' kfence.sample_interval=100'
 
 
 def tasks():
@@ -21,7 +22,7 @@ def task(name):
 
 
 def defaults():
-    return DataLoader().load_from_file(str(ROLE / 'defaults/main.yml'))
+    return DataLoader().load_from_file(str(ROLE / 'defaults/main.yml'), trusted_as_template=True)
 
 
 def render(template, cmdline, extra, **overrides):
@@ -111,13 +112,51 @@ class CrashSettings(unittest.TestCase):
 
     def test_disabled_cmdline_drops_crashkernel_and_keeps_the_pstore_record(self):
         live = HOST_CMDLINE + ' crashkernel=1G crash_kexec_post_notifiers'
-        self.assertEqual(self.cmdline(live), HOST_CMDLINE + ' crash_kexec_post_notifiers')
-        self.assertEqual(self.cmdline(HOST_CMDLINE), HOST_CMDLINE + ' crash_kexec_post_notifiers')
+        want = HOST_CMDLINE + ' crash_kexec_post_notifiers' + KFENCE
+        self.assertEqual(self.cmdline(live), want)
+        self.assertEqual(self.cmdline(HOST_CMDLINE), want)
+        self.assertEqual(self.cmdline(want), want)  # idempotent
+
+    def test_debug_tokens_are_added_once_and_can_be_dropped(self):
+        want = HOST_CMDLINE + ' crash_kexec_post_notifiers' + KFENCE
+        self.assertEqual(self.cmdline(HOST_CMDLINE + KFENCE + ' crash_kexec_post_notifiers'), want)
+        self.assertEqual(self.cmdline(HOST_CMDLINE + ' kfence.sample_interval=50 crash_kexec_post_notifiers'), want)
+        self.assertEqual(self.cmdline(HOST_CMDLINE + ' page_poison=1 crash_kexec_post_notifiers',
+                                      proxmox_guest_startup_debug_cmdline=['page_poison=1']),
+                         HOST_CMDLINE + ' crash_kexec_post_notifiers page_poison=1')
+        self.assertEqual(self.cmdline(want, proxmox_guest_startup_debug_cmdline=[]),
+                         HOST_CMDLINE + ' crash_kexec_post_notifiers')
+
+    def test_kfence_live_write_is_guarded_and_tolerates_enomem(self):
+        write = task('Apply the KFENCE sample interval to the running kernel')
+        argv = write['ansible.builtin.command']['argv']
+        self.assertEqual(render(argv[-1], '', {}), 'echo 100 > /sys/module/kfence/parameters/sample_interval')
+        def runs(value, on_rc, **overrides):
+            sysfs = {'content': base64.b64encode(value).decode()}
+            return render('{{ ' + write['when'] + ' }}', '', {}, proxmox_guest_startup_kfence=sysfs,
+                          proxmox_guest_startup_kfence_on={'rc': on_rc}, **overrides)
+        self.assertEqual(argv[:2], ['bash', '-c'])  # dash prints "I/O error" for every errno
+        self.assertTrue(runs(b'0\n', 1))
+        self.assertFalse(runs(b'100\n', 0))
+        self.assertTrue(runs(b'100\n', 1))  # value stored but the late enable failed: retry
+        self.assertTrue(runs(b'50\n', 0))
+        self.assertFalse(runs(b'0\n', 1, proxmox_guest_startup_kfence_sample_interval=0))
+        self.assertTrue(runs(b'100\n', 0, proxmox_guest_startup_kfence_sample_interval=0))
+        failed = '{{ (' + ') and ('.join(write['failed_when']) + ') }}'
+        result = {'rc': 1, 'stderr': 'bash: line 1: echo: write error: Cannot allocate memory'}
+        self.assertFalse(render(failed, '', {}, proxmox_guest_startup_kfence_write=result))
+        result = {'rc': 1, 'stderr': 'Permission denied'}
+        self.assertTrue(render(failed, '', {}, proxmox_guest_startup_kfence_write=result))
+
+    def test_rasdaemon_runs(self):
+        self.assertEqual(task('Install rasdaemon')['ansible.builtin.apt'], {'name': 'rasdaemon', 'state': 'present'})
+        self.assertEqual(task('Enable and start rasdaemon')['ansible.builtin.systemd_service'],
+                         {'name': 'rasdaemon', 'enabled': True, 'state': 'started'})
 
     def test_enabled_cmdline_sets_crashkernel_once_from_the_variable(self):
         on = {'proxmox_guest_startup_kdump_enabled': True}
         old = HOST_CMDLINE + ' crashkernel=1G crash_kexec_post_notifiers'
-        new = HOST_CMDLINE + ' crash_kexec_post_notifiers crashkernel=2G'
+        new = HOST_CMDLINE + ' crash_kexec_post_notifiers' + KFENCE + ' crashkernel=2G'
         self.assertEqual(self.cmdline(old, **on), new)
         self.assertEqual(self.cmdline(new, **on), new)  # idempotent: wanted == current
         self.assertEqual(self.cmdline(HOST_CMDLINE, **on), new)

@@ -5,3 +5,4 @@ target.json
 artifacts/i915/
 artifacts/deployment/
 .claude/settings.local.json
+.superpowers/

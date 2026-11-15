@@ -1,7 +1,7 @@
 ---
 # Apply proxmox_guest_startup ({vmid: "order=N,up=S"}) to existing guests, and make the host reboot on a
-# kernel crash, with current CPU microcode, KSM off and kdump. Startup order, microcode and kdump take effect at
-# the next host boot; nothing is restarted.
+# kernel crash, with current CPU microcode, KSM off and kdump (off by default). Startup order, microcode and kdump
+# take effect at the next host boot; nothing is restarted.
 
 - name: Read guest configs
   ansible.builtin.command:
@@ -87,8 +87,9 @@
   when: proxmox_guest_startup_ksm_run.content | b64decode | trim == '1'
 
 # kdump (2026-11-15): save a vmcore on the next oops, to tell a kernel bug from a CPU fault behind the NFS-client
-# crashes. The crash kernel boots from a small kdump initrd that has no driver for the root pool unless listed here:
-# rpool is a SATA mirror on the onboard AHCI controller, and both drivers are modules.
+# crashes. Off by default (defaults/main.yml): the first test OOM'd at 1G and hung in the crash kernel. The crash
+# kernel boots from a small kdump initrd that has no driver for the root pool unless listed here: rpool is a SATA
+# mirror on the onboard AHCI controller, and both drivers are modules.
 - name: Put the root pool's disk drivers in every initramfs
   ansible.builtin.lineinfile:
     path: /etc/initramfs-tools/modules
@@ -102,11 +103,14 @@
     vtype: boolean
     value: "{{ item.value }}"
   loop:
-    - { name: kdump-tools, question: kdump-tools/use_kdump, value: "true" }
+    # Package upgrades rewrite USE_KDUMP from this answer.
+    - name: kdump-tools
+      question: kdump-tools/use_kdump
+      value: "{{ proxmox_guest_startup_kdump_enabled | bool | string | lower }}"
     # Normal reboots stay cold; kdump loads its kernel into the separate crash slot.
     - { name: kexec-tools, question: kexec-tools/use_grub_config, value: "false" }
 
-# kdump-tools.service fails until the host boots with crashkernel= below; that is expected.
+# When enabled, kdump-tools.service fails until the host boots with crashkernel= below; that is expected.
 - name: Install kdump
   ansible.builtin.apt:
     name: [kdump-tools, kexec-tools, makedumpfile]
@@ -115,7 +119,7 @@
 # The crash kernel gets the host's command line plus KDUMP_CMDLINE_APPEND (Debian's default first). It loads no GPU
 # driver and leaves TrueNAS's HBA and NVMe drives alone (they bind to vfio-pci only when VM 100 starts). It reboots
 # if it oopses, can't import rpool or stalls (hung tasks are safe to panic on here: the crash boot mounts no NFS).
-# After saving the dump, kdump-tools reboots the host.
+# After saving the dump, kdump-tools reboots the host; a failed save reboots too (KDUMP_FAIL_CMD, FailureAction).
 - name: Configure kdump
   ansible.builtin.lineinfile:
     path: /etc/default/kdump-tools
@@ -124,6 +128,10 @@
     create: true # check mode skips the install, so the file may not exist yet
     mode: "0644"
   loop:
+    - key: USE_KDUMP
+      value: "{{ '1' if proxmox_guest_startup_kdump_enabled | bool else '0' }}"
+    - key: KDUMP_FAIL_CMD
+      value: "reboot -f"
     - key: MAKEDUMP_ARGS
       value: "-z -d 31"
     - key: KDUMP_NUM_DUMPS
@@ -142,19 +150,28 @@
     mode: "0755"
   loop: [kdump-tools, kdump-tools-dump]
 
-- name: Force a reboot if saving the dump stalls
+# The dump unit runs only in the crash boot, so its FailureAction never touches a normal boot.
+- name: Force a reboot if saving the dump stalls or fails
   ansible.builtin.copy:
     dest: "/etc/systemd/system/{{ item }}.service.d/timeout.conf"
     content: |
-      # Managed by ansible (proxmox_guest_startup). A stalled crash boot would otherwise keep pve down.
+      # Managed by ansible (proxmox_guest_startup). A stalled or failed crash boot would otherwise keep pve down.
       [Unit]
       JobTimeoutSec=30min
       JobTimeoutAction=reboot-force
+      {{ 'FailureAction=reboot-force' if item == 'kdump-tools-dump' else '' }}
       [Service]
       TimeoutStartSec=30min
     mode: "0644"
   loop: [kdump-tools, kdump-tools-dump]
   notify: Reload systemd
+
+# Enabled: left to start at the next boot, since it fails before crashkernel= is live.
+- name: Enable or stop kdump
+  ansible.builtin.systemd_service:
+    name: kdump-tools
+    enabled: "{{ proxmox_guest_startup_kdump_enabled | bool }}"
+    state: "{{ omit if proxmox_guest_startup_kdump_enabled | bool else 'stopped' }}"
 
 - name: Read the kernel command line
   ansible.builtin.slurp:
@@ -163,14 +180,19 @@
 
 # shortcut: systemd-boot hosts only (proxmox-boot-tool UEFI, like pve); a GRUB host needs /etc/default/grub instead.
 # crash_kexec_post_notifiers writes the pstore record before kdump takes over; the backup crash guard relies on it.
-- name: Reserve memory for the crash kernel
+# Disabled drops crashkernel=, which frees the reservation at the next boot.
+- name: Set the crash kernel memory reservation
   ansible.builtin.copy:
     dest: /etc/kernel/cmdline
-    content: "{{ (current + missing) | join(' ') }}\n"
+    content: "{{ wanted | join(' ') }}\n"
     mode: "0644"
     backup: true
   vars:
     current: "{{ (proxmox_guest_startup_cmdline.content | b64decode).split() }}"
-    missing: "{{ ['crashkernel=1G', 'crash_kexec_post_notifiers'] | reject('in', current) | list }}"
-  when: missing | length > 0
+    kept: "{{ current | reject('match', 'crashkernel=') | list }}"
+    crashkernel:
+      "{{ ['crashkernel=' ~ proxmox_guest_startup_crashkernel] if proxmox_guest_startup_kdump_enabled | bool else [] }}"
+    missing: "{{ ['crash_kexec_post_notifiers'] | reject('in', kept) | list }}"
+    wanted: "{{ kept + missing + crashkernel }}"
+  when: wanted != current
   notify: Refresh boot tool

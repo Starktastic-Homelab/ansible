@@ -1,4 +1,5 @@
-"""Offline checks for the host crash settings: KSM off, and kdump that keeps the pstore record and can mount rpool."""
+"""Offline checks for the host crash settings: KSM off, and kdump (off by default) that keeps the pstore record,
+can mount rpool and reboots when the save fails."""
 import base64
 from pathlib import Path
 import unittest
@@ -19,8 +20,13 @@ def task(name):
     return next(t for t in tasks() if t['name'] == name)
 
 
-def render(template, cmdline, extra):
-    variables = {'proxmox_guest_startup_cmdline': {'content': base64.b64encode(cmdline.encode()).decode()}}
+def defaults():
+    return DataLoader().load_from_file(str(ROLE / 'defaults/main.yml'))
+
+
+def render(template, cmdline, extra, **overrides):
+    variables = {**defaults(), **overrides,
+                 'proxmox_guest_startup_cmdline': {'content': base64.b64encode(cmdline.encode()).decode()}}
     templar = Templar(loader=DataLoader(), variables=variables)
     for key, value in extra.items():  # task vars reference each other, so resolve them in order
         variables[key] = templar.template(trust_as_template(value))
@@ -56,9 +62,37 @@ class CrashSettings(unittest.TestCase):
         self.assertIn('softlockup_panic=1', append)
         self.assertTrue(task('Configure kdump')['ansible.builtin.lineinfile']['create'])
 
+    def test_kdump_is_off_by_default(self):
+        self.assertIs(defaults()['proxmox_guest_startup_kdump_enabled'], False)
+        service = task('Enable or stop kdump')['ansible.builtin.systemd_service']
+        self.assertEqual(render(service['enabled'], '', {}), False)
+        self.assertEqual(render(service['state'], '', {}), 'stopped')
+        config = {i['key']: i['value'] for i in task('Configure kdump')['loop']}
+        self.assertEqual(render(config['USE_KDUMP'], '', {}), '0')
+        preseed = {i['question']: i['value'] for i in task('Preseed kdump-tools')['loop']}
+        self.assertEqual(render(preseed['kdump-tools/use_kdump'], '', {}), 'false')
+        handlers = DataLoader().load_from_file(str(ROLE / 'handlers/main.yml'), trusted_as_template=True)
+        reload = next(h for h in handlers if h['name'] == 'Reload kdump')
+        self.assertEqual(render('{{ ' + reload['when'] + ' }}', '', {}), False)
+
+    def test_enabled_kdump_is_armed_and_reboots_on_a_failed_save(self):
+        on = {'proxmox_guest_startup_kdump_enabled': True}
+        service = task('Enable or stop kdump')['ansible.builtin.systemd_service']
+        self.assertEqual(render(service['enabled'], '', {}, **on), True)
+        config = {i['key']: i['value'] for i in task('Configure kdump')['loop']}
+        self.assertEqual(render(config['USE_KDUMP'], '', {}, **on), '1')
+        self.assertEqual(config['KDUMP_FAIL_CMD'], 'reboot -f')
+        preseed = {i['question']: i['value'] for i in task('Preseed kdump-tools')['loop']}
+        self.assertEqual(render(preseed['kdump-tools/use_kdump'], '', {}, **on), 'true')
+        drop_in = task('Force a reboot if saving the dump stalls or fails')['ansible.builtin.copy']['content']
+        unit = render(drop_in, '', {'item': 'kdump-tools-dump'})
+        self.assertIn('FailureAction=reboot-force\n', unit.split('[Service]')[0])
+        # kdump-tools.service runs every normal boot; a failure there must not reboot the host.
+        self.assertNotIn('FailureAction', render(drop_in, '', {'item': 'kdump-tools'}))
+
     def test_a_stalled_dump_forces_a_reboot(self):
         names = [t['name'] for t in tasks()]
-        drop_in = task('Force a reboot if saving the dump stalls')
+        drop_in = task('Force a reboot if saving the dump stalls or fails')
         directories = task('Create the kdump unit drop-in directories')
         self.assertEqual(drop_in['loop'], ['kdump-tools', 'kdump-tools-dump'])
         self.assertEqual(directories['loop'], drop_in['loop'])
@@ -68,14 +102,27 @@ class CrashSettings(unittest.TestCase):
             self.assertIn(line + '\n', content)
         self.assertEqual(drop_in['notify'], 'Reload systemd')
 
-    def test_cmdline_gains_crashkernel_and_keeps_the_pstore_record(self):
-        copy = task('Reserve memory for the crash kernel')
+    def cmdline(self, cmdline, **overrides):
+        copy = task('Set the crash kernel memory reservation')
         content, extra = copy['ansible.builtin.copy']['content'], copy['vars']
-        self.assertEqual(render(content, HOST_CMDLINE + '\n', extra),
-                         HOST_CMDLINE + ' crashkernel=1G crash_kexec_post_notifiers\n')
-        done = HOST_CMDLINE + ' crashkernel=1G crash_kexec_post_notifiers\n'
-        self.assertEqual(render(extra['missing'], done, {'current': extra['current']}), [])
         self.assertEqual(copy['notify'], 'Refresh boot tool')
+        self.assertEqual(copy['when'], 'wanted != current')
+        return render(content, cmdline + '\n', extra, **overrides).rstrip('\n')
+
+    def test_disabled_cmdline_drops_crashkernel_and_keeps_the_pstore_record(self):
+        live = HOST_CMDLINE + ' crashkernel=1G crash_kexec_post_notifiers'
+        self.assertEqual(self.cmdline(live), HOST_CMDLINE + ' crash_kexec_post_notifiers')
+        self.assertEqual(self.cmdline(HOST_CMDLINE), HOST_CMDLINE + ' crash_kexec_post_notifiers')
+
+    def test_enabled_cmdline_sets_crashkernel_once_from_the_variable(self):
+        on = {'proxmox_guest_startup_kdump_enabled': True}
+        old = HOST_CMDLINE + ' crashkernel=1G crash_kexec_post_notifiers'
+        new = HOST_CMDLINE + ' crash_kexec_post_notifiers crashkernel=2G'
+        self.assertEqual(self.cmdline(old, **on), new)
+        self.assertEqual(self.cmdline(new, **on), new)  # idempotent: wanted == current
+        self.assertEqual(self.cmdline(HOST_CMDLINE, **on), new)
+        self.assertEqual(self.cmdline(old, proxmox_guest_startup_crashkernel='3G', **on),
+                         new.replace('2G', '3G'))
 
     def test_nothing_reboots_the_host(self):
         handlers = DataLoader().load_from_file(str(ROLE / 'handlers/main.yml'), trusted_as_template=True)

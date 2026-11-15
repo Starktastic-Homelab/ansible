@@ -270,14 +270,12 @@ class RoleTests(unittest.TestCase):
 
     def test_worker_iqn_matches_k3s_common(self):
         self.assertEqual(lio.worker_iqn('k3s-worker-01'), 'iqn.2026-11.net.starktastic:k3s-worker-01')
-        k3s_common = ROOT / 'roles/k3s_common'
-        hits = [line for f in sorted(k3s_common.rglob('*')) if f.is_file()
-                for line in f.read_text().splitlines() if 'InitiatorName=' in line]
-        if not hits:
-            self.skipTest('k3s_common does not write the initiator name yet (Task A10)')
-        value = hits[0].split('InitiatorName=', 1)[1].strip().strip('"\'')
-        got = Templar(variables={'inventory_hostname': 'k3s-worker-01'}).template(trust_as_template(value))
-        self.assertEqual(got, lio.worker_iqn('k3s-worker-01'))
+        tasks = [t for t in load(ROOT / 'roles/k3s_common/tasks/main.yml')
+                 if t.get('ansible.builtin.copy', {}).get('dest') == '/etc/iscsi/initiatorname.iscsi']
+        self.assertEqual(len(tasks), 1)
+        got = Templar(variables={'inventory_hostname': 'k3s-worker-01'}).template(
+            tasks[0]['ansible.builtin.copy']['content'])
+        self.assertEqual(got, 'InitiatorName=' + lio.worker_iqn('k3s-worker-01') + '\n')
 
 
 class StoragePlaybookTests(unittest.TestCase):

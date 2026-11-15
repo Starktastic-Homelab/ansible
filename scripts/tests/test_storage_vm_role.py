@@ -378,6 +378,23 @@ class StoragePlaybookTests(unittest.TestCase):
         self.assertFalse(ready({'resources': [{'data': {'ca.crt': 'Yw=='}}]}))
         self.assertFalse(ready({'resources': [{}]}))
 
+    def test_refused_apply_still_grows_and_cleans_up(self):
+        tasks = plays('storage.yml')[4]['tasks']
+        apply = by_name(tasks, 'Reconcile volumes and targets')
+        self.assertIs(apply['failed_when'], False)
+        expr = module(by_name(tasks, 'Record the exported volumes for the growth play'), 'set_fact')['storage_vm_exported']
+        report = json.dumps({'actions': [], 'exported': [{'id': 'a', 'size_bytes': 1}]})
+        self.assertEqual(list(Templar(variables={'storage_vm_apply': {'rc': 1, 'stdout': report}}).template(expr)),
+                         [{'id': 'a', 'size_bytes': 1}])
+        self.assertEqual(list(Templar(variables={'storage_vm_apply': {'rc': 1, 'stdout': ''}}).template(expr)), [])
+        cleanup = plays('storage.yml')[-1]['tasks']
+        self.assertIn('ansible.builtin.file', cleanup[0])
+        fail = cleanup[-1]
+        self.assertIn('ansible.builtin.fail', fail)
+        for rc, failed in ((0, False), (1, True)):
+            self.assertIs(holds([fail['when']], **fail['vars'], groups={'storage': ['s']},
+                                hostvars={'s': {'storage_vm_apply': {'rc': rc, 'stderr': ''}}}), failed)
+
     def test_growth_play_is_level_triggered(self):
         play = plays('storage.yml')[5]
         self.assertIn('grow.yml', str(play))
@@ -428,17 +445,20 @@ class ExpiryPlaybookTests(unittest.TestCase):
     def test_expiry_verifies_lock_before_delete(self):
         ps = plays('storage-expiry.yml')
         self.assertEqual([p['name'] for p in ps], ['Lab guard', 'Verify maintenance ownership',
+                                                    'Fetch and validate the inventory at the branch tip',
                                                     'Write a private kubeconfig', 'List expiry candidates',
                                                     'Expire removed volumes', 'Remove the temporary files'])
         for p in ps:
             self.assertIs(p.get('any_errors_fatal'), True, p['name'])
         self.assertEqual(lock_play_index(ps), 1)
-        self.assertIn('expire.yml', str(ps[4]))
-        cand = argv(by_name(ps[3]['tasks'], 'List pending-delete volumes past quarantine'))
+        self.assertEqual((ps[2]['hosts'], ps[2]['tasks'][0]['ansible.builtin.import_role']['tasks_from']),
+                         ('localhost', 'fetch-inventory.yml'))
+        self.assertIn('expire.yml', str(ps[5]))
+        cand = argv(by_name(ps[4]['tasks'], 'List pending-delete volumes past quarantine'))
         self.assertEqual(cand[:2], ['/usr/local/sbin/storage-reconcile', 'expire-candidates'])
 
     def test_expiry_refuses_before_delete(self):
-        tasks = role_tasks('expire-volume')
+        tasks = role_tasks('expire-volume')[0]['block']
         names = [t['name'] for t in tasks]
         refusal = names.index('Refuse while a VolumeAttachment, a session or a Pod uses the volume')
         deletes = [i for i, t in enumerate(tasks) if t.get('kubernetes.core.k8s', {}).get('state') == 'absent']
@@ -479,6 +499,39 @@ class ExpiryPlaybookTests(unittest.TestCase):
         other = {'spec': {'volumes': [{'name': 'c', 'configMap': {}}]}}
         self.assertFalse(ok(pods=[other, user]))
         self.assertTrue(ok(pods=[other, {'spec': {}}]))
+
+
+    def test_expiry_skips_volumes_in_the_inventory(self):
+        # A volume re-added to the inventory keeps its pending-delete tag until a green reconcile: never expire it.
+        tasks = role_tasks('expire')
+        ids = module(by_name(tasks, 'Read the volume ids in the inventory'), 'set_fact')['storage_vm_inventory_ids']
+        self.assertIn('storage_vm_inventory_file', ids)
+        inv = [{'id': 'back'}, {'id': 'kept'}]
+        got = Templar(variables={}).template(trust_as_template(
+            ids.replace("lookup('ansible.builtin.file', storage_vm_inventory_file)", repr(json.dumps(inv)))))
+        self.assertEqual(list(got), ['back', 'kept'])
+        cands = [{'id': 'back'}, {'id': 'gone'}]
+        variables = {'groups': {'storage': ['s'], 'masters': ['m']}, 'storage_vm_inventory_ids': ['back', 'kept'],
+                     'hostvars': {'s': {'storage_vm_expiry_candidates': cands}}}
+        each = by_name(tasks, 'Expire each candidate')
+        self.assertEqual([c['id'] for c in Templar(variables=variables).template(each['loop'])], ['gone'])
+        warn = by_name(tasks, 'Warn about pending-delete volumes that are back in the inventory')
+        self.assertEqual([c['id'] for c in Templar(variables={**variables, **warn['vars']}).template(warn['loop'])],
+                         ['back'])
+
+    def test_expiry_refusal_skips_only_that_volume_then_cleans_up(self):
+        block = role_tasks('expire-volume')
+        self.assertEqual(len(block), 1)
+        record = module(block[0]['rescue'][0], 'set_fact')['storage_vm_expiry_refused']
+        self.assertEqual(Templar(variables={'storage_vm_candidate': {'id': 'b'}, 'storage_vm_expiry_refused': ['a']})
+                         .template(record), ['a', 'b'])
+        cleanup = plays('storage-expiry.yml')[-1]['tasks']
+        self.assertEqual(cleanup[0]['loop'], ["{{ hostvars[groups['masters'][0]].storage_vm_kubeconfig_path }}",
+                                              '{{ storage_vm_checkout.path }}'])
+        fail = cleanup[-1]
+        self.assertIn('ansible.builtin.fail', fail)
+        self.assertTrue(holds([fail['when']], storage_vm_expiry_refused=['a']))
+        self.assertFalse(holds([fail['when']]))
 
 
 class WorkflowTests(unittest.TestCase):

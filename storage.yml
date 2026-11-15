@@ -111,10 +111,13 @@
                --config, /etc/homelab-storage/config.json]
       register: storage_vm_apply
       changed_when: storage_vm_apply.rc == 0 and (storage_vm_apply.stdout | from_json).actions | length > 0
+      # A per-entry refusal exits 1 but still exports every live target: grow them and clean up, then fail last.
+      failed_when: false
 
     - name: Record the exported volumes for the growth play
       ansible.builtin.set_fact:
-        storage_vm_exported: "{{ (storage_vm_apply.stdout | from_json).exported }}"
+        storage_vm_exported: >-
+          {{ (storage_vm_apply.stdout | from_json).exported if storage_vm_apply.stdout | trim | length > 0 else [] }}
         storage_vm_portal: "{{ storage_vm_bridge_address }}:3260"
 
 # The lab k3s server is also a worker (ADR 0017 lab), so this covers every k3s node; a node with no attachment
@@ -143,3 +146,12 @@
       loop:
         - "{{ hostvars[groups['masters'][0]].storage_vm_kubeconfig_path }}"
         - "{{ storage_vm_checkout.path }}"
+
+    - name: Fail if the reconcile refused an entry or failed
+      ansible.builtin.fail:
+        msg: >-
+          storage-reconcile apply exited {{ storage_vm_reconcile_result.rc }}:
+          {{ storage_vm_reconcile_result.stderr | default('') }}
+      vars:
+        storage_vm_reconcile_result: "{{ hostvars[groups['storage'][0]].storage_vm_apply }}"
+      when: storage_vm_reconcile_result.rc != 0

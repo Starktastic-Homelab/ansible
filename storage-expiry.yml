@@ -22,6 +22,18 @@
         name: storage_vm
         tasks_from: lock-verify.yml
 
+# A volume back in the inventory on main is never expired, even while a red reconcile leaves its pending-delete tag.
+- name: Fetch and validate the inventory at the branch tip
+  hosts: localhost
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: Resolve, fetch and validate the inventory
+      ansible.builtin.import_role:
+        name: storage_vm
+        tasks_from: fetch-inventory.yml
+
 - name: Write a private kubeconfig
   hosts: masters[0]
   gather_facts: false
@@ -65,7 +77,15 @@
   become: false
   any_errors_fatal: true
   tasks:
-    - name: Remove the kubeconfig
+    - name: Remove the kubeconfig and the inventory checkout
       ansible.builtin.file:
-        path: "{{ hostvars[groups['masters'][0]].storage_vm_kubeconfig_path }}"
+        path: "{{ item }}"
         state: absent
+      loop:
+        - "{{ hostvars[groups['masters'][0]].storage_vm_kubeconfig_path }}"
+        - "{{ storage_vm_checkout.path }}"
+
+    - name: Fail if a volume was refused or failed
+      ansible.builtin.fail:
+        msg: "Not expired, see the errors above: {{ storage_vm_expiry_refused | join(', ') }}"
+      when: storage_vm_expiry_refused | default([]) | length > 0

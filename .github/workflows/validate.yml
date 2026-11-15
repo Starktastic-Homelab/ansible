@@ -72,6 +72,12 @@ jobs:
       - name: Test additive storage bridge role
         run: python3 scripts/tests/test_proxmox_storage_bridge.py
 
+      - name: Test storage inventory parser
+        run: python3 scripts/tests/test_storage_inventory.py
+
+      - name: Test storage ledger tags
+        run: python3 scripts/tests/test_storage_ledger.py
+
       - name: Run ansible-lint
         run: |
           set +e

@@ -1,6 +1,7 @@
 ---
 # Apply proxmox_guest_startup ({vmid: "order=N,up=S"}) to existing guests, and make the host reboot on a
-# kernel crash. Startup order takes effect at the next host boot; nothing is restarted.
+# kernel crash, with current CPU microcode. Startup order and microcode take effect at the next host boot;
+# nothing is restarted.
 
 - name: Read guest configs
   ansible.builtin.command:
@@ -55,3 +56,12 @@
     argv: [systemd-tmpfiles, --create, /etc/tmpfiles.d/spl-panic-halt.conf]
   when: proxmox_guest_startup_spl_panic_halt.content | b64decode | trim != '1'
   changed_when: true
+
+# The BIOS loads microcode 0x36 on the i7-12700K; Debian's package loads a newer revision early in each boot (0x3d
+# from 2026-11-10, installed by hand while ruling out memory corruption behind the ZFS oops). Host only: guests run
+# on whatever the host loaded, so cluster rebuilds don't touch it. Needs non-free-firmware, which the host has.
+- name: Install Intel CPU microcode
+  ansible.builtin.apt:
+    name: intel-microcode
+    state: present
+    update_cache: true

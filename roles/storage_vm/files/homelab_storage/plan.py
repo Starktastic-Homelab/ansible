@@ -45,11 +45,13 @@ def _pending(lv):
     return any(t.startswith(PENDING_PREFIX) for t in lv.tags)
 
 
-def _entry(v, vg, other):
+def _entry(v, vg, other, other_name):
     """Return (actions, refusal_reason|None, fail) for one inventory entry."""
     led, lv = vg.ledger, vg.lvs.get(v.id)
     if other.ledger.state(v.id) or other.ledger.tombstoned(v.id) or v.id in other.lvs:
-        return [], 'other-vg', False
+        # A live target in the other VG stays exported; only mutations are refused.
+        live = other.ledger.state(v.id) == 'created' and v.id in other.lvs
+        return [Action('export', v.id, other_name)] if live else [], 'other-vg', False
     if led.tombstoned(v.id):
         return [], 'tombstoned', False
     state = led.state(v.id)
@@ -62,7 +64,7 @@ def _entry(v, vg, other):
     if lv is None:
         return [], 'lv-missing', True
     if v.size_bytes < lv.size_bytes:
-        return [], 'shrink', False
+        return [Action('export', v.id, vg_for(v.cls))], 'shrink', False
     name = vg_for(v.cls)
     acts = [Action('export', v.id, name)]
     if _pending(lv):
@@ -82,10 +84,12 @@ def decide(volumes, vgs, cluster, removed_ok=2):
     ids = {v.id for v in volumes}
     for v in volumes:
         name = vg_for(v.cls)
-        acts, reason, fail = _entry(v, vgs[name], vgs["regen" if name == "retained" else "retained"])
+        oname = "regen" if name == "retained" else "retained"
+        acts, reason, fail = _entry(v, vgs[name], vgs[oname], oname)
         d.fail |= fail
         if reason:
             d.refusals.append(Refusal(v.id, reason))
+            d.actions += acts
             continue
         if hold:
             kept = [a for a in acts if a.kind == 'export']
@@ -96,6 +100,9 @@ def decide(volumes, vgs, cluster, removed_ok=2):
     # Removed entries: the target stays exported; the LV gets a pending-delete tag.
     removed = []
     for name, vg in vgs.items():
+        for lid in sorted(vg.ledger.created_ids() - ids - vg.lvs.keys()):
+            d.refusals.append(Refusal(lid, 'lv-missing'))
+            d.fail = True
         for lid, lv in vg.lvs.items():
             if lid in ids:
                 continue
@@ -110,7 +117,7 @@ def decide(volumes, vgs, cluster, removed_ok=2):
         d.fail = True
         return d
     if len(removed) > removed_ok:
-        d.actions = []
+        d.actions = [a for a in d.actions if a.kind == 'export']  # refuse mutations, keep live targets exported
         d.refusals += [Refusal(v.id, 'removal-brake') for v in volumes if all(r.id != v.id for r in d.refusals)]
         d.refusals += [Refusal(a.id, 'removal-brake') for a in removed]
         d.fail = True

@@ -45,7 +45,7 @@ class PlanTest(unittest.TestCase):
     def test_shrink_refused(self):
         d = run([vol(size=GI)], vg([ledger.tag_created('a')], {'a': 2 * GI}))
         self.assertEqual(refused(d), {('a', 'shrink')})
-        self.assertEqual(d.actions, [])
+        self.assertEqual(kinds(d), [('export', 'a')])
 
     def test_new_origin_new(self):
         self.assertEqual(kinds(run([vol()])), [('create_new', 'a')])
@@ -108,16 +108,22 @@ class PlanTest(unittest.TestCase):
     def test_more_than_two_removals_refused(self):
         ids = ['a', 'b', 'c']
         d = run([vol('k')], vg([ledger.tag_created(i) for i in ids + ['k']], {i: GI for i in ids + ['k']}))
-        self.assertEqual(d.actions, [])
+        self.assertEqual({a.kind for a in d.actions}, {'export'})
+        self.assertEqual({a.id for a in d.actions}, {'a', 'b', 'c', 'k'})
         self.assertTrue(d.fail)
         self.assertEqual({r.id for r in d.refusals}, {'a', 'b', 'c', 'k'})
         d = run([], vg([ledger.tag_created(i) for i in ids], {i: GI for i in ids}), removed_ok=3)
         self.assertFalse(d.fail)
 
+    def test_removed_ledgered_lv_missing_fails(self):
+        d = run([], vg([ledger.tag_created('a')], {}))
+        self.assertEqual(refused(d), {('a', 'lv-missing')})
+        self.assertTrue(d.fail)
+
     def test_id_in_other_vg_refused(self):
         d = run([vol()], regen=vg([ledger.tag_created('a')], {'a': GI}))
         self.assertEqual(refused(d), {('a', 'other-vg')})
-        self.assertEqual(d.actions, [])
+        self.assertEqual([(a.kind, a.id, a.vg) for a in d.actions], [('export', 'a', 'regen')])
 
     def test_namespace_change_is_render_only(self):
         r = vg([ledger.tag_created('a')], {'a': GI})

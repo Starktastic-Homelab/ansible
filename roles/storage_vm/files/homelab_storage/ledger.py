@@ -51,6 +51,9 @@ class Ledger:
     def state(self, id):
         return self._states.get(id)
 
+    def created_ids(self):
+        return {i for i, s in self._states.items() if s == 'created'}
+
     def tombstoned(self, id):
         return id in self._tombstones
 

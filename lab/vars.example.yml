@@ -1,0 +1,21 @@
+---
+# Example only: the real file is <lab>/vars.yml. Extra vars beat group_vars/all; inventory group vars would not.
+# The lab guard refuses 10.9.9.99, and any vip_address that is not a lab master's ansible_host.
+vip_address: 192.0.2.41
+
+# The lab k3s server acts as a worker too, so both nodes get ACLs, rules and the fencer.
+storage_vm_workers:
+  - { name: lab-server, bridge_address: 198.51.100.21 }
+  - { name: lab-agent, bridge_address: 198.51.100.22 }
+storage_vm_bridge_address: 198.51.100.10
+storage_vm_ssh_sources: [192.0.2.0/24]
+storage_vm_inventory_repo: https://github.com/Starktastic-Homelab/apps.git
+storage_vm_inventory_branch: feat/retained-storage-vm
+storage_vm_maintenance_root: /maintenance/lab-storage
+storage_vm_timings:
+  not_ready_seconds: 60
+  loop_seconds: 5
+  proof_timeout_seconds: 30
+  quarantine_seconds: 600
+  blind_after_seconds: 120
+  pause_after: []

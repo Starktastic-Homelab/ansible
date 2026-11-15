@@ -1,0 +1,42 @@
+---
+- name: List the iSCSI sessions
+  ansible.builtin.command:
+    argv: [iscsiadm, -m, session]
+  register: storage_vm_sessions
+  changed_when: false
+
+- name: Find the session of this target
+  ansible.builtin.set_fact:
+    storage_vm_session_lines: >-
+      {{ storage_vm_sessions.stdout_lines | select('search', ' ' ~ (storage_vm_iqn | regex_escape) ~ '( |$)') | list }}
+
+- name: Require one session of this target
+  ansible.builtin.assert:
+    that:
+      - storage_vm_session_lines | length == 1
+    fail_msg: "{{ storage_vm_volume.id }} is attached here but has {{ storage_vm_session_lines | length }} sessions."
+
+- name: Rescan the session
+  ansible.builtin.command:
+    argv: [iscsiadm, -m, session, -r, "{{ storage_vm_sid }}", -R]
+  changed_when: false
+
+- name: Read the device size
+  ansible.builtin.command:
+    argv: [blockdev, --getsize64, "{{ storage_vm_device }}"]
+  register: storage_vm_device_size
+  changed_when: false
+
+- name: Refuse a device smaller than the inventory size
+  ansible.builtin.assert:
+    that:
+      - storage_vm_device_size.stdout | int >= storage_vm_volume.size_bytes | int
+    fail_msg: >-
+      {{ storage_vm_device }} is {{ storage_vm_device_size.stdout }} bytes after a rescan, less than
+      {{ storage_vm_volume.size_bytes }}; not resizing.
+
+- name: Grow the filesystem online
+  ansible.builtin.command:
+    argv: [resize2fs, "{{ storage_vm_device }}"]
+  register: storage_vm_resize
+  changed_when: "'Nothing to do' not in (storage_vm_resize.stdout ~ storage_vm_resize.stderr)"

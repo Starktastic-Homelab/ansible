@@ -1,0 +1,24 @@
+---
+# Addresses go into the nftables ruleset, so anything but a plain IPv4 address or CIDR is refused.
+- name: Require the storage VM settings
+  ansible.builtin.assert:
+    that:
+      - storage_vm_ssh_sources is sequence and storage_vm_ssh_sources is not string
+      - storage_vm_ssh_sources | length > 0
+      - >-
+        storage_vm_ssh_sources | select('string') | select('match', '^[0-9]{1,3}([.][0-9]{1,3}){3}(/[0-9]{1,2})?$')
+        | list | length == storage_vm_ssh_sources | length
+      - storage_vm_bridge_address is string
+      - storage_vm_bridge_address is match('^[0-9]{1,3}([.][0-9]{1,3}){3}$')
+      - storage_vm_workers is sequence and storage_vm_workers is not string
+      - storage_vm_workers | length > 0
+      - >-
+        storage_vm_workers | selectattr('name', 'defined') | selectattr('bridge_address', 'defined')
+        | map(attribute='name') | select('match', '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$') | unique | list | length
+        == storage_vm_workers | length
+      - >-
+        storage_vm_workers | selectattr('bridge_address', 'defined') | map(attribute='bridge_address')
+        | select('match', '^[0-9]{1,3}([.][0-9]{1,3}){3}$') | list | length == storage_vm_workers | length
+    fail_msg: >-
+      storage_vm_ssh_sources must be a non-empty list of IPv4 addresses or CIDRs, storage_vm_bridge_address an IPv4
+      address, and storage_vm_workers a non-empty list of unique {name, bridge_address}.

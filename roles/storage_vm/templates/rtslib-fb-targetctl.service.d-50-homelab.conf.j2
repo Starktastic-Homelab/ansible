@@ -1,0 +1,9 @@
+# {{ ansible_managed }}
+# The image's 10-lvm.conf activates the VGs; this re-applies fences, strips fenced ACLs and checks LUN 0 per
+# ledgered LV. A failed start skips ExecStop (targetctl clear), so a failing check never clears targets.
+[Unit]
+After=nftables.service
+
+[Service]
+ExecStartPost=/usr/local/sbin/storage-fencer restore-set
+ExecStartPost=/usr/local/sbin/storage-reconcile boot-check --config /etc/homelab-storage/config.json

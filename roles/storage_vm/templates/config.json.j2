@@ -1,0 +1,21 @@
+{
+  "workers": [
+{% for w in storage_vm_workers %}
+    {"name": {{ w.name | to_json }}, "bridge_address": {{ w.bridge_address | to_json }}}{{ '' if loop.last else ',' }}
+{% endfor %}
+  ],
+  "bridge_address": {{ storage_vm_bridge_address | to_json }},
+  "portal": {{ (storage_vm_bridge_address ~ ':3260') | to_json }},
+  "vgs": ["retained", "regen"],
+  "api_url": {{ storage_vm_api_url | to_json }},
+  "token_file": "/etc/storage-fencer/token",
+  "ca_file": "/etc/storage-fencer/ca.crt",
+  "csi_driver": {{ storage_vm_csi_driver | to_json }},
+  "max_removals": {{ storage_vm_max_removals | int }},
+  "not_ready_seconds": {{ storage_vm_timings.not_ready_seconds | int }},
+  "loop_seconds": {{ storage_vm_timings.loop_seconds | int }},
+  "proof_timeout_seconds": {{ storage_vm_timings.proof_timeout_seconds | int }},
+  "quarantine_seconds": {{ storage_vm_timings.quarantine_seconds | int }},
+  "blind_after_seconds": {{ storage_vm_timings.blind_after_seconds | int }},
+  "pause_after": {{ storage_vm_timings.pause_after | to_json }}
+}

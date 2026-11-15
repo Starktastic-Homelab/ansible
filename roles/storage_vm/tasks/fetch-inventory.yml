@@ -1,0 +1,70 @@
+---
+# localhost: every run reconciles apps at the branch tip, so an old or out-of-order dispatch cannot re-apply an older
+# inventory. A pinned commit would do exactly that, so a hex value is refused.
+- name: Require a branch name and one storage VM
+  ansible.builtin.assert:
+    that:
+      - storage_vm_inventory_branch is string
+      - storage_vm_inventory_branch | length > 0
+      - storage_vm_inventory_branch is not match('^[0-9a-fA-F]{7,40}$')
+      - groups['storage'] | default([]) | length == 1
+    fail_msg: storage_vm_inventory_branch must be a branch name, not a commit, and exactly one host must be in storage.
+
+- name: Resolve the inventory branch tip
+  ansible.builtin.command:
+    argv: [git, ls-remote, --exit-code, --, "{{ storage_vm_inventory_repo }}",
+           "refs/heads/{{ storage_vm_inventory_branch }}"]
+  register: storage_vm_ls_remote
+  changed_when: false
+
+# ls-remote patterns match any ref ending in the pattern, so keep only the exact ref.
+- name: Pick the exact branch ref
+  ansible.builtin.set_fact:
+    storage_vm_inventory_sha: >-
+      {{ storage_vm_ls_remote.stdout_lines | select('match', '^[0-9a-f]{40}\trefs/heads/'
+         ~ (storage_vm_inventory_branch | regex_escape) ~ '$') | map('split') | map('first') | list
+         | join(' ') }}
+
+- name: Require one 40-hex branch tip
+  ansible.builtin.assert:
+    that:
+      - storage_vm_inventory_sha is match('^[0-9a-f]{40}$')
+    fail_msg: refs/heads/{{ storage_vm_inventory_branch }} did not resolve to exactly one commit.
+
+- name: Log the inventory commit
+  ansible.builtin.debug:
+    msg: >-
+      Reconciling {{ storage_vm_inventory_repo }} {{ storage_vm_inventory_branch }} at {{ storage_vm_inventory_sha }}
+
+- name: Create a private checkout directory
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: storage-inventory-
+  register: storage_vm_checkout
+
+- name: Initialize the checkout
+  ansible.builtin.command:
+    argv: [git, init, -q, "{{ storage_vm_checkout.path }}"]
+  changed_when: false
+
+- name: Fetch the inventory commit
+  ansible.builtin.command:
+    argv: [git, -C, "{{ storage_vm_checkout.path }}", fetch, -q, --depth, "1", --, "{{ storage_vm_inventory_repo }}",
+           "{{ storage_vm_inventory_sha }}"]
+  changed_when: false
+
+- name: Check out only the inventory file
+  ansible.builtin.command:
+    argv: [git, -C, "{{ storage_vm_checkout.path }}", checkout, -q, "{{ storage_vm_inventory_sha }}", --,
+           "{{ storage_vm_inventory_path }}"]
+  changed_when: false
+
+- name: Record the inventory file
+  ansible.builtin.set_fact:
+    storage_vm_inventory_file: "{{ storage_vm_checkout.path }}/{{ storage_vm_inventory_path }}"
+
+- name: Validate the inventory with the controller copy of the role
+  ansible.builtin.command:
+    argv: ["{{ ansible_playbook_python }}", -I, "{{ playbook_dir }}/roles/storage_vm/files/storage-reconcile", validate,
+           --inventory, "{{ storage_vm_inventory_file }}"]
+  changed_when: false

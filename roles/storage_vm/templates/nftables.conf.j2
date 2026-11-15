@@ -1,0 +1,31 @@
+#!/usr/sbin/nft -f
+# {{ ansible_managed }}
+# Reload only (systemctl reload nftables): a restart flushes the ruleset first. The drop-in re-adds the fenced
+# addresses after every load.
+flush ruleset
+
+table inet filter {
+  set fenced {
+    type ipv4_addr
+{% if storage_vm_fenced_addresses | length > 0 %}
+    elements = { {{ storage_vm_fenced_addresses | join(', ') }} }
+{% endif %}
+  }
+
+  chain input {
+    type filter hook input priority filter; policy drop;
+    ip saddr @fenced drop
+    ct state established,related accept
+    iif lo accept
+    tcp dport 22 ip saddr { {{ storage_vm_ssh_sources | join(', ') }} } accept
+    iifname "{{ storage_vm_bridge_iface }}" ip daddr {{ storage_vm_bridge_address }} ip saddr { {{ storage_vm_workers | map(attribute='bridge_address') | join(', ') }} } tcp dport { 3260, 9100 } accept
+  }
+
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+  }
+
+  chain output {
+    type filter hook output priority filter; policy accept;
+  }
+}

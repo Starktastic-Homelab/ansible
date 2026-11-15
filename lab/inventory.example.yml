@@ -1,0 +1,20 @@
+---
+# Example only: the real file is <lab>/inventory.yml on VM300 (/maintenance/lab-storage/inventory.yml). Hosts and
+# groups only; every override goes in <lab>/vars.yml, passed as -e @<lab>/vars.yml on every lab run. The path must
+# contain /lab-storage/ so the lab guard checks the VIP. Addresses are placeholders (RFC 5737).
+all:
+  children:
+    storage:
+      hosts:
+        lab-storage:
+          ansible_host: 192.0.2.40
+    all_k3s:
+      children:
+        masters:
+          hosts:
+            lab-server:
+              ansible_host: 192.0.2.41
+        workers:
+          hosts:
+            lab-agent:
+              ansible_host: 192.0.2.42

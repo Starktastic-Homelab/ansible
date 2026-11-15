@@ -1,0 +1,145 @@
+---
+# Reconcile the storage VM against apps' retained-volume inventory (ADR 0017), then grow attached filesystems.
+# Runs under an existing maintenance lock (MAINTENANCE_OWNER/MAINTENANCE_NONCE in the environment).
+# Lab: ansible-playbook -i <lab>/inventory.yml -e @<lab>/vars.yml storage.yml
+- name: Lab guard
+  hosts: all
+  gather_facts: false
+  any_errors_fatal: true
+  tags:
+    - always
+  tasks:
+    - name: Refuse a lab run aimed at production
+      ansible.builtin.import_tasks: tasks/lab-guard.yml
+      run_once: true
+
+- name: Fetch and validate the inventory at the branch tip
+  hosts: localhost
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: Resolve, fetch and validate the inventory
+      ansible.builtin.import_role:
+        name: storage_vm
+        tasks_from: fetch-inventory.yml
+
+- name: Write a private kubeconfig
+  hosts: masters[0]
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Read and rewrite the control-plane kubeconfig
+      ansible.builtin.import_role:
+        name: storage_vm
+        tasks_from: kubeconfig.yml
+
+# A refusal (schema, brake, missing VG or ledgered LV) ends the run before it touches the maintenance lock.
+- name: Dry-run the reconcile before the lock
+  hosts: storage
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Dry-run against the real ledger
+      ansible.builtin.import_role:
+        name: storage_vm
+        tasks_from: dry-run.yml
+
+- name: Configure the storage VM and reconcile
+  hosts: storage
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Verify maintenance ownership
+      ansible.builtin.import_role:
+        name: storage_vm
+        tasks_from: lock-verify.yml
+  roles:
+    - role: storage_vm
+  tasks:
+    - name: Read the storage-fencer token Secret
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ hostvars[groups['masters'][0]].storage_vm_kubeconfig_path }}"
+        kind: Secret
+        namespace: democratic-csi
+        name: storage-fencer-token
+      delegate_to: localhost
+      become: false
+      register: storage_vm_token_secret
+      no_log: true
+
+    - name: Check that the token Secret is populated
+      ansible.builtin.set_fact:
+        storage_vm_token_ready: >-
+          {{ storage_vm_token_secret.resources | length == 1 and
+             (storage_vm_token_secret.resources[0].data | default({})).keys() | list
+             | intersect(['token', 'ca.crt']) | length == 2 }}
+
+    # A k3s rebuild must never block on it; the next run after the Secret exists copies the new token.
+    - name: Warn that the storage-fencer token Secret is missing
+      ansible.builtin.debug:
+        msg: "WARNING: democratic-csi/storage-fencer-token is missing or not populated; the fencer stays blind."
+      when: not storage_vm_token_ready
+
+    - name: Copy the storage-fencer token and CA
+      ansible.builtin.copy:
+        dest: "/etc/storage-fencer/{{ item }}"
+        content: "{{ storage_vm_token_secret.resources[0].data[item] | b64decode }}"
+        owner: root
+        group: root
+        mode: "0600"
+      loop:
+        - token
+        - ca.crt
+      when: storage_vm_token_ready
+      no_log: true
+      notify: Restart storage-fencer
+
+    - name: Install the inventory at the logged commit
+      ansible.builtin.copy:
+        src: "{{ hostvars['localhost'].storage_vm_inventory_file }}"
+        dest: /etc/homelab-storage/retained-volumes.json
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Reconcile volumes and targets
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/storage-reconcile, apply, --inventory, /etc/homelab-storage/retained-volumes.json,
+               --config, /etc/homelab-storage/config.json]
+      register: storage_vm_apply
+      changed_when: storage_vm_apply.rc == 0 and (storage_vm_apply.stdout | from_json).actions | length > 0
+
+    - name: Record the exported volumes for the growth play
+      ansible.builtin.set_fact:
+        storage_vm_exported: "{{ (storage_vm_apply.stdout | from_json).exported }}"
+        storage_vm_portal: "{{ storage_vm_bridge_address }}:3260"
+
+# The lab k3s server is also a worker (ADR 0017 lab), so this covers every k3s node; a node with no attachment
+# does nothing.
+- name: Grow attached filesystems to their exported size
+  hosts: all_k3s
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Rescan and grow every attached exported volume
+      ansible.builtin.import_role:
+        name: storage_vm
+        tasks_from: grow.yml
+
+- name: Remove the temporary files
+  hosts: localhost
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: Remove the kubeconfig and the inventory checkout
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ hostvars[groups['masters'][0]].storage_vm_kubeconfig_path }}"
+        - "{{ storage_vm_checkout.path }}"

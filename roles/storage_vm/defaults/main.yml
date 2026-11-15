@@ -1,0 +1,27 @@
+---
+# Workers that may attach volumes: [{name, bridge_address}]; name is the node name and the inventory hostname.
+# They get the target ACLs and the tcp/3260 and tcp/9100 rules, and the fencer watches them.
+storage_vm_workers: []
+# The storage VM's address on the uplink-less bridge; the LIO portal listens only there.
+storage_vm_bridge_address: ""
+# Required: addresses or CIDRs allowed to reach tcp/22 (the runner and the LAN).
+storage_vm_ssh_sources: []
+storage_vm_api_url: "https://{{ vip_address }}:6443"
+
+# Every run reconciles against this branch's tip, never a pinned commit.
+storage_vm_inventory_repo: "{{ argocd_repo_url }}"
+storage_vm_inventory_branch: main
+storage_vm_inventory_path: infrastructure/base-configs/files/retained-volumes.json
+
+# The removal brake; an approved larger removal is one run with -e storage_vm_max_removals=N.
+storage_vm_max_removals: 2
+# Production values. An override replaces the whole map, and config.json then must still have every key.
+storage_vm_timings:
+  not_ready_seconds: 300
+  loop_seconds: 15
+  proof_timeout_seconds: 60
+  quarantine_seconds: 259200
+  blind_after_seconds: 600
+  pause_after: []
+storage_vm_maintenance_root: /maintenance
+storage_vm_csi_driver: org.democratic-csi.node-manual

@@ -1,4 +1,15 @@
 ---
+- name: Lab guard
+  hosts: all
+  gather_facts: false
+  any_errors_fatal: true
+  tags:
+    - always
+  tasks:
+    - name: Refuse a lab run aimed at production
+      ansible.builtin.import_tasks: tasks/lab-guard.yml
+      run_once: true
+
 - name: Wait for SSH availability on all nodes
   any_errors_fatal: true
   hosts: all_k3s

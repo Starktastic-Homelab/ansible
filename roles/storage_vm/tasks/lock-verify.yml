@@ -1,0 +1,14 @@
+---
+# The lock lives on the controller (the runner), never on the storage VM.
+- name: Verify maintenance ownership
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ playbook_dir }}/scripts/maintenance_lock.py"
+      - verify
+      - --root
+      - "{{ storage_vm_maintenance_root }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false

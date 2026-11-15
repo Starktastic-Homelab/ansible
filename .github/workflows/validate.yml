@@ -93,6 +93,9 @@ jobs:
       - name: Test storage expiry
         run: python3 scripts/tests/test_storage_expiry.py
 
+      - name: Test storage VM role and playbooks
+        run: python3 scripts/tests/test_storage_vm_role.py
+
       - name: Run ansible-lint
         run: |
           set +e
@@ -149,7 +152,7 @@ jobs:
           set +e
           OUTPUT=$(ansible-playbook -i inventory/proxmox.yml \
             --vault-password-file .vault_pass \
-            --syntax-check k3s.yml ser2net.yml i915-sriov.yml i915-acceptance.yml proxmox-csi-storage.yml csi-activation-preflight.yml proxmox-backup.yml proxmox-guest-startup.yml proxmox-storage-bridge.yml 2>&1)
+            --syntax-check k3s.yml ser2net.yml i915-sriov.yml i915-acceptance.yml proxmox-csi-storage.yml csi-activation-preflight.yml proxmox-backup.yml proxmox-guest-startup.yml proxmox-storage-bridge.yml storage.yml storage-expiry.yml 2>&1)
           EXIT_CODE=$?
           set -e
 

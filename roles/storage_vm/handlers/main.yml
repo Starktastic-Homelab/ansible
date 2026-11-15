@@ -1,0 +1,16 @@
+---
+# The only restart is the fencer's: a restart of rtslib-fb-targetctl drops every session, and one of nftables
+# flushes the ruleset and empties the fenced set.
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Reload nftables
+  ansible.builtin.systemd:
+    name: nftables
+    state: reloaded
+
+- name: Restart storage-fencer
+  ansible.builtin.systemd:
+    name: storage-fencer
+    state: restarted

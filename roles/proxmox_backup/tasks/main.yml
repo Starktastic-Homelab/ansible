@@ -122,6 +122,28 @@
     mode: "0644"
   notify: Reload systemd
 
+# A health run blocked on a dead pool would hold off every hourly run for the unit's 23 h; healthchecks.io
+# still goes red through the grace period.
+- name: Create the health check drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/homelab-backup@health.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Bound the health check run
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/homelab-backup@health.service.d/timeout.conf
+    content: |
+      # Managed by ansible (proxmox_backup).
+      [Service]
+      TimeoutStartSec=10min
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
 - name: Deploy the backup timers
   ansible.builtin.template:
     src: homelab-backup.timer.j2

@@ -44,8 +44,10 @@ def runs(name, **values):
 class FakeHost:
     """Stands in for zpool/zfs/mount/git/restic; records every command in order."""
     def __init__(self, tmp, snapshot_age_s=H, pool='ONLINE', mounts='', nfs_sources=(), vzdump=False,
-                 restic_rc=None, nfs_mount_rc=0):
+                 restic_rc=None, nfs_mount_rc=0, disk=True):
         self.calls, self.pings = [], []
+        if disk:
+            (tmp / 'disk').write_text('')
         self.restic_rc, self.nfs_mount_rc = restic_rc or {}, nfs_mount_rc
         self.snapshot_age_s, self.pool, self.mounts = snapshot_age_s, pool, tmp / 'mounts'
         self.mounts.write_text(mounts)
@@ -57,7 +59,7 @@ class FakeHost:
         if vzdump:
             (dumps / 'vzdump-1.vma').write_bytes(b'x')
         (tmp / 'sources.json').write_text(json.dumps({
-            'pool': 'usbbk', 'max_replica_age_h': 8, 'git_dir': str(tmp / 'git'),
+            'pool': 'usbbk', 'disk': str(tmp / 'disk'), 'max_replica_age_h': 8, 'git_dir': str(tmp / 'git'),
             'repository': 'sftp:storagebox:repo', 'vzdump_glob': str(dumps / 'vzdump-*.vma'),
             'git_repos': ['https://example.invalid/apps.git'],
             'sources': [{'dataset': 'usbbk/tn/pv', 'mount': 'pv', 'raw_key': True}],
@@ -75,6 +77,8 @@ class FakeHost:
         if argv[0] in ('mount', 'umount'):  # keep the fake /proc/mounts in step, as the kernel would
             lines = [l for l in self.mounts.read_text().splitlines(True) if l.split()[1] != argv[-1]]
             self.mounts.write_text(''.join(lines) + (f'{argv[-2]} {argv[-1]} {argv[2]} ro 0 0\n' if argv[0] == 'mount' else ''))
+        if argv[:2] == ['zpool', 'list'] and self.pool == 'SUSPENDED':  # zpool list exits 0 on a suspended pool
+            return subprocess.CompletedProcess(argv, 0, 'SUSPENDED\n', '')
         if argv[:2] == ['zpool', 'list']:
             ok = self.pool == 'ONLINE'
             return subprocess.CompletedProcess(argv, 0 if ok else 1, self.pool + '\n' if ok else '',
@@ -328,6 +332,54 @@ class HostSafetyTests(unittest.TestCase):
             self.assertNotEqual(m.main(['health']), 0)
         self.assertIn(('https://hc.invalid/h', '/fail'), host.pings)
         self.assertNotIn(('https://hc.invalid/h', ''), host.pings)
+
+    def test_health_stops_at_the_first_pool_problem(self):
+        # On a suspended pool, zfs list and the pool-wide zpool status can block for good; report and stop.
+        m = script()
+        for kind in [dict(pool=''), dict(pool='SUSPENDED'), dict(disk=False)]:
+            with self.subTest(**kind), tempfile.TemporaryDirectory() as d:
+                tmp = Path(d)
+                host = FakeHost(tmp, **kind)
+                host.install(m, tmp)
+                self.assertNotEqual(m.main(['health']), 0)
+                self.assertIn(('https://hc.invalid/h', '/fail'), host.pings)
+                self.assertFalse([c for c in host.calls if c[:2] in (['zfs', 'list'], ['zpool', 'status'])], host.calls)
+
+    def test_health_on_a_healthy_pool_still_checks_replicas_and_all_pools(self):
+        m = script()
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            host = FakeHost(tmp, snapshot_age_s=9 * H)
+            host.install(m, tmp)
+            self.assertNotEqual(m.main(['health']), 0)
+            self.assertTrue(any('replication is behind' in line for line in m.LOG), m.LOG)
+            host.index('zpool', 'status', '-x')
+            host.index('zfs', 'list')
+
+    def test_an_unplugged_disk_fails_health_while_the_pool_still_reads_online(self):
+        # An idle pool can stay ONLINE after the cable is pulled, until some I/O touches it.
+        m = script()
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            host = FakeHost(tmp, disk=False)  # the fake zpool list still answers ONLINE
+            host.install(m, tmp)
+            self.assertNotEqual(m.main(['health']), 0)
+            self.assertTrue(any(str(tmp / 'disk') in line and 'missing' in line for line in m.LOG), m.LOG)
+            self.assertNotEqual(m.main(['backup']), 0)
+            self.assertFalse([c for c in host.calls if c[0] in ('restic', 'mount', 'git')])
+        self.assertEqual(json.loads(render('sources.json.j2', proxmox_backup_usb_disk_id='usb-Example_Disk_123-0:0'))['disk'],
+                         '/dev/disk/by-id/usb-Example_Disk_123-0:0')
+
+    def test_a_hung_health_run_is_stopped_before_the_next_one(self):
+        # A blocked health run would otherwise hold off every hourly run for 23 h.
+        drop_in = task('Bound the health check run')['ansible.builtin.copy']
+        self.assertEqual(drop_in['dest'], '/etc/systemd/system/homelab-backup@health.service.d/timeout.conf')
+        self.assertIn('[Service]\nTimeoutStartSec=10min\n', drop_in['content'])
+        self.assertEqual(task('Bound the health check run')['notify'], 'Reload systemd')
+        names = [t['name'] for t in tasks()]
+        directory = task('Create the health check drop-in directory')['ansible.builtin.file']
+        self.assertEqual((directory['path'], directory['state']), (str(Path(drop_in['dest']).parent), 'directory'))
+        self.assertLess(names.index('Create the health check drop-in directory'), names.index('Bound the health check run'))
 
     def test_a_kernel_crash_record_stops_backups_until_it_is_moved_away(self):
         m = script()

@@ -1,0 +1,6 @@
+# {{ ansible_managed }}
+auto {{ proxmox_storage_bridge_name }}
+iface {{ proxmox_storage_bridge_name }} inet manual
+    bridge-ports none
+    bridge-stp off
+    bridge-fd 0

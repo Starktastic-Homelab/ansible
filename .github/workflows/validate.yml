@@ -87,6 +87,9 @@ jobs:
       - name: Test storage fencer decisions and API client
         run: python3 scripts/tests/test_storage_fence_policy.py
 
+      - name: Test storage fencer executor and CLI
+        run: python3 scripts/tests/test_storage_fencer.py
+
       - name: Run ansible-lint
         run: |
           set +e

@@ -100,6 +100,18 @@ class Lio:
                         acl.delete()
         return out
 
+    def add_acl(self, acl_iqn):
+        """Map LUN 0 to `acl_iqn` on every target that has one: the unfence's ACL restore."""
+        r = self._rts
+        for t in self._targets():
+            for tpg in t.tpgs:
+                lun = next((l for l in tpg.luns if l.lun == 0), None)
+                if lun is None:
+                    continue
+                acl = r.NodeACL(tpg, acl_iqn)
+                if not any(m.mapped_lun == 0 for m in acl.mapped_luns):
+                    r.MappedLUN(acl, 0, lun)
+
     def acl_iqns(self, id):
         tpg = self._tpg(id)
         return {a.node_wwn for a in tpg.node_acls} if tpg else set()

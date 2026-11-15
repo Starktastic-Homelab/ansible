@@ -40,7 +40,8 @@
   ansible.builtin.find:
     paths: /etc/pve/qemu-server
     patterns: ['*.conf']
-    contains: "bridge={{ proxmox_storage_bridge_name }}(,|$)"
+    # find applies re.match from column 0, so skip the "netN: virtio=...," prefix
+    contains: '.*[:,]bridge={{ proxmox_storage_bridge_name }}(,|$)'
   register: proxmox_storage_bridge_users
   when: proxmox_storage_bridge_state == 'absent'
 
@@ -51,16 +52,21 @@
     quiet: true
   when: proxmox_storage_bridge_state == 'absent'
 
+- name: Check whether the bridge is up
+  ansible.builtin.command:
+    argv: [ip, link, show, "{{ proxmox_storage_bridge_name }}"]
+  register: proxmox_storage_bridge_up
+  changed_when: false
+  failed_when: false
+  when: proxmox_storage_bridge_state == 'absent'
+
+# No stderr matching (ifupdown2 wording is unverified): a missing link means nothing to take down; a live link with
+# a missing stanza makes ifdown fail, which is the right outcome.
 - name: Take down only this bridge
   ansible.builtin.command:
     argv: [ifdown, "{{ proxmox_storage_bridge_name }}"]
-  register: proxmox_storage_bridge_down
-  changed_when: proxmox_storage_bridge_down.rc == 0
-  failed_when: >-
-    proxmox_storage_bridge_down.rc != 0
-    and 'not configured' not in proxmox_storage_bridge_down.stderr
-    and 'unknown interface' not in proxmox_storage_bridge_down.stderr
-  when: proxmox_storage_bridge_state == 'absent'
+  changed_when: true
+  when: proxmox_storage_bridge_state == 'absent' and proxmox_storage_bridge_up.rc == 0
 
 - name: Remove the bridge file
   ansible.builtin.file:

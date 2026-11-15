@@ -1,5 +1,6 @@
 """Offline checks for the additive storage bridge role."""
 from pathlib import Path
+import re
 import unittest
 import yaml
 from ansible.parsing.dataloader import DataLoader
@@ -58,17 +59,26 @@ class StorageBridgeTests(unittest.TestCase):
         names = [t['name'] for t in when_state('absent')]
         self.assertEqual(names, [
             'Find guests that use the bridge', 'Refuse to remove a bridge that a guest still uses',
-            'Take down only this bridge', 'Remove the bridge file', 'Verify the bridge is gone'])
+            'Check whether the bridge is up', 'Take down only this bridge', 'Remove the bridge file', 'Verify the bridge is gone'])
         by = {t['name']: t for t in tasks()}
         find = by['Find guests that use the bridge']['ansible.builtin.find']
         self.assertEqual(find['paths'], '/etc/pve/qemu-server')
         self.assertIn('bridge={{ proxmox_storage_bridge_name }}', find['contains'])
+        self.assertIn('rc == 0', by['Take down only this bridge']['when'])
+        self.assertNotIn('stderr', str(by['Take down only this bridge']))
         self.assertIn('matched == 0', str(by['Refuse to remove a bridge that a guest still uses']))
         self.assertEqual(by['Take down only this bridge']['ansible.builtin.command']['argv'][0], 'ifdown')
         self.assertEqual(by['Remove the bridge file']['ansible.builtin.file']['state'], 'absent')
         last = by['Verify the bridge is gone']
         self.assertEqual(last['ansible.builtin.command']['argv'][:3], ['ip', 'link', 'show'])
         self.assertIn('rc == 0', last['failed_when'])
+
+    def test_guest_pattern_matches_real_lines(self):
+        find = {t['name']: t for t in tasks()}['Find guests that use the bridge']['ansible.builtin.find']
+        pat = re.compile(find['contains'].replace('{{ proxmox_storage_bridge_name }}', 'vmbr9'))
+        self.assertTrue(pat.match('net0: virtio=BC:24:11:00:00:01,bridge=vmbr9,firewall=1'))
+        self.assertTrue(pat.match('net1: virtio=BC:24:11:00:00:02,firewall=1,bridge=vmbr9'))
+        self.assertFalse(pat.match('net0: virtio=BC:24:11:00:00:01,bridge=vmbr90,firewall=1'))
 
     def test_host_only(self):
         plays = yaml.safe_load((ROOT / 'proxmox-storage-bridge.yml').read_text())

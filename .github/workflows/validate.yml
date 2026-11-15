@@ -84,6 +84,9 @@ jobs:
       - name: Test storage reconcile executor
         run: python3 scripts/tests/test_storage_reconcile.py
 
+      - name: Test storage fencer decisions and API client
+        run: python3 scripts/tests/test_storage_fence_policy.py
+
       - name: Run ansible-lint
         run: |
           set +e

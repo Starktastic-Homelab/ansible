@@ -2,6 +2,7 @@
 
 validate --inventory FILE                     schema only, no host I/O
 apply --inventory FILE --config FILE [--dry-run]
+boot-check --config FILE                      strip fenced ACLs, save, verify every ledgered target
 """
 import argparse
 import hashlib
@@ -214,6 +215,61 @@ def apply(volumes, cfg, sha, dry_run):
     return 0 if ok else 1
 
 
+def _fenced_tags(cfg):
+    """Fenced node -> boot id from the retained VG tags; None when they cannot be read."""
+    retained = lvm.vgs(tuple(cfg['vgs']))['retained']
+    if not retained.present:
+        return None
+    try:
+        return Cluster.from_tags(retained.tags, 'retained').fenced()
+    except ValueError as e:
+        host.log(f'error: {e}')
+        return None
+
+
+def restore_set(cfg):
+    """Re-add every fenced worker's bridge address to the nft set (reads VG tags only); 0 ok, 1 on any error."""
+    errors = []
+    with host.LIO_LOCK:
+        fenced = _fenced_tags(cfg)
+        if fenced is None:
+            errors.append('cannot read the fence tags from VG retained')
+        addrs = {w['name']: w['bridge_address'] for w in cfg['workers']}
+        # Add every resolvable address first: a stale tag must not leave a known fenced worker admitted.
+        for node in sorted(fenced or {}):
+            if node not in addrs:
+                errors.append(f'fenced node {node} is not a configured worker')
+            else:
+                nft.ensure_fenced(addrs[node])
+    for e in errors:
+        host.log(f'error: {e}')
+    return 1 if errors else 0
+
+
+def boot_check(cfg):
+    """After targetctl restore: drop fenced workers' ACLs, save, then fail if a ledgered target is not restored."""
+    errors = []
+    with host.LIO_LOCK:
+        vgs = lvm.vgs(tuple(cfg['vgs']))
+        fenced = _fenced_tags(cfg)
+        if fenced is None and vgs['retained'].present:
+            errors.append('cannot read the fence tags from VG retained: fenced ACLs not stripped')
+        lio_ = lio.Lio()
+        for node in sorted(fenced or {}):
+            lio_.delete_acl(lio.worker_iqn(node))
+        lio_.save()
+        for n, v in vgs.items():
+            if not v.present:
+                errors.append(f'VG {n} is missing')
+                continue
+            for id in sorted(v.ledger.created_ids()):
+                if lio_.lun0_device(id) != f'/dev/{n}/{id}':
+                    errors.append(f'{id}: LUN 0 is not bound to /dev/{n}/{id}')
+    for e in errors:
+        host.log(f'error: {e}')
+    return 1 if errors else 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog='storage-reconcile')
     sub = p.add_subparsers(dest='cmd', required=True)
@@ -223,8 +279,13 @@ def main(argv=None):
     a.add_argument('--inventory', required=True)
     a.add_argument('--config', required=True)
     a.add_argument('--dry-run', action='store_true')
+    sub.add_parser('boot-check').add_argument('--config', required=True)
     args = p.parse_args(argv)
     try:
+        if args.cmd == 'boot-check':
+            cfg = config.load(args.config)
+            host.CONFIG = cfg
+            return boot_check(cfg)
         raw = Path(args.inventory).read_bytes()
         volumes = inventory.load(raw.decode())
         if args.cmd == 'validate':

@@ -64,6 +64,12 @@ class FakeLio:
     def save(self):
         self.fake.record('lio.save')
 
+    def delete_acl(self, acl_iqn):
+        self.fake.record('lio.delete_acl', acl_iqn)
+        for t in self.targets_.values():
+            t['acls'].discard(acl_iqn)
+        return []
+
     def targets(self):
         return set(self.targets_)
 
@@ -131,6 +137,8 @@ class FakeHost:
             out = json.dumps({'nftables': [{'metainfo': {}}, {'set': {
                 'family': 'inet', 'table': 'filter', 'name': 'fenced', 'type': 'ipv4_addr',
                 **({'elem': sorted(self.fenced_set)} if self.fenced_set else {})}}]})
+        elif a[:3] == ['nft', 'add', 'element']:
+            self.fenced_set.add(a[-1].strip('{} '))
         elif a[:2] == ['systemctl', 'is-active']:
             rc = 0 if self.targetctl_active else 3
         if check and rc:
@@ -279,6 +287,58 @@ class FenceTest(Base):
                 self.assertEqual(rc, 1)
                 self.assertEqual(f.find('lio.ensure_target')[0][3], (W1,) if 'w2' in tag else (W1, W2))
                 self.assertIn('fenced', self.err)
+
+
+class BootCheckTest(Base):
+    def check(self, *extra):
+        conf = self.tmp / 'config.json'
+        conf.write_text(json.dumps(config()))
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = reconcile.main(['boot-check', '--config', str(conf), *extra])
+        self.err = err.getvalue()
+        return rc
+
+    def good(self, **kw):
+        return self.fake(vgs={'retained': vg(['ledger:a:created', f'fenced:w2:{UUID_A}'], {'a': (GI, ())}),
+                              'regen': vg(['ledger:p:created'], {'p': (GI, ())})},
+                         targets={'a': {'dev': '/dev/retained/a', 'acls': {W1, W2}},
+                                  'p': {'dev': '/dev/regen/p', 'acls': {W1, W2}}}, **kw)
+
+    def test_boot_check_fails_on_lunless_target(self):
+        f = self.good()
+        self.assertEqual(self.check(), 0, self.err)
+        del f.lio.targets_['p']
+        self.assertEqual(self.check(), 1)
+        f.lio.targets_['p'] = {'dev': '/dev/regen/other', 'acls': set()}
+        self.assertEqual(self.check(), 1)
+        self.assertIn('/dev/regen/p', self.err)
+
+    def test_boot_check_fails_on_missing_vg(self):
+        self.fake(vgs={'retained': vg(['ledger:a:created'], {'a': (GI, ())})},
+                  targets={'a': {'dev': '/dev/retained/a', 'acls': set()}})
+        self.assertEqual(self.check(), 1)
+        self.assertIn('regen is missing', self.err)
+
+    def test_boot_check_strips_fenced_acls_before_check(self):
+        f = self.good()
+        self.assertEqual(self.check(), 0, self.err)
+        names = f.names()
+        self.assertEqual(f.find('lio.delete_acl'), [('lio.delete_acl', W2)])
+        self.assertLess(names.index('lio.delete_acl'), names.index('lio.save'))
+        self.assertEqual(f.lio.targets_['a']['acls'], {W1})
+        self.assertTrue(all(held for c, held in f.calls if c[0] in ('lio.delete_acl', 'lio.save')))
+
+    def test_restore_set_adds_every_tagged_address(self):
+        f = self.fake(vgs={'retained': vg([f'fenced:w1:{UUID_A}', f'fenced:w2:{UUID_A}']), 'regen': vg()})
+        self.assertEqual(reconcile.restore_set(config()), 0)
+        self.assertEqual(f.fenced_set, {'192.0.2.21', '192.0.2.22'})
+        self.assertTrue(all(held for c, held in f.calls if c[:3] == ('nft', 'add', 'element')))
+
+    def test_restore_set_unknown_node_fails(self):
+        f = self.fake(vgs={'retained': vg([f'fenced:ghost:{UUID_A}', f'fenced:w2:{UUID_A}']), 'regen': vg()})
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(reconcile.restore_set(config()), 1)
+        self.assertEqual(f.fenced_set, {'192.0.2.22'})  # the known worker is fenced despite the stale tag
 
 
 class GrowAndReportTest(Base):

@@ -1,0 +1,6 @@
+---
+# kdump stays installed but off: on 2026-11-15 makedumpfile was OOM-killed at crashkernel=1G and the crash kernel
+# never rebooted. Re-arm only in an attended window; the plain panic reboot covers crashes meanwhile.
+proxmox_guest_startup_kdump_enabled: false
+# Reserved for the crash kernel at the next boot; used only when kdump is enabled.
+proxmox_guest_startup_crashkernel: "2G"

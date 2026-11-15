@@ -115,8 +115,8 @@
     - proxmox_guest_startup_kfence_write.rc != 0
     - "'Cannot allocate memory' not in proxmox_guest_startup_kfence_write.stderr"
   when: >-
-    proxmox_guest_startup_kfence.content | b64decode | trim != proxmox_guest_startup_kfence_sample_interval | string
-    or (proxmox_guest_startup_kfence_sample_interval | int > 0 and proxmox_guest_startup_kfence_on.rc != 0)
+    proxmox_guest_startup_kfence.content | b64decode | trim != proxmox_guest_startup_kfence_sample_interval | string or
+    (proxmox_guest_startup_kfence_sample_interval | int > 0 and proxmox_guest_startup_kfence_on.rc != 0)
 
 # rasdaemon records machine-check events (CPU core, cache, uncore) to tell a hardware fault from a kernel bug: read
 # with ras-mc-ctl --summary / --errors. The board has no ECC, so no DIMM is decoded.

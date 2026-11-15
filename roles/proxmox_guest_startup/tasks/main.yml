@@ -121,7 +121,7 @@
     path: /etc/default/kdump-tools
     regexp: "^#?\\s*{{ item.key }}="
     line: '{{ item.key }}="{{ item.value }}"'
-    create: true  # check mode skips the install, so the file may not exist yet
+    create: true # check mode skips the install, so the file may not exist yet
     mode: "0644"
   loop:
     - key: MAKEDUMP_ARGS

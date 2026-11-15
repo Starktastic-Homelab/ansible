@@ -41,6 +41,9 @@ class StorageSettingsTests(unittest.TestCase):
         self.assertEqual(task["ansible.builtin.copy"]["content"],
                          "InitiatorName=iqn.2026-11.net.starktastic:{{ inventory_hostname }}\n")
         self.assertNotIn("when", task)  # every k3s node, the lab server included (R17)
+        # copy does not create parents, and open-iscsi is not installed yet.
+        mkdir, _ = find(tasks, "ansible.builtin.file", path="/etc/iscsi", state="directory")
+        self.assertLess(mkdir, iqn)
         apt, _ = find(tasks, "ansible.builtin.apt", name="open-iscsi")
         download, _ = find(tasks, "ansible.builtin.get_url", dest="/tmp/k3s-install.sh")
         self.assertLess(iqn, apt)

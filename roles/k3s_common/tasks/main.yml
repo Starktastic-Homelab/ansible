@@ -148,6 +148,15 @@
 # package never generates a random IQN; the name equals the Kubernetes node name,
 # which the storage VM's ACLs are rendered from. Never baked into the image: a
 # clone would share one IQN.
+- name: Create the iSCSI config directory
+  ansible.builtin.file:
+    path: /etc/iscsi
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: iscsi
+
 - name: Set the iSCSI initiator name
   ansible.builtin.copy:
     content: "InitiatorName=iqn.2026-11.net.starktastic:{{ inventory_hostname }}\n"

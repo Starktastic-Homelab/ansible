@@ -5,6 +5,10 @@
     argv: [proxmox-boot-tool, refresh]
   changed_when: true
 
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
 # Reloads only a crash kernel that is already loaded (no-op before the first crashkernel= boot).
 - name: Reload kdump
   ansible.builtin.command:

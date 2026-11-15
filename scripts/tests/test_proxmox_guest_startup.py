@@ -51,6 +51,22 @@ class CrashSettings(unittest.TestCase):
         self.assertIn('module_blacklist=xe,i915,mpt3sas,nvme', append)
         self.assertIn('panic=10', append)
         self.assertIn('oops=panic', append)
+        # A stall must reboot too, not hold pve down with every guest.
+        self.assertIn('hung_task_panic=1', append)
+        self.assertIn('softlockup_panic=1', append)
+        self.assertTrue(task('Configure kdump')['ansible.builtin.lineinfile']['create'])
+
+    def test_a_stalled_dump_forces_a_reboot(self):
+        names = [t['name'] for t in tasks()]
+        drop_in = task('Force a reboot if saving the dump stalls')
+        directories = task('Create the kdump unit drop-in directories')
+        self.assertEqual(drop_in['loop'], ['kdump-tools', 'kdump-tools-dump'])
+        self.assertEqual(directories['loop'], drop_in['loop'])
+        self.assertLess(names.index(directories['name']), names.index(drop_in['name']))
+        content = drop_in['ansible.builtin.copy']['content']
+        for line in ('JobTimeoutSec=30min', 'JobTimeoutAction=reboot-force', 'TimeoutStartSec=30min'):
+            self.assertIn(line + '\n', content)
+        self.assertEqual(drop_in['notify'], 'Reload systemd')
 
     def test_cmdline_gains_crashkernel_and_keeps_the_pstore_record(self):
         copy = task('Reserve memory for the crash kernel')
@@ -63,8 +79,9 @@ class CrashSettings(unittest.TestCase):
 
     def test_nothing_reboots_the_host(self):
         handlers = DataLoader().load_from_file(str(ROLE / 'handlers/main.yml'), trusted_as_template=True)
-        argvs = [h['ansible.builtin.command']['argv'] for h in handlers]
+        argvs = [h['ansible.builtin.command']['argv'] for h in handlers if 'ansible.builtin.command' in h]
         self.assertEqual(argvs, [['proxmox-boot-tool', 'refresh'], ['kdump-config', 'try-reload']])
+        self.assertFalse([h for h in handlers if 'reboot' in str(h).lower()])
 
 
 if __name__ == '__main__':

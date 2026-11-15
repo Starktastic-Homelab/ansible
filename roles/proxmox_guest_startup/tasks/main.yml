@@ -113,13 +113,16 @@
     state: present
 
 # The crash kernel gets the host's command line plus KDUMP_CMDLINE_APPEND (Debian's default first). It loads no GPU
-# driver and leaves TrueNAS's HBA and NVMe drives alone (they bind to vfio-pci only when VM 100 starts), and reboots
-# if it oopses or can't import rpool. After saving the dump, kdump-tools reboots the host.
+# driver and leaves TrueNAS's HBA and NVMe drives alone (they bind to vfio-pci only when VM 100 starts). It reboots
+# if it oopses, can't import rpool or stalls (hung tasks are safe to panic on here: the crash boot mounts no NFS).
+# After saving the dump, kdump-tools reboots the host.
 - name: Configure kdump
   ansible.builtin.lineinfile:
     path: /etc/default/kdump-tools
     regexp: "^#?\\s*{{ item.key }}="
     line: '{{ item.key }}="{{ item.value }}"'
+    create: true  # check mode skips the install, so the file may not exist yet
+    mode: "0644"
   loop:
     - key: MAKEDUMP_ARGS
       value: "-z -d 31"
@@ -128,8 +131,30 @@
     - key: KDUMP_CMDLINE_APPEND
       value: >-
         reset_devices systemd.unit=kdump-tools-dump.service nr_cpus=1 irqpoll usbcore.nousb
-        module_blacklist=xe,i915,mpt3sas,nvme panic=10 oops=panic
+        module_blacklist=xe,i915,mpt3sas,nvme panic=10 oops=panic hung_task_panic=1 softlockup_panic=1
   notify: Reload kdump
+
+# Either unit can run the save in the crash boot; both are oneshot, which systemd never times out by itself.
+- name: Create the kdump unit drop-in directories
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item }}.service.d"
+    state: directory
+    mode: "0755"
+  loop: [kdump-tools, kdump-tools-dump]
+
+- name: Force a reboot if saving the dump stalls
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item }}.service.d/timeout.conf"
+    content: |
+      # Managed by ansible (proxmox_guest_startup). A stalled crash boot would otherwise keep pve down.
+      [Unit]
+      JobTimeoutSec=30min
+      JobTimeoutAction=reboot-force
+      [Service]
+      TimeoutStartSec=30min
+    mode: "0644"
+  loop: [kdump-tools, kdump-tools-dump]
+  notify: Reload systemd
 
 - name: Read the kernel command line
   ansible.builtin.slurp:

@@ -240,6 +240,19 @@ class ResticTests(unittest.TestCase):
         # Two: a Sunday upload that hits restic exit 3 writes a vzdump snapshot without the dump in it.
         self.assertEqual(forgets, {'daily': keep, 'nfs': keep, 'vzdump': ['--keep-last', '2']})
 
+    def test_stale_repository_locks_are_cleared_before_restic_runs(self):
+        # 2026-11-15: a run killed by the 11-10 crash left a lock that made the first maint fail on `forget`.
+        for mode in ('backup', 'maint'):
+            m = script()
+            with tempfile.TemporaryDirectory() as d:
+                tmp = Path(d)
+                host = FakeHost(tmp)
+                host.install(m, tmp)
+                self.assertEqual(m.main([mode]), 0, m.LOG)
+            restic_calls = [c for c in host.calls if c[:1] == ['restic']]
+            self.assertIn('unlock', restic_calls[0], mode)
+            self.assertNotIn('--remove-all', restic_calls[0], mode)
+
     def test_each_upload_logs_what_it_added(self):
         m = script()  # the weekly vzdump increment is read from these lines (plan Task 5 Step 4)
         share = {'share': '10.9.9.30:/mnt/main/immich', 'mount': 'immich', 'marker': 'upload/.immich'}

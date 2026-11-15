@@ -34,6 +34,12 @@ class LedgerTest(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 ledger.Cluster.from_tags([bad], 'retained')
 
+    def test_parse_keeps_valid_fences(self):
+        c = ledger.Cluster.parse(['fenced:w1:notauuid', ledger.tag_fenced('w2', BOOT), 'fenced:w3:unknown',
+                                  ledger.tag_fenced('w3', BOOT)], 'retained')
+        self.assertEqual(c.fenced(), {'w2': BOOT, 'w3': BOOT})
+        self.assertEqual(c.errors, ["malformed fence tag 'fenced:w1:notauuid'", 'conflicting fence tags for w3'])
+
     def test_cluster_tags_ignored_on_regen(self):
         with self.assertRaises(ValueError):
             ledger.Cluster.from_tags([ledger.HOLD_CREATE], 'regen')

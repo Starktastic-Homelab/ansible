@@ -341,6 +341,21 @@ class BootCheckTest(Base):
         self.assertEqual(f.fenced_set, {'192.0.2.22'})  # the known worker is fenced despite the stale tag
 
 
+    def test_bad_fence_tag_keeps_the_valid_fences(self):
+        # One hand-typed malformed tag must not readmit the validly fenced w2; the run still fails.
+        tags = ['fenced:w1:notauuid', f'fenced:w2:{UUID_A}']
+        f = self.fake(vgs={'retained': vg(tags), 'regen': vg()})
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(reconcile.restore_set(config()), 1)
+        self.assertEqual(f.fenced_set, {'192.0.2.22'})
+        self.assertIn('malformed fence tag', err.getvalue())
+        f = self.good()
+        f.vgs['retained']['tags'].add('fenced:w1:notauuid')
+        self.assertEqual(self.check(), 1)
+        self.assertEqual(f.find('lio.delete_acl'), [('lio.delete_acl', W2)])
+        self.assertEqual(f.lio.targets_['a']['acls'], {W1})
+        self.assertIn('malformed fence tag', self.err)
+
 class GrowAndReportTest(Base):
     def test_extend_then_checkpoint(self):
         f = self.fake(vgs={'retained': vg(['ledger:a:created'], {'a': (GI, ())}), 'regen': vg()})

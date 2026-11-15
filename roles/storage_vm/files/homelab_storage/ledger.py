@@ -59,26 +59,37 @@ class Ledger:
 
 
 class Cluster:
-    def __init__(self, fenced, holds):
+    def __init__(self, fenced, holds, errors=()):
         self._fenced = fenced
         self._holds = holds
+        self.errors = list(errors)  # malformed or conflicting fence tags; the valid ones are still in fenced()
 
     @classmethod
-    def from_tags(cls, tags, vg):
+    def parse(cls, tags, vg):
+        """Lenient: one bad fence tag must not hide the valid ones from a fence re-apply."""
         if vg != 'retained':
             raise ValueError(f'cluster tags are only honoured on VG retained, not {vg!r}')
-        fenced, holds = {}, set()
-        for t in tags:
+        fenced, holds, errors = {}, set(), []
+        for t in sorted(tags):
             if t in (HOLD_CREATE, HOLD_FENCE):
                 holds.add(t)
             elif t.startswith('fenced:'):
                 m = FENCED.match(t)
                 if not m:
-                    raise ValueError(f'malformed fence tag {t!r}')
-                if m[1] in fenced and fenced[m[1]] != m[2]:
-                    raise ValueError(f'conflicting fence tags for {m[1]}')
-                fenced[m[1]] = m[2]
-        return cls(fenced, holds)
+                    errors.append(f'malformed fence tag {t!r}')
+                elif m[1] in fenced and fenced[m[1]] != m[2]:
+                    errors.append(f'conflicting fence tags for {m[1]}')  # still fenced, on the first tag
+                else:
+                    fenced[m[1]] = m[2]
+        return cls(fenced, holds, errors)
+
+    @classmethod
+    def from_tags(cls, tags, vg):
+        """Strict: ValueError on any bad fence tag."""
+        c = cls.parse(tags, vg)
+        if c.errors:
+            raise ValueError('; '.join(c.errors))
+        return c
 
     def fenced(self):
         return dict(self._fenced)

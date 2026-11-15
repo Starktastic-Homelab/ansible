@@ -49,6 +49,7 @@ class Fencer:
         self.last_api_success = 0  # 0 until the first success, so StorageFencerBlind sees a series from the start
         self.active = set()
         self.watched = {}  # worker -> bootID in the last loop; emptied by a blind loop and by a restart (a gap)
+        self.watched_at = None  # monotonic time of the API read behind `watched`; an old one is a gap too
 
     def worker(self, name):
         if name not in self.addrs:
@@ -59,7 +60,7 @@ class Fencer:
         retained = lvm.vgs(tuple(self.cfg['vgs']))['retained']
         if not retained.present:
             raise RuntimeError('VG retained is missing: cannot read the fence tags')
-        return Cluster.from_tags(retained.tags, 'retained')  # ValueError on a malformed fence tag
+        return Cluster.parse(retained.tags, 'retained')  # bad fence tags land in .errors; the valid ones still count
 
     def proof(self, lio_, name):
         addr, iqn = self.worker(name), lio.worker_iqn(name)
@@ -134,29 +135,33 @@ class Fencer:
 
     def loop_once(self):
         try:
-            try:
-                nodes, server_time = self.api.get(NODES)
-                vas = self.api.get(VAS)[0]['items']
-            except kube.ApiError as e:
-                self._api_error(e)  # blind: no lio, nft or taint call
-                self.watched = {}
-                return
-            self.last_api_success = int(time.time())
-            nodes = nodes['items']
+            # The API is read after the lock wait (a reconcile or a proof poll can hold it for minutes), so the
+            # decision never acts on a reading older than the lock wait.
             with host.LIO_LOCK:  # one-at-a-time and the tags hold for the whole decision
                 try:
-                    self._decide_and_act(nodes, vas, server_time)
+                    nodes, server_time = self.api.get(NODES)
+                    vas = self.api.get(VAS)[0]['items']
+                except kube.ApiError as e:
+                    self._api_error(e)  # blind: no lio, nft or taint call
+                    self.watched = {}
+                    return
+                read_at = time.monotonic()
+                self.last_api_success = int(time.time())
+                try:
+                    self._decide_and_act(nodes['items'], vas, server_time, read_at)
                 except Exception as e:
                     host.log(f'error: loop: {e}')
                     self.failures += 1
         finally:
             self.write_metrics()
 
-    def _decide_and_act(self, nodes, vas, server_time):
+    def _decide_and_act(self, nodes, vas, server_time, read_at):
         cluster = self.cluster()
         fenced, holds = cluster.fenced(), cluster.holds()
         history = fence_policy.BootHistory.load(fence_policy.HISTORY_PATH)
         prev, self.watched = self.watched, {}  # an exception below leaves it empty: a gap, so the safe side
+        if self.watched_at is None or read_at - self.watched_at > 2 * self.cfg['loop_seconds']:
+            prev = {}  # a slow loop is a gap: the worker may have been Ready unwatched in between
         # A NotReady bootID stays unseen only if the fencer watched it appear (a slow reboot, ADR 0017 :372-374).
         # After a gap the worker may have been Ready on it unwatched (blind, then partitioned), so it counts as seen.
         for n in nodes:
@@ -165,6 +170,12 @@ class Fencer:
                     (name not in prev or prev[name] not in (b, history.last_ready(name))):
                 history.record(name, b, False)
         v = fence_policy.evaluate(nodes, vas, cluster, history, self.cfg, server_time)
+        if cluster.errors:
+            # Re-apply the valid fences only: a bad tag may stand for a fenced worker, so nothing is relaxed or added.
+            for e in cluster.errors:
+                host.log(f'error: {e}: no new fence or unfence until the tags are fixed')
+            self.failures += 1
+            v.continue_fence, v.fence, v.unfence = sorted(v.continue_fence + v.unfence), None, []
         lio_ = lio.Lio()
         for name in v.continue_fence:
             # Steps 2-6 again; under a hold or with a foreign VA only a person applies the taint (manual fallback).
@@ -184,6 +195,7 @@ class Fencer:
                 self.watched[name] = fence_policy._boot_id(n)
                 if fence_policy._ready(n)[0]:
                     history.record(name, self.watched[name], True)
+        self.watched_at = read_at
         history.save(fence_policy.HISTORY_PATH)
 
     def write_metrics(self):
@@ -224,7 +236,10 @@ class Fencer:
     def manual_unfence(self, name, confirm_stopped):
         self.worker(name)
         with host.LIO_LOCK:
-            fenced = self.cluster().fenced()
+            cluster = self.cluster()
+            if cluster.errors:
+                raise ValueError('; '.join(cluster.errors) + ': fix the fence tags on VG retained before an unfence')
+            fenced = cluster.fenced()
             if name not in fenced:
                 print(f'{name} is not fenced')
                 return 0
@@ -244,8 +259,9 @@ class Fencer:
     def status(self):
         cluster = self.cluster()
         history = fence_policy.BootHistory.load(fence_policy.HISTORY_PATH)
-        print(json.dumps({'fenced': cluster.fenced(), 'holds': sorted(cluster.holds()), 'history': history._data}))
-        return 0
+        print(json.dumps({'fenced': cluster.fenced(), 'holds': sorted(cluster.holds()), 'history': history._data,
+                          **({'errors': cluster.errors} if cluster.errors else {})}))
+        return 1 if cluster.errors else 0
 
 
 def main(argv=None):

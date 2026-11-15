@@ -376,6 +376,45 @@ class UnfenceTest(Base):
                 self.assertIn(f'fenced:w2:{A}', f.tags())
 
 
+    def test_slow_loop_is_a_gap(self):
+        # The lock wait (a reconcile, a proof poll) left w2 unwatched for 100 s: it may have rebooted A -> C, been
+        # Ready on C and partitioned, so C counts as seen and the heal does not unfence.
+        f = self.fake(nodes=[node('w1', bootid=B), node('w2', bootid=A)])
+        fz = self.loop()
+        f.clock.t += 100
+        f.api.nodes['w2'] = node('w2', ready=False, age=301, bootid=C)
+        self.loop(fz)
+        self.assertIn(f'fenced:w2:{A}', f.tags())
+        self.assertIn(C, self.history()['w2']['seen'])
+        f.api.nodes['w2'] = node('w2', bootid=C, taints=f.api.nodes['w2']['spec']['taints'])
+        self.loop(fz)
+        self.assertIn(f'fenced:w2:{A}', f.tags())
+
+    def test_api_read_under_the_lock(self):
+        # A worker that recovered while the fencer waited for the lock must not be fenced on the old reading.
+        f = self.hung_w2()
+        self.loop()
+        self.assertTrue(all(held for c, held in f.calls if c[0] == 'api.get'))
+
+    def test_bad_fence_tag_reapplies_valid_fences_only(self):
+        # w2 is validly tagged and its fence fell off (address gone, ACL back); w1 has a malformed tag and w2 is
+        # Ready on a new bootID. The loop re-applies w2's fence, unfences nothing and counts a failure each loop.
+        f = self.fake(nodes=[node('w1', bootid=B), node('w2', bootid=C)], tags=['fenced:w1:bad', f'fenced:w2:{A}'],
+                      history={'w2': {'seen': [A], 'last_ready': A}})
+        fz = self.loop()
+        self.assertIn(W2_ADDR, f.fenced_set, self.err)
+        self.assertIn(W2_ADDR, f.fenced_set)
+        self.assertFalse(any(W2 in t['acls'] for t in f.lio.targets_.values()))
+        self.assertIn(f'fenced:w2:{A}', f.tags())
+        self.assertNotIn('lio.add_acl', f.writes())
+        self.assertIn('malformed fence tag', self.err)
+        self.loop(fz)
+        self.assertIn('storage_fence_failures_total 2\n', self.prom())
+        self.assertEqual(self.cli('unfence', 'w2')[0], 1)
+        self.assertIn(f'fenced:w2:{A}', f.tags())
+        rc, out = self.cli('status')
+        self.assertEqual((rc, json.loads(out)['errors']), (1, ["malformed fence tag 'fenced:w1:bad'"]))
+
 class LoopTest(Base):
     def test_api_error_does_nothing(self):
         for err, code in ((kube.ApiUnreachable('down'), 'unreachable'), (kube.ApiAuthError('401'), 'auth')):

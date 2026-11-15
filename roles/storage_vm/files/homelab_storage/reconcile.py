@@ -218,27 +218,21 @@ def apply(volumes, cfg, sha, dry_run):
 
 
 def _fenced_tags(cfg):
-    """Fenced node -> boot id from the retained VG tags; None when they cannot be read."""
+    """(fenced node -> boot id, errors) from the retained VG tags; valid fence tags survive a bad one."""
     retained = lvm.vgs(tuple(cfg['vgs']))['retained']
     if not retained.present:
-        return None
-    try:
-        return Cluster.from_tags(retained.tags, 'retained').fenced()
-    except ValueError as e:
-        host.log(f'error: {e}')
-        return None
+        return {}, ['cannot read the fence tags from VG retained']
+    c = Cluster.parse(retained.tags, 'retained')
+    return c.fenced(), c.errors
 
 
 def restore_set(cfg):
     """Re-add every fenced worker's bridge address to the nft set (reads VG tags only); 0 ok, 1 on any error."""
-    errors = []
     with host.LIO_LOCK:
-        fenced = _fenced_tags(cfg)
-        if fenced is None:
-            errors.append('cannot read the fence tags from VG retained')
+        fenced, errors = _fenced_tags(cfg)
         addrs = {w['name']: w['bridge_address'] for w in cfg['workers']}
         # Add every resolvable address first: a stale tag must not leave a known fenced worker admitted.
-        for node in sorted(fenced or {}):
+        for node in sorted(fenced):
             if node not in addrs:
                 errors.append(f'fenced node {node} is not a configured worker')
             else:
@@ -250,14 +244,12 @@ def restore_set(cfg):
 
 def boot_check(cfg):
     """After targetctl restore: drop fenced workers' ACLs, save, then fail if a ledgered target is not restored."""
-    errors = []
     with host.LIO_LOCK:
         vgs = lvm.vgs(tuple(cfg['vgs']))
-        fenced = _fenced_tags(cfg)
-        if fenced is None and vgs['retained'].present:
-            errors.append('cannot read the fence tags from VG retained: fenced ACLs not stripped')
+        fenced, errors = _fenced_tags(cfg)
+        errors = [f'{e}: only the valid fence tags were applied' for e in errors]
         lio_ = lio.Lio()
-        for node in sorted(fenced or {}):
+        for node in sorted(fenced):
             lio_.delete_acl(lio.worker_iqn(node))
         lio_.save()
         for n, v in vgs.items():

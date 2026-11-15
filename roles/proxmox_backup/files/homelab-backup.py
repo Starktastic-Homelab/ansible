@@ -128,6 +128,10 @@ def crash_problems(max_age_s=None):
 
 def pool_problems(cfg):
     pool = cfg['pool']
+    # An idle pool can read ONLINE for hours after the cable is pulled, until some I/O touches it.
+    # .get: on the first deploy the script is installed before the sources.json that names the disk.
+    if cfg.get('disk') and not Path(cfg['disk']).exists():
+        return [f'backup disk {cfg["disk"]} is missing; check the USB cable, then see the backup runbook']
     health = run(['zpool', 'list', '-H', '-o', 'health', pool])
     if health.returncode or health.stdout.strip() != 'ONLINE':
         return [f'pool {pool} is not ONLINE: {(health.stdout + health.stderr).strip()}']
@@ -250,7 +254,11 @@ def maint(cfg):
 def health(cfg):
     # Recent records only: one email after a crash reboot, without holding the check down (and silent about new
     # problems) for as long as backups stay paused.
-    problems = crash_problems(max_age_s=3 * 3600) + pool_problems(cfg)
+    problems = crash_problems(max_age_s=3 * 3600)
+    # Stop here when the pool is down: on a suspended pool zfs list, and zpool status across all pools, can block
+    # for good, and a hung run sends no /fail. The other pools are checked again once this one is back.
+    if pool := pool_problems(cfg):
+        return problems + pool
     status = run(['zpool', 'status', '-x'])
     if status.stdout.strip() != 'all pools are healthy':
         problems.append('zpool status -x: ' + (status.stdout + status.stderr).strip()[-1000:])

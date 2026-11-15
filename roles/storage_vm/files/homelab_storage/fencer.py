@@ -48,6 +48,7 @@ class Fencer:
         self.api_errors = {'auth': 0, 'unreachable': 0}
         self.last_api_success = 0  # 0 until the first success, so StorageFencerBlind sees a series from the start
         self.active = set()
+        self.watched = {}  # worker -> bootID in the last loop; emptied by a blind loop and by a restart (a gap)
 
     def worker(self, name):
         if name not in self.addrs:
@@ -138,6 +139,7 @@ class Fencer:
                 vas = self.api.get(VAS)[0]['items']
             except kube.ApiError as e:
                 self._api_error(e)  # blind: no lio, nft or taint call
+                self.watched = {}
                 return
             self.last_api_success = int(time.time())
             nodes = nodes['items']
@@ -154,6 +156,14 @@ class Fencer:
         cluster = self.cluster()
         fenced, holds = cluster.fenced(), cluster.holds()
         history = fence_policy.BootHistory.load(fence_policy.HISTORY_PATH)
+        prev, self.watched = self.watched, {}  # an exception below leaves it empty: a gap, so the safe side
+        # A NotReady bootID stays unseen only if the fencer watched it appear (a slow reboot, ADR 0017 :372-374).
+        # After a gap the worker may have been Ready on it unwatched (blind, then partitioned), so it counts as seen.
+        for n in nodes:
+            name, b = n['metadata']['name'], fence_policy._boot_id(n)
+            if name in self.addrs and name not in fenced and not fence_policy._ready(n)[0] and \
+                    (name not in prev or prev[name] not in (b, history.last_ready(name))):
+                history.record(name, b, False)
         v = fence_policy.evaluate(nodes, vas, cluster, history, self.cfg, server_time)
         lio_ = lio.Lio()
         for name in v.continue_fence:
@@ -168,12 +178,12 @@ class Fencer:
         for name, reason in sorted(v.reasons.items()):
             host.log(f'{name}: {reason}')
         self.active = set(self.cluster().fenced())
-        # Only unfenced, Ready workers are recorded: a bootID posted while NotReady (a slow boot) must stay unseen,
-        # or that worker, once fenced, would never be unfenced.
         for n in nodes:
             name = n['metadata']['name']
-            if name in self.addrs and name not in self.active and fence_policy._ready(n)[0]:
-                history.record(name, fence_policy._boot_id(n), True)
+            if name in self.addrs and name not in self.active:  # a fenced worker's history is frozen
+                self.watched[name] = fence_policy._boot_id(n)
+                if fence_policy._ready(n)[0]:
+                    history.record(name, self.watched[name], True)
         history.save(fence_policy.HISTORY_PATH)
 
     def write_metrics(self):

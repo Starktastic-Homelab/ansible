@@ -351,6 +351,30 @@ class UnfenceTest(Base):
         self.loop(fz)
         self.assertFalse(any(t.startswith('fenced:') for t in f.tags()))
 
+    def test_gap_then_partition_stays_fenced(self):
+        # w2 rebooted A -> C unwatched (fencer blind or restarted), may have run pods on C, then partitioned. C must
+        # count as seen, or w2 is unfenced on the heal without a reboot (ADR 0017 :404). Cost: a slow reboot that
+        # overlaps a gap stays fenced until `storage-fencer unfence`.
+        for gap in ('blind', 'restart'):
+            with self.subTest(gap=gap):
+                self.tmp = Path(tempfile.mkdtemp())
+                self.addCleanup(shutil.rmtree, self.tmp)
+                f = self.fake(nodes=[node('w1', bootid=B), node('w2', bootid=A)])
+                fz = self.loop()
+                if gap == 'blind':
+                    f.api.error = kube.ApiUnreachable('down')
+                    self.loop(fz)
+                    f.api.error = None
+                else:
+                    fz = fencer.Fencer(config())
+                f.api.nodes['w2'] = node('w2', ready=False, age=301, bootid=C)
+                self.loop(fz)
+                self.assertIn(f'fenced:w2:{A}', f.tags())
+                self.assertIn(C, self.history()['w2']['seen'])
+                f.api.nodes['w2'] = node('w2', bootid=C, taints=f.api.nodes['w2']['spec']['taints'])
+                self.loop(fz)
+                self.assertIn(f'fenced:w2:{A}', f.tags())
+
 
 class LoopTest(Base):
     def test_api_error_does_nothing(self):
@@ -374,7 +398,7 @@ class LoopTest(Base):
         fz = self.loop()
         self.assertIn(f'fenced:w2:{A}', f.tags())
         self.assertEqual(self.history(), {'w1': {'seen': [B], 'last_ready': B}, 'w2': frozen})
-        f.api.nodes['w1'] = node('w1', ready=False, age=10, bootid=C)  # NotReady bootIDs are never recorded
+        f.api.nodes['w1'] = node('w1', ready=False, age=10, bootid=C)  # watched appearing, so not recorded
         self.loop(fz)
         self.assertEqual(self.history()['w1'], {'seen': [B], 'last_ready': B})
         self.assertEqual(self.history()['w2'], frozen)

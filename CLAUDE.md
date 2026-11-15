@@ -17,7 +17,8 @@ packer → terraform → ansible → apps; the system overview is `../CLAUDE.md`
 - Pushing ser2net files deploys ser2net to the host; pushing `proxmox_backup` files deploys the backup role
   (`proxmox-backup.yml`); pushing the guest startup role, playbook or `group_vars/proxmox_hosts/guest_startup.yml`
   sets guest boot order (`proxmox-guest-startup.yml`, effective next host boot), the host's reboot-on-crash
-  sysctl and SPL settings and KSM off (live at once), and kdump with `crashkernel=1G` (next host boot).
+  sysctl and SPL settings and KSM off (live at once). kdump is installed but off
+  (`proxmox_guest_startup_kdump_enabled: false`, next host boot drops `crashkernel=`) since the 2026-11-15 test.
   `format.yml` pushes Prettier commits to PR branches.
 - `deploy.yml` does not path-ignore this file: keep CLAUDE.md edits out of PRs that must deploy a role, since
   a plain merge would also run the full K3s deploy and a `[skip ci]` merge would skip the role's own workflow.
@@ -71,7 +72,8 @@ A new guest image (replaced VMs) uses `current-stack` mode instead, plus the Ope
   dropping the guest param in the same change (README "Host and guest driver versions differ on purpose").
 - The Proxmox host boots systemd-boot from `/etc/kernel/cmdline` (UEFI, ZFS root); `/etc/default/grub` is
   ignored there. The role appends missing params to the file and runs `proxmox-boot-tool refresh`;
-  `proxmox_guest_startup` appends its kdump params the same way, so neither role drops the other's.
+  `proxmox_guest_startup` edits its kdump params the same way (adds `crash_kexec_post_notifiers`, adds or drops
+  `crashkernel=`), so neither role drops the other's.
 - `docs/iscsi-*.md` and `docs/superpowers/` are history; #286 retired the iSCSI executor.
 
 ## Contracts

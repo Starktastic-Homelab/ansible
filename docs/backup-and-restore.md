@@ -332,10 +332,13 @@ replica). After a loss they need re-initialisation as empty volumes. **TODO:** t
 ## After a kernel crash
 
 `proxmox_guest_startup` makes the host reboot 10 s after a kernel oops (`kernel.panic_on_oops=1`,
-`kernel.panic=10`) and panic on a failed ZFS assertion (`spl_panic_halt=1`). Since 2026-11-15 kdump first boots a
-crash kernel that saves `/var/crash/<stamp>/{dmesg,dump}.<stamp>` (2 kept, a few minutes on the SATA root
-mirror), then reboots; `crash_kexec_post_notifiers` keeps the pstore record below. A `dump` file can exist even
-when makedumpfile failed, so open it with `crash` before relying on it. Before that, the 2026-11-10 ZFS
+`kernel.panic=10`) and panic on a failed ZFS assertion (`spl_panic_halt=1`); `crash_kexec_post_notifiers` keeps
+the pstore record below. kdump is installed but off by default: in the 2026-11-15 sysrq-c test makedumpfile was
+OOM-killed at `crashkernel=1G` and the crash kernel never rebooted, so pve sat there until a power cycle. Setting
+`proxmox_guest_startup_kdump_enabled: true` reserves `proxmox_guest_startup_crashkernel` (default `2G`) at the next
+boot and saves `/var/crash/<stamp>/{dmesg,dump}.<stamp>` (2 kept) before rebooting; a failed save now reboots too
+(`KDUMP_FAIL_CMD`, `FailureAction=reboot-force`). Test it attended. A `dump` file can exist even when makedumpfile
+failed, so open it with `crash` before relying on it. Before that, the 2026-11-10 ZFS
 `arc_evict` oops during a backup left the host hung for 4.5 h. At boot systemd-pstore archives the crash record in
 `/var/lib/systemd/pstore`, and `proxmox_backup` overrides systemd's 14-day cleanup of it
 (`/etc/tmpfiles.d/systemd-pstore.conf`).

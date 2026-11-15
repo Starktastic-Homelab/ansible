@@ -90,6 +90,9 @@ jobs:
       - name: Test storage fencer executor and CLI
         run: python3 scripts/tests/test_storage_fencer.py
 
+      - name: Test storage expiry
+        run: python3 scripts/tests/test_storage_expiry.py
+
       - name: Run ansible-lint
         run: |
           set +e

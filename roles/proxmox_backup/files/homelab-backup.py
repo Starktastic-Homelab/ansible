@@ -108,6 +108,12 @@ def restic(cfg, *args):
     return sh(['restic', '-o', sftp, *args])
 
 
+def clear_stale_locks(cfg):
+    # A run killed by a crash leaves its repository lock, and maint's exclusive lock then fails on it. Safe here:
+    # main() holds the backup flock, so no restic of ours is running; plain unlock keeps other hosts' live locks.
+    restic(cfg, 'unlock')
+
+
 def crash_problems(max_age_s=None):
     """The host rebooted after a kernel crash. Backups stop until someone reads the record and moves it away, so a
     crash the backup itself sets off (2026-11-10, ZFS arc_evict) costs one reboot, not one every night. With
@@ -207,6 +213,7 @@ def backup(cfg):
             if source['raw_key'] and sh(['zfs', 'get', '-H', '-o', 'value', 'keystatus', dataset]).strip() != 'available':
                 sh(['zfs', 'load-key', '-L', f'file://{SECRETS}/apps.key', dataset])
             sh(['mount', '-t', 'zfs', '-o', 'ro', fresh_snapshot(cfg, listing, dataset), mount_point(source['mount'])])
+        clear_stale_locks(cfg)  # after the freshness refusals, so a refused run never touches the repository
         problems = mirror(cfg) + upload(cfg, [str(MOUNT_ROOT), '/etc', cfg['git_dir'], '/root'], 'daily')
         if dumps := glob.glob(cfg['vzdump_glob']):
             problems += upload(cfg, [max(dumps, key=os.path.getmtime)], 'vzdump')
@@ -228,6 +235,7 @@ def backup(cfg):
 def maint(cfg):
     if problems := crash_problems() + pool_problems(cfg):
         raise Refused('; '.join(problems))
+    clear_stale_locks(cfg)
     # Group by tags: each weekly vzdump has a different path, so the default host,paths grouping keeps them all.
     group = ['--host', 'pve', '--group-by', 'host,tags']
     for tag in ('daily', 'nfs'):

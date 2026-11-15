@@ -3,6 +3,8 @@
 validate --inventory FILE                     schema only, no host I/O
 apply --inventory FILE --config FILE [--dry-run]
 boot-check --config FILE                      strip fenced ACLs, save, verify every ledgered target
+expire-candidates --config FILE               JSON of pending-delete LVs past quarantine (none under hold_create)
+expire --id ID --config FILE                  delete one such LV's target, data, ledger and write its tombstone
 """
 import argparse
 import hashlib
@@ -15,7 +17,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from . import config, host, inventory, lio, lvm, metrics, nft, plan
-from .ledger import HOLD_CREATE, Cluster, tag_created, tag_creating
+from .ledger import HOLD_CREATE, Cluster, tag_created, tag_creating, tag_tombstone
 
 MARKER_TMP = None  # parent of the private marker mount dir; None = the system temp dir
 # A dry run (before the maintenance lock) exits 1 only for these; hold_create and per-entry refusals do not block it.
@@ -270,6 +272,55 @@ def boot_check(cfg):
     return 1 if errors else 0
 
 
+def _pending(vgs, cluster, cfg, lio_):
+    """pending-delete LVs past quarantine as {id, vg, since, ...}; nothing at all when the holds cannot be read or hold_create is set."""
+    if cluster is None or HOLD_CREATE in cluster.holds():
+        return []
+    out = []
+    for n, v in vgs.items():
+        for id, lv in sorted(v.lvs.items()):
+            since = [int(t[len(plan.PENDING_PREFIX):]) for t in lv.tags if t.startswith(plan.PENDING_PREFIX)]
+            if not since or time.time() - max(since) <= cfg['quarantine_seconds']:  # the newest tag wins
+                continue
+            try:
+                busy = bool(lio_.sessions(id))
+            except lio.InUse:
+                busy = True
+            out.append({'id': id, 'vg': n, 'since': max(since), 'volume_handle': id, 'iqn': lio.iqn(id), 'sessions': busy})
+    return out
+
+
+def expire_candidates(cfg):
+    with host.LIO_LOCK:
+        vgs, cluster = _state(cfg)
+        print(json.dumps(_pending(vgs, cluster, cfg, lio.Lio())))
+    return 0
+
+
+def expire(cfg, id):
+    """Re-check age, hold and sessions under the lock, then remove the target, the data and the ledger; any error is 1."""
+    try:
+        with host.LIO_LOCK:
+            vgs, cluster = _state(cfg)
+            lio_ = lio.Lio()
+            c = next((c for c in _pending(vgs, cluster, cfg, lio_) if c['id'] == id), None)
+            if c is None:
+                raise RuntimeError(f'{id}: not a pending-delete volume past quarantine, or creation is held')
+            if c['sessions']:
+                raise RuntimeError(f'{id}: has an iSCSI session, or sessions cannot be read')
+            lio_.delete_target(id)
+            lio_.save()
+            host.run(['blkdiscard', f'/dev/{c["vg"]}/{id}'])
+            host.run(['lvremove', '-y', f'{c["vg"]}/{id}'])
+            lvm.vg_tags(c['vg'], delete=[t for t in vgs[c['vg']].tags if t.startswith(f'ledger:{id}:')],
+                        add=[tag_tombstone(id)])
+        metrics.drop(METRICS, id)  # the deleted id's series; the next reconcile rewrites the rest
+    except Exception as e:
+        host.log(f'error: expire {id}: {e}')
+        return 1
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog='storage-reconcile')
     sub = p.add_subparsers(dest='cmd', required=True)
@@ -280,12 +331,18 @@ def main(argv=None):
     a.add_argument('--config', required=True)
     a.add_argument('--dry-run', action='store_true')
     sub.add_parser('boot-check').add_argument('--config', required=True)
+    sub.add_parser('expire-candidates').add_argument('--config', required=True)
+    x = sub.add_parser('expire')
+    x.add_argument('--id', required=True)
+    x.add_argument('--config', required=True)
     args = p.parse_args(argv)
     try:
-        if args.cmd == 'boot-check':
+        if args.cmd in ('boot-check', 'expire-candidates', 'expire'):
             cfg = config.load(args.config)
             host.CONFIG = cfg
-            return boot_check(cfg)
+            if args.cmd == 'expire':
+                return expire(cfg, args.id)
+            return boot_check(cfg) if args.cmd == 'boot-check' else expire_candidates(cfg)
         raw = Path(args.inventory).read_bytes()
         volumes = inventory.load(raw.decode())
         if args.cmd == 'validate':

@@ -33,3 +33,15 @@ def read(name, metric):
         return None
     m = re.search(rf'^{re.escape(metric)} (\S+)$', text, re.M)
     return m[1] if m else None
+
+
+def drop(name, id):
+    """Remove every sample labelled id="<id>" from <name>.prom, atomically; a missing file is nothing to drop."""
+    path = Path(TEXTFILE_DIR) / f'{name}.prom'
+    try:
+        lines = path.read_text().splitlines(keepends=True)
+    except OSError:
+        return
+    tmp = path.with_name(path.name + '.tmp')
+    tmp.write_text(''.join(l for l in lines if f'id="{_esc(id)}"' not in l))
+    os.replace(tmp, path)

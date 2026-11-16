@@ -21,8 +21,9 @@ from homelab_storage import fence_policy, fencer, host, kube, lio  # noqa: E402
 
 SERVER_NOW = datetime(2026, 11, 9, 12, 0, 0, tzinfo=timezone.utc)
 LOCAL_NOW = 1_800_000_000
-A, B, C = ('aaaaaaaa-0000-4000-8000-00000000000a', 'bbbbbbbb-0000-4000-8000-00000000000b',
-           'cccccccc-0000-4000-8000-00000000000c')
+A, B, C, D = ('aaaaaaaa-0000-4000-8000-00000000000a', 'bbbbbbbb-0000-4000-8000-00000000000b',
+              'cccccccc-0000-4000-8000-00000000000c', 'dddddddd-0000-4000-8000-00000000000d')
+UNSETTLED = 'fenced:w2:unknown'
 W1, W2 = lio.worker_iqn('w1'), lio.worker_iqn('w2')
 W2_ADDR = '192.0.2.22'
 OOS = dict(kube.OUT_OF_SERVICE)
@@ -59,7 +60,7 @@ class FakeClock:
 
 class FakeApi:
     def __init__(self, fake):
-        self.fake, self.nodes, self.vas, self.error = fake, {}, [], None
+        self.fake, self.nodes, self.vas, self.error, self.patch_error = fake, {}, [], None, None
 
     def get(self, path):
         self.fake.record('api.get', path)
@@ -73,8 +74,8 @@ class FakeApi:
 
     def patch_node_taints(self, name, taints, resource_version):
         self.fake.record('api.patch', name, tuple(t['key'] for t in taints))
-        if self.error:
-            raise self.error
+        if self.error or self.patch_error:
+            raise self.error or self.patch_error
         self.nodes[name]['spec']['taints'] = list(taints)
 
 
@@ -97,6 +98,7 @@ class FenceLio(FakeLio):
             t['acls'].add(acl_iqn)
 
     def acl_iqns(self, id):
+        self.fake.record('lio.acl_iqns', id)
         return set(self.targets_[id]['acls'])
 
 
@@ -107,11 +109,15 @@ class FenceHost(FakeHost):
                                   'p': {'dev': '/dev/regen/p', 'acls': set(acls)}})
         self.lio = FenceLio(self, self.lio.targets_)
         self.api, self.clock, self.ss, self.nft_sticks = FakeApi(self), FakeClock(), [], True
+        self.ss_errors = 0  # the next N `ss` calls fail
 
     def run(self, argv, check=True):
         a = list(argv)
         if a[0] == 'ss':
             self.record(*argv)
+            if self.ss_errors:
+                self.ss_errors -= 1
+                raise subprocess.CalledProcessError(1, argv, '', 'fake failure')
             return subprocess.CompletedProcess(argv, 0, ''.join(l + '\n' for l in self.ss), '')
         if a[:3] == ['nft', 'delete', 'element']:
             self.record(*argv)
@@ -145,6 +151,9 @@ class FenceHost(FakeHost):
     def tags(self):
         return self.vgs['retained']['tags']
 
+    def fence_tags(self):
+        return {t for t in self.tags() if t.startswith('fenced:')}
+
 
 class Base(unittest.TestCase):
     def setUp(self):
@@ -159,6 +168,12 @@ class Base(unittest.TestCase):
             (self.tmp / 'bootids.json').write_text(json.dumps(history))
         self.f = f
         return f
+
+    def running(self, **cfg):
+        """A Fencer past its first loop; a fresh one un-settles every tag on its first loop."""
+        fz = fencer.Fencer(config(**cfg))
+        fz.started = True
+        return fz
 
     def loop(self, fencer_=None, **cfg):
         f = fencer_ or fencer.Fencer(config(**cfg))
@@ -186,10 +201,25 @@ class Base(unittest.TestCase):
         """w1 healthy, w2 NotReady past the window: the loop fences w2."""
         return self.fake(nodes=[node('w1'), node('w2', ready=False, age=301)], **kw)
 
+    def w2(self, **kw):
+        """w2 posts a new status; its taints stay as the fencer left them."""
+        self.f.api.nodes['w2'] = node('w2', taints=self.f.api.nodes['w2']['spec']['taints'], **kw)
+
+    def vgchanges_in(self, fz):
+        n = len(self.f.find('vgchange'))
+        self.loop(fz)
+        return self.f.find('vgchange')[n:]
+
     def assertFencedLive(self, f):
         self.assertIn(W2_ADDR, f.fenced_set)
         self.assertFalse(any(W2 in t['acls'] for t in f.lio.targets_.values()))
         self.assertEqual(f.api.nodes['w2']['spec']['taints'], [OOS])
+
+    def assertUnfenced(self, f):
+        self.assertEqual(f.fence_tags(), set())
+        self.assertNotIn(W2_ADDR, f.fenced_set)
+        self.assertTrue(all(W2 in t['acls'] for t in f.lio.targets_.values()))
+        self.assertEqual(f.api.nodes['w2']['spec']['taints'], [])
 
 
 class FenceTest(Base):
@@ -200,7 +230,8 @@ class FenceTest(Base):
             'vgchange', 'checkpoint:fence:1', 'nft add', 'checkpoint:fence:2', 'lio.delete_acl', 'checkpoint:fence:3',
             'checkpoint:fence:4', 'lio.save', 'checkpoint:fence:5', 'api.patch', 'checkpoint:fence:6'])
         self.assertTrue(all(held for _, held in f.steps()), f.steps())
-        self.assertEqual(f.find('vgchange'), [('vgchange', '--addtag', f'fenced:w2:{A}', 'retained')])
+        self.assertEqual(f.find('vgchange'), [('vgchange', '--addtag', UNSETTLED, 'retained')])
+        self.assertIn('fence w2: tagged, bootID not settled yet', self.err)
         self.assertEqual(f.find('lio.delete_acl'), [('lio.delete_acl', W2)])
         for id in ('a', 'p'):  # both VGs' targets, each ACL's session logged before the delete
             self.assertIn(f'{lio.iqn(id)}: InitiatorName: {W2}', self.err)
@@ -214,7 +245,7 @@ class FenceTest(Base):
         self.assertEqual(f.find('lio.save'), [])
         self.assertGreaterEqual(f.clock.t, 60)
         self.assertIn('storage_fence_failures_total 1\n', self.prom())
-        self.assertIn(f'fenced:w2:{A}', f.tags())  # the tag and the drop stay; the next loop retries
+        self.assertIn(UNSETTLED, f.tags())  # the tag and the drop stay; the next loop retries
         f.ss = []
         self.loop(fz)
         self.assertEqual(len(f.find('api.patch')), 1)
@@ -254,8 +285,7 @@ class FenceTest(Base):
                 with mock.patch.object(host, 'checkpoint', crash), self.assertRaises(Crash):
                     self.loop()
                 self.assertEqual(f.find('api.patch'), [])
-                self.loop()  # a fresh fencer process, from the state the crash left
-                self.loop()
+                self.loop(self.loop())  # a fresh fencer process, from the state the crash left; it settles next
                 self.assertEqual(len(f.find('api.patch')), 1)
                 self.assertEqual({t for t in f.tags() if t.startswith('fenced:')}, {f'fenced:w2:{A}'})
                 self.assertFencedLive(f)
@@ -304,47 +334,271 @@ class FenceTest(Base):
                 self.assertIn(f'w2: {hold}', self.err)
 
 
-class UnfenceTest(Base):
-    def fenced(self, w2, history=None, **kw):
-        return self.fake(nodes=[node('w1', bootid=B), w2], tags=[f'fenced:w2:{A}'], fenced_set=[W2_ADDR], acls=[W1],
-                         history=history if history is not None else {'w2': {'seen': [A], 'last_ready': A}}, **kw)
+class SettleTest(Base):
+    def test_settle_after_proof(self):
+        f = self.hung_w2()
+        fz = self.loop()
+        self.assertEqual(f.fence_tags(), {UNSETTLED})
+        self.assertEqual(self.vgchanges_in(fz),
+                         [('vgchange', '--deltag', UNSETTLED, '--addtag', f'fenced:w2:{A}', 'retained')])
+        self.assertEqual(f.fence_tags(), {f'fenced:w2:{A}'})
+        self.assertIn(f'fence w2: settled on bootID {A}', self.err)
 
-    def test_unfence_order_tag_last(self):
-        f = self.fenced(node('w2', bootid=C, taints=[OOS]))
+    def test_opening_proof_before_api_read(self):
+        f = self.fake(nodes=[node('w1', bootid=B), node('w2', ready=False)], tags=[f'fenced:w2:{A}'],
+                      fenced_set=[W2_ADDR], acls=[W1])
+        self.loop(self.running())
+        calls = [c for c, _ in f.calls]
+        first_read = calls.index(('api.get', fencer.NODES))
+        before = {c[0] if c[0] != 'nft' else ' '.join(c[:3]) for c in calls[:first_read]}
+        self.assertLessEqual({'lio.acl_iqns', 'nft -j list', 'ss'}, before)
+        self.assertTrue(all(held for _, held in f.calls[:first_read + 1]))
+
+    def test_brief_ready_then_notready_stays_fenced(self):
+        # The hole: w2 rebooted to C, was Ready (and could mount) between two reads, then hung. C must not unfence it.
+        f = self.fake(nodes=[node('w1', bootid=B), node('w2', bootid=A)])
+        fz = self.loop()
+        self.w2(ready=False, age=301, bootid=C)
+        self.loop(fz)
+        self.assertEqual(f.fence_tags(), {UNSETTLED})
+        self.loop(fz)
+        self.assertEqual(f.fence_tags(), {f'fenced:w2:{C}'})
+        self.w2(bootid=C)
+        self.loop(fz)
+        self.assertEqual(f.fence_tags(), {f'fenced:w2:{C}'})
+        self.assertFencedLive(f)
+        self.w2(bootid=D)
+        self.loop(fz)
+        self.assertUnfenced(f)
+
+    def test_reboot_before_fence_stays_fenced(self):
+        # A slow boot C posted before the fence: the fencer cannot tell it from one that mounted, so one more reboot.
+        f = self.fake(nodes=[node('w1', bootid=B), node('w2', bootid=A)])
+        fz = self.loop()
+        self.w2(ready=False, age=100, bootid=C)
+        self.loop(fz)
+        self.w2(ready=False, age=301, bootid=C)
+        self.loop(fz)
+        self.loop(fz)
+        self.assertEqual(f.fence_tags(), {f'fenced:w2:{C}'})
+        self.w2(bootid=C)
+        self.loop(fz)
+        self.assertFencedLive(f)
+        self.w2(bootid=D)
+        self.loop(fz)
+        self.assertUnfenced(f)
+
+    def test_reboot_after_fence_unfences(self):
+        f = self.hung_w2()
+        fz = self.loop()
+        self.loop(fz)
+        self.assertEqual(f.fence_tags(), {f'fenced:w2:{A}'})
+        self.w2(ready=False, bootid=C)
+        self.loop(fz)
+        self.assertEqual(f.fence_tags(), {f'fenced:w2:{A}'})
+        self.assertIn('w2: not-ready', self.err)
+        self.w2(bootid=C)
+        self.loop(fz)
+        self.assertUnfenced(f)
+
+    def test_boot_during_proof_is_settled(self):
+        f = self.hung_w2()
+
+        def hook(name):
+            f.record('checkpoint', name)
+            if name == 'fence:3':
+                self.w2(ready=False, age=301, bootid=C)  # w2 reset and posted C while the cut was being proven
+        with mock.patch.object(host, 'checkpoint', hook):
+            fz = self.loop()
+        self.loop(fz)
+        self.assertEqual(f.fence_tags(), {f'fenced:w2:{C}'})
+        self.w2(bootid=C)
+        self.loop(fz)
+        self.assertFencedLive(f)
+
+    def test_restart_unsettles(self):
+        # Also covers a tag written by the old fencer: the new one's first loop un-settles it.
+        for still_on_a in (False, True):
+            with self.subTest(still_on_a=still_on_a):
+                self.tmp = Path(tempfile.mkdtemp())
+                self.addCleanup(shutil.rmtree, self.tmp)
+                w2 = node('w2', ready=False, bootid=A, taints=[OOS]) if still_on_a else node('w2', bootid=C,
+                                                                                             taints=[OOS])
+                f = self.fake(nodes=[node('w1', bootid=B), w2], tags=[f'fenced:w2:{A}'], fenced_set=[W2_ADDR],
+                              acls=[W1], history={'w2': {'seen': [A]}})
+                fz = fencer.Fencer(config())
+                self.assertEqual(self.vgchanges_in(fz),
+                                 [('vgchange', '--deltag', f'fenced:w2:{A}', '--addtag', UNSETTLED, 'retained')])
+                self.assertNotIn('lio.add_acl', f.writes())
+                self.assertFencedLive(f)
+                self.loop(fz)
+                settled = A if still_on_a else C
+                self.assertEqual(f.fence_tags(), {f'fenced:w2:{settled}'})
+                self.w2(bootid=settled)
+                self.loop(fz)
+                self.assertFencedLive(f)
+                self.w2(bootid=C if still_on_a else D)
+                self.loop(fz)
+                self.assertUnfenced(f)
+
+    def test_restart_before_settle(self):
+        f = self.hung_w2()
         self.loop()
+        fz = fencer.Fencer(config())
+        self.assertEqual(self.vgchanges_in(fz), [])
+        self.loop(fz)
+        self.assertEqual(f.fence_tags(), {f'fenced:w2:{A}'})
+        self.w2(bootid=A)
+        self.loop(fz)
+        self.assertFencedLive(f)
+
+    def test_fall_off_unsettles(self):
+        f = self.fake(nodes=[node('w1', bootid=B), node('w2', ready=False, taints=[OOS])], tags=[f'fenced:w2:{A}'],
+                      fenced_set=[W2_ADDR], acls=[W1], history={'w2': {'seen': [A]}})
+        fz = self.running()
+        f.fenced_set.discard(W2_ADDR)
+        for t in f.lio.targets_.values():
+            t['acls'].add(W2)
+        self.w2(bootid=C)
+        self.assertEqual(self.vgchanges_in(fz),
+                         [('vgchange', '--deltag', f'fenced:w2:{A}', '--addtag', UNSETTLED, 'retained')])
+        self.assertIn('fence w2: unsettled', self.err)
+        self.assertFencedLive(f)
+        self.loop(fz)
+        self.assertEqual(f.fence_tags(), {f'fenced:w2:{C}'})
+        self.loop(fz)
+        self.assertFencedLive(f)
+
+    def test_proof_error_is_not_a_fall_off(self):
+        f = self.fake(nodes=[node('w1', bootid=B), node('w2', bootid=C, taints=[OOS])], tags=[f'fenced:w2:{A}'],
+                      fenced_set=[W2_ADDR], acls=[W1], history={'w2': {'seen': [A]}})
+        fz = self.running()
+        f.ss_errors = 1
+        self.assertEqual(self.vgchanges_in(fz), [])
+        self.assertNotIn('lio.add_acl', f.writes())
+        self.assertIn('w2: proof-error', self.err)
+        self.loop(fz)
+        self.assertUnfenced(f)
+
+    def test_api_error_after_fence_keeps_unknown(self):
+        f = self.hung_w2()
+        fz = self.loop()
+        f.api.error = kube.ApiUnreachable('down')
+        self.assertEqual(self.vgchanges_in(fz), [])
+        self.assertEqual(f.fence_tags(), {UNSETTLED})
+        f.api.error = None
+        self.loop(fz)
+        self.assertEqual(f.fence_tags(), {f'fenced:w2:{A}'})
+
+    def test_proof_failure_stays_unsettled(self):
+        f = self.hung_w2()
+        f.ss = [SS_LINE]
+        fz = self.loop()
+        self.w2(bootid=C)
+        for _ in range(3):
+            self.loop(fz)
+            self.assertEqual(f.fence_tags(), {UNSETTLED})
+        self.assertEqual(f.find('api.patch'), [])
+
+    def test_bad_tag_blocks_settle_not_unsettle(self):
+        f = self.fake(nodes=[node('w1', bootid=B), node('w2', ready=False)], tags=['fenced:w1:bad', UNSETTLED],
+                      fenced_set=[W2_ADDR], acls=[W1])
+        self.assertEqual(self.vgchanges_in(self.running()), [])
+        self.assertEqual(f.fence_tags(), {'fenced:w1:bad', UNSETTLED})
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        f = self.fake(nodes=[node('w1', bootid=B), node('w2', ready=False)], tags=['fenced:w1:bad', f'fenced:w2:{A}'])
+        self.assertEqual(self.vgchanges_in(self.running()),
+                         [('vgchange', '--deltag', f'fenced:w2:{A}', '--addtag', UNSETTLED, 'retained')])
+
+    def test_node_missing_stays_unsettled(self):
+        f = self.hung_w2()
+        fz = self.loop()
+        del f.api.nodes['w2']
+        self.loop(fz)
+        self.assertEqual(f.fence_tags(), {UNSETTLED})
+        self.assertIn('w2: unsettled', self.err)
+        f.api.nodes['w2'] = node('w2', ready=False, age=301)
+        self.loop(fz)
+        self.assertEqual(f.fence_tags(), {f'fenced:w2:{A}'})
+
+    def test_rebuild_empty_history(self):
+        f = self.fake(nodes=[node('w1', bootid=B), node('w2', taints=[OOS])], tags=[f'fenced:w2:{A}'],
+                      fenced_set=[W2_ADDR], acls=[W1])
+        self.assertFalse((self.tmp / 'bootids.json').exists())
+        fz = self.running()
+        self.loop(fz)
+        self.assertFencedLive(f)
+        self.w2(bootid=C)
+        self.loop(fz)
+        self.assertUnfenced(f)
+
+
+class UnfenceTest(Base):
+    def fenced(self, w2, history={'w2': {'seen': [A]}}, **kw):
+        return self.fake(nodes=[node('w1', bootid=B), w2], tags=[f'fenced:w2:{A}'], fenced_set=[W2_ADDR], acls=[W1],
+                         history=history, **kw)
+
+    def test_unfence_order_taint_first(self):
+        f = self.fenced(node('w2', bootid=C, taints=[OOS]))
+        self.loop(self.running())
         self.assertEqual([n for n, _ in f.steps()], [
-            'lio.add_acl', 'checkpoint:unfence:1', 'nft delete', 'checkpoint:unfence:2', 'lio.save',
-            'checkpoint:unfence:3', 'api.patch', 'checkpoint:unfence:4', 'vgchange', 'checkpoint:unfence:5'])
+            'api.patch', 'checkpoint:unfence:1', 'lio.add_acl', 'checkpoint:unfence:2', 'nft delete',
+            'checkpoint:unfence:3', 'lio.save', 'checkpoint:unfence:4', 'vgchange', 'checkpoint:unfence:5'])
         self.assertTrue(all(held for _, held in f.steps()))
         self.assertEqual(f.find('vgchange'), [('vgchange', '--deltag', f'fenced:w2:{A}', 'retained')])
-        self.assertEqual(f.fenced_set, set())
-        self.assertTrue(all(W2 in t['acls'] for t in f.lio.targets_.values()))
-        self.assertEqual(f.api.nodes['w2']['spec']['taints'], [])
-        self.assertEqual(self.history()['w2'], {'seen': [A, C], 'last_ready': C})
+        self.assertUnfenced(f)
+        self.assertEqual(self.history()['w2'], {'seen': [A, C]})
 
     def test_unfence_keeps_other_taints(self):
         other = {'key': 'example.com/x', 'effect': 'NoSchedule'}
         f = self.fenced(node('w2', bootid=C, taints=[other, OOS]))
-        self.loop()
+        self.loop(self.running())
         self.assertEqual(f.api.nodes['w2']['spec']['taints'], [other])
 
-    def test_unfence_resumes_after_crash_each_step(self):
-        for step in range(1, 5):
-            with self.subTest(step=step):
-                self.tmp = Path(tempfile.mkdtemp())
-                self.addCleanup(shutil.rmtree, self.tmp)
-                f = self.fenced(node('w2', bootid=C, taints=[OOS]))
+    def test_unfence_api_error_retries(self):
+        f = self.fenced(node('w2', bootid=C, taints=[OOS]))
+        fz = self.running()
+        f.api.patch_error = kube.ApiUnreachable('down')
+        self.loop(fz)
+        self.assertNotIn('lio.add_acl', f.writes())
+        self.assertEqual(f.fence_tags(), {f'fenced:w2:{A}'})
+        f.api.patch_error = None
+        self.loop(fz)
+        self.assertUnfenced(f)
 
-                def crash(name, at=f'unfence:{step}'):
-                    f.record('checkpoint', name)
-                    if name == at:
-                        raise Crash(name)
-                with mock.patch.object(host, 'checkpoint', crash), self.assertRaises(Crash):
-                    self.loop()
-                self.assertIn(f'fenced:w2:{A}', f.tags())  # the tag goes last
-                self.loop()
-                self.assertNotIn(f'fenced:w2:{A}', f.tags())
-                self.assertEqual((f.fenced_set, f.api.nodes['w2']['spec']['taints']), (set(), []))
+    def test_unfence_crash_after_reopen_refences(self):
+        # Storage open under a tag looks like a fence that fell off: cut again, settle on C, one more reboot (D).
+        for restart in (False, True):
+            for step in range(1, 5):
+                with self.subTest(restart=restart, step=step):
+                    self.tmp = Path(tempfile.mkdtemp())
+                    self.addCleanup(shutil.rmtree, self.tmp)
+                    f = self.fenced(node('w2', bootid=C, taints=[OOS]))
+                    fz = self.running()
+
+                    def crash(name, at=f'unfence:{step}'):
+                        f.record('checkpoint', name)
+                        if name == at:
+                            raise Crash(name)
+                    with mock.patch.object(host, 'checkpoint', crash), self.assertRaises(Crash):
+                        self.loop(fz)
+                    self.assertEqual(f.fence_tags(), {f'fenced:w2:{A}'})  # the tag goes last
+                    if restart:
+                        fz = fencer.Fencer(config())
+                    self.loop(fz)
+                    if step == 1 and not restart:  # nothing was reopened: the unfence just finishes
+                        self.assertUnfenced(f)
+                        continue
+                    self.assertEqual(f.fence_tags(), {UNSETTLED})
+                    self.assertFencedLive(f)
+                    self.loop(fz)
+                    self.assertEqual(f.fence_tags(), {f'fenced:w2:{C}'})
+                    self.loop(fz)
+                    self.assertFencedLive(f)
+                    self.w2(bootid=D)
+                    self.loop(fz)
+                    self.assertUnfenced(f)
 
     def test_unfence_unknown_needs_confirmation(self):
         f = self.fake(nodes=[node('w1'), node('w2', bootid=C)], tags=['fenced:w2:unknown'], fenced_set=[W2_ADDR],
@@ -358,67 +612,6 @@ class UnfenceTest(Base):
         self.assertEqual(f.writes(), ['lio.add_acl', 'nft delete', 'lio.save', 'vgchange'])  # no taint to remove
         self.assertNotIn('fenced:w2:unknown', f.tags())
 
-    def test_slow_reboot_unfences(self):
-        f = self.fenced(node('w2', ready=False, bootid=C))
-        self.loop()
-        self.assertIn(f'fenced:w2:{A}', f.tags())
-        self.assertNotIn(C, self.history()['w2']['seen'])
-        f.api.nodes['w2'] = node('w2', bootid=C)
-        self.loop()
-        self.assertNotIn(f'fenced:w2:{A}', f.tags())
-
-    def test_slow_reboot_from_before_the_fence(self):
-        # The new bootID C is posted while NotReady, before the fence; it must not count as seen (ADR 0017 :372-374).
-        f = self.fake(nodes=[node('w1', bootid=B), node('w2', bootid=A)])
-        fz = self.loop()
-        f.api.nodes['w2'] = node('w2', ready=False, age=100, bootid=C)
-        self.loop(fz)
-        f.api.nodes['w2'] = node('w2', ready=False, age=301, bootid=C)
-        self.loop(fz)
-        self.assertIn(f'fenced:w2:{A}', f.tags())  # tagged with the last Ready bootID, not C
-        f.api.nodes['w2'] = node('w2', bootid=C, taints=f.api.nodes['w2']['spec']['taints'])
-        self.loop(fz)
-        self.assertFalse(any(t.startswith('fenced:') for t in f.tags()))
-
-    def test_gap_then_partition_stays_fenced(self):
-        # w2 rebooted A -> C unwatched (fencer blind or restarted), may have run pods on C, then partitioned. C must
-        # count as seen, or w2 is unfenced on the heal without a reboot (ADR 0017 :404). Cost: a slow reboot that
-        # overlaps a gap stays fenced until `storage-fencer unfence`.
-        for gap in ('blind', 'restart'):
-            with self.subTest(gap=gap):
-                self.tmp = Path(tempfile.mkdtemp())
-                self.addCleanup(shutil.rmtree, self.tmp)
-                f = self.fake(nodes=[node('w1', bootid=B), node('w2', bootid=A)])
-                fz = self.loop()
-                if gap == 'blind':
-                    f.api.error = kube.ApiUnreachable('down')
-                    self.loop(fz)
-                    f.api.error = None
-                else:
-                    fz = fencer.Fencer(config())
-                f.api.nodes['w2'] = node('w2', ready=False, age=301, bootid=C)
-                self.loop(fz)
-                self.assertIn(f'fenced:w2:{A}', f.tags())
-                self.assertIn(C, self.history()['w2']['seen'])
-                f.api.nodes['w2'] = node('w2', bootid=C, taints=f.api.nodes['w2']['spec']['taints'])
-                self.loop(fz)
-                self.assertIn(f'fenced:w2:{A}', f.tags())
-
-
-    def test_slow_loop_is_a_gap(self):
-        # The lock wait (a reconcile, a proof poll) left w2 unwatched for 100 s: it may have rebooted A -> C, been
-        # Ready on C and partitioned, so C counts as seen and the heal does not unfence.
-        f = self.fake(nodes=[node('w1', bootid=B), node('w2', bootid=A)])
-        fz = self.loop()
-        f.clock.t += 100
-        f.api.nodes['w2'] = node('w2', ready=False, age=301, bootid=C)
-        self.loop(fz)
-        self.assertIn(f'fenced:w2:{A}', f.tags())
-        self.assertIn(C, self.history()['w2']['seen'])
-        f.api.nodes['w2'] = node('w2', bootid=C, taints=f.api.nodes['w2']['spec']['taints'])
-        self.loop(fz)
-        self.assertIn(f'fenced:w2:{A}', f.tags())
-
     def test_api_read_under_the_lock(self):
         # A worker that recovered while the fencer waited for the lock must not be fenced on the old reading.
         f = self.hung_w2()
@@ -429,20 +622,21 @@ class UnfenceTest(Base):
         # w2 is validly tagged and its fence fell off (address gone, ACL back); w1 has a malformed tag and w2 is
         # Ready on a new bootID. The loop re-applies w2's fence, unfences nothing and counts a failure each loop.
         f = self.fake(nodes=[node('w1', bootid=B), node('w2', bootid=C)], tags=['fenced:w1:bad', f'fenced:w2:{A}'],
-                      history={'w2': {'seen': [A], 'last_ready': A}})
+                      history={'w2': {'seen': [A]}})
         fz = self.loop()
         self.assertIn(W2_ADDR, f.fenced_set, self.err)
-        self.assertIn(W2_ADDR, f.fenced_set)
         self.assertFalse(any(W2 in t['acls'] for t in f.lio.targets_.values()))
-        self.assertIn(f'fenced:w2:{A}', f.tags())
+        self.assertIn(UNSETTLED, f.tags())  # the fall-off un-settles it; the bad tag then blocks the settle
         self.assertNotIn('lio.add_acl', f.writes())
         self.assertIn('malformed fence tag', self.err)
         self.loop(fz)
+        self.assertIn(UNSETTLED, f.tags())
         self.assertIn('storage_fence_failures_total 2\n', self.prom())
         self.assertEqual(self.cli('unfence', 'w2')[0], 1)
-        self.assertIn(f'fenced:w2:{A}', f.tags())
+        self.assertIn(UNSETTLED, f.tags())
         rc, out = self.cli('status')
         self.assertEqual((rc, json.loads(out)['errors']), (1, ["malformed fence tag 'fenced:w1:bad'"]))
+
 
 class LoopTest(Base):
     def test_api_error_does_nothing(self):
@@ -454,48 +648,37 @@ class LoopTest(Base):
                 f.api.error = err
                 fz = self.loop()
                 self.loop(fz)
-                self.assertEqual([c[0] for c, _ in f.calls], ['api.get', 'api.get'])
+                self.assertEqual([c[0] for c, _ in f.calls], ['vgs', 'lvs', 'api.get'] * 2)  # tags read, no proof yet
                 self.assertIn(f'storage_fencer_api_errors_total{{code="{code}"}} 2\n', self.prom())
                 self.assertIn('storage_fencer_last_api_success_timestamp_seconds 0\n', self.prom())
 
-    def test_history_frozen_while_fenced(self):
+    def test_history_records_any_ready_state_and_freezes(self):
         # w2 is Ready again with a bootID it had before the fence: it stays fenced and its history must not move.
-        frozen = {'seen': [A, C], 'last_ready': A}
-        f = self.fake(nodes=[node('w1', bootid=B), node('w2', bootid=C)], tags=[f'fenced:w2:{A}'], fenced_set=[W2_ADDR],
-                      history={'w2': frozen})
-        fz = self.loop()
-        self.assertIn(f'fenced:w2:{A}', f.tags())
-        self.assertEqual(self.history(), {'w1': {'seen': [B], 'last_ready': B}, 'w2': frozen})
-        f.api.nodes['w1'] = node('w1', ready=False, age=10, bootid=C)  # watched appearing, so not recorded
+        frozen = {'seen': [A, C]}
+        f = self.fake(nodes=[node('w1', bootid=B), node('w2', bootid=C, taints=[OOS])], tags=[f'fenced:w2:{A}'],
+                      fenced_set=[W2_ADDR], acls=[W1], history={'w2': frozen})
+        fz = self.loop(self.running())
+        self.assertEqual(f.fence_tags(), {f'fenced:w2:{A}'})
+        self.assertEqual(self.history(), {'w1': {'seen': [B]}, 'w2': frozen})
+        f.api.nodes['w1'] = node('w1', ready=False, age=10, bootid=C)
         self.loop(fz)
-        self.assertEqual(self.history()['w1'], {'seen': [B], 'last_ready': B})
-        self.assertEqual(self.history()['w2'], frozen)
+        self.assertEqual(self.history(), {'w1': {'seen': [B, C]}, 'w2': frozen})
 
-    def test_manual_fence_unknown_bootid(self):
+    def test_manual_fence_tags_unknown(self):
         f = self.fake(nodes=[node('w1'), node('w2', ready=False, age=10)])
         f.api.error = kube.ApiUnreachable('down')
-        rc, _ = self.cli('fence', 'w2')
-        self.assertEqual(rc, 1)
-        self.assertIn('--boot-id', self.err)
-        rc, _ = self.cli('fence', 'w2', '--boot-id', 'not-a-uuid')
-        self.assertEqual(rc, 1)
-        self.assertEqual(f.writes(), [])
-        rc, out = self.cli('fence', 'w2', '--boot-id', 'unknown')
+        rc, out = self.cli('fence', 'w2')
         self.assertEqual(rc, 0, self.err)
         self.assertEqual(json.loads(out), {'acl_present': {'a': False, 'p': False}, 'addr_in_set': True,
                                            'established': []})
-        self.assertIn('fenced:w2:unknown', f.tags())
+        self.assertEqual(f.fence_tags(), {UNSETTLED})
         self.assertEqual(f.writes(), ['vgchange', 'nft add', 'lio.delete_acl', 'lio.save'])  # steps 1-5, no taint
+        self.assertEqual(f.find('api.get'), [])
+        with self.assertRaises(SystemExit):
+            self.cli('fence', 'w2', '--boot-id', 'x')
         f.api.error = None
-        f.api.nodes['w2'] = node('w2', bootid=C)  # resumed and Ready with a new bootID
-        self.loop()
-        self.assertIn('fenced:w2:unknown', f.tags())
-
-    def test_manual_fence_takes_bootid_from_api(self):
-        f = self.fake(nodes=[node('w1'), node('w2', ready=False, age=10, bootid=B)])
-        rc, _ = self.cli('fence', 'w2')
-        self.assertEqual(rc, 0, self.err)
-        self.assertIn(f'fenced:w2:{B}', f.tags())
+        self.loop(self.running())
+        self.assertEqual(f.fence_tags(), {f'fenced:w2:{A}'})
 
     def test_metrics(self):
         self.hung_w2()
@@ -509,7 +692,7 @@ class LoopTest(Base):
 
     def test_cli_commands_never_write_metrics(self):
         self.fake(nodes=[node('w1'), node('w2', ready=False, age=10)])
-        self.cli('fence', 'w2', '--boot-id', 'unknown')
+        self.cli('fence', 'w2')
         self.cli('status')
         self.assertFalse((self.tmp / 'textfile/storage-fencer.prom').exists())  # the loop's counters are its own
 
@@ -551,15 +734,15 @@ class CliTest(Base):
         self.assertEqual(f.fenced_set, {W2_ADDR})
 
     def test_status(self):
-        self.fake(tags=[f'fenced:w2:{A}', 'hold_fence'], history={'w1': {'seen': [B], 'last_ready': B}})
+        self.fake(tags=[f'fenced:w2:{A}', 'hold_fence'], history={'w1': {'seen': [B]}})
         rc, out = self.cli('status')
         self.assertEqual(rc, 0, self.err)
         self.assertEqual(json.loads(out), {'fenced': {'w2': A}, 'holds': ['hold_fence'],
-                                           'history': {'w1': {'seen': [B], 'last_ready': B}}})
+                                           'history': {'w1': {'seen': [B]}}})
 
     def test_unconfigured_node_refused(self):
         f = self.fake()
-        for cmd in (('fence', 'ghost', '--boot-id', 'unknown'), ('unfence', 'ghost'), ('prove', 'ghost')):
+        for cmd in (('fence', 'ghost'), ('unfence', 'ghost'), ('prove', 'ghost')):
             with self.subTest(cmd=cmd):
                 self.assertEqual(self.cli(*cmd)[0], 1)
         self.assertEqual(f.writes(), [])

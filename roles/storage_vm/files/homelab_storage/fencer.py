@@ -1,13 +1,16 @@
 """storage-fencer: cut a hung worker off at the storage side, prove it, and only then taint it (ADR 0017).
 
 run                                     the loop, every loop_seconds; SIGTERM is honoured between loops
-fence NODE [--boot-id ID|unknown]       manual fence: steps 1-5, no taint; prints the proof
+fence NODE                              manual fence: steps 1-5 with bootID unknown, no taint; prints the proof
 unfence NODE [--confirm-stopped]        manual unfence; a bootID-unknown tag needs --confirm-stopped
 prove NODE                              read-only proof as JSON; exit 1 if any leg fails
 restore-set                             re-add every tagged worker's address to the nft set
 status                                  fence tags, holds and bootID history as JSON
 
-Every step is idempotent and the VG tag is the durable record, so a crash at any point is finished by the next loop.
+Every step is idempotent and the VG tag is the durable record, so a crash in a fence is finished by the next loop.
+A fence tag starts unsettled (`fenced:<node>:unknown`) and is settled on the bootID of the first API read after the
+storage is proven cut; each loop proves every tagged worker before it reads the API. A crash in an unfence after the
+ACL is back is seen as a fence that fell off: the worker is cut again and needs one more reboot.
 """
 import argparse
 import json
@@ -48,8 +51,7 @@ class Fencer:
         self.api_errors = {'auth': 0, 'unreachable': 0}
         self.last_api_success = 0  # 0 until the first success, so StorageFencerBlind sees a series from the start
         self.active = set()
-        self.watched = {}  # worker -> bootID in the last loop; emptied by a blind loop and by a restart (a gap)
-        self.watched_at = None  # monotonic time of the API read behind `watched`; an old one is a gap too
+        self.started = False  # until a loop reaches its decision: a restart is a gap this process did not watch
 
     def worker(self, name):
         if name not in self.addrs:
@@ -76,12 +78,12 @@ class Fencer:
 
     # The step functions run with host.LIO_LOCK held by the caller.
 
-    def fence_steps(self, lio_, name, bootid, tagged, taint):
+    def fence_steps(self, lio_, name, tagged, taint):
         """Fence steps 1-6 (6 only if `taint`); returns the proof. Steps 5 and 6 run only after a passing proof."""
         addr = self.worker(name)
         if not tagged:
-            lvm.vg_tags('retained', add=[tag_fenced(name, bootid)])
-            host.log(f'fence {name}: tagged bootID {bootid}')
+            lvm.vg_tags('retained', add=[tag_fenced(name, fence_policy.UNKNOWN)])
+            host.log(f'fence {name}: tagged, bootID not settled yet')
         host.checkpoint('fence:1')
         nft.ensure_fenced(addr)
         host.checkpoint('fence:2')
@@ -104,15 +106,15 @@ class Fencer:
         return p
 
     def unfence_steps(self, lio_, name, bootid):
-        """ACLs, address, save, taint, and the tag last: a crash anywhere leaves the tag for the next loop."""
+        """Taint first (an API error reopens nothing), then ACLs, address, save, and the tag last."""
         addr = self.worker(name)
-        lio_.add_acl(lio.worker_iqn(name))
-        host.checkpoint('unfence:1')
-        nft.remove_fenced(addr)
-        host.checkpoint('unfence:2')
-        lio_.save()
-        host.checkpoint('unfence:3')
         self.set_taint(name, False)
+        host.checkpoint('unfence:1')
+        lio_.add_acl(lio.worker_iqn(name))
+        host.checkpoint('unfence:2')
+        nft.remove_fenced(addr)
+        host.checkpoint('unfence:3')
+        lio_.save()
         host.checkpoint('unfence:4')
         lvm.vg_tags('retained', delete=[tag_fenced(name, bootid)])
         host.log(f'unfenced {name}')
@@ -139,37 +141,64 @@ class Fencer:
             # decision never acts on a reading older than the lock wait.
             with host.LIO_LOCK:  # one-at-a-time and the tags hold for the whole decision
                 try:
-                    nodes, server_time = self.api.get(NODES)
-                    vas = self.api.get(VAS)[0]['items']
-                except kube.ApiError as e:
-                    self._api_error(e)  # blind: no lio, nft or taint call
-                    self.watched = {}
-                    return
-                read_at = time.monotonic()
-                self.last_api_success = int(time.time())
-                try:
-                    self._decide_and_act(nodes['items'], vas, server_time, read_at)
+                    # Proved before the read: any boot that could have mounted had posted its bootID by then.
+                    opened = self._opening_proofs(lio.Lio())
+                    try:
+                        nodes, server_time = self.api.get(NODES)
+                        vas = self.api.get(VAS)[0]['items']
+                    except kube.ApiError as e:
+                        self._api_error(e)  # blind: no lio write, nft write or taint call
+                        return
+                    self.last_api_success = int(time.time())
+                    self._decide_and_act(nodes['items'], vas, server_time, opened)
                 except Exception as e:
                     host.log(f'error: loop: {e}')
                     self.failures += 1
         finally:
             self.write_metrics()
 
-    def _decide_and_act(self, nodes, vas, server_time, read_at):
-        cluster = self.cluster()
+    def _opening_proofs(self, lio_):
+        """{tagged worker: True (still cut) | False (not cut) | None (the proof failed to run)}."""
+        tagged = sorted(n for n in self.cluster().fenced() if n in self.addrs)
+        if not self.started:
+            return dict.fromkeys(tagged, False)  # nothing saw the gap before this process
+        opened = {}
+        for name in tagged:
+            try:
+                opened[name] = proven(self.proof(lio_, name))
+            except Exception as e:
+                host.log(f'error: fence {name}: opening proof: {e}')
+                opened[name] = None
+        return opened
+
+    def _settle(self, cluster, by_name, opened):
+        """Un-settle a tag whose cut fell off; settle an unknown one on the bootID read after a passing proof."""
+        unknown = fence_policy.UNKNOWN
+        for name, tagged in sorted(cluster.fenced().items()):
+            if name not in self.addrs:
+                continue
+            b = fence_policy._boot_id(by_name[name]) if name in by_name else unknown
+            if tagged != unknown and opened.get(name) is False:
+                new, msg = unknown, 'unsettled'
+            elif tagged == unknown and opened.get(name) is True and not cluster.errors and b != unknown and \
+                    FENCED.match(tag_fenced(name, b)):
+                new, msg = b, f'settled on bootID {b}'
+            else:
+                continue
+
+            def retag():  # one vgchange: never zero tags, never two
+                lvm.vg_tags('retained', add=[tag_fenced(name, new)], delete=[tag_fenced(name, tagged)])
+                host.log(f'fence {name}: {msg}')
+            self._attempt(f'fence {name}', retag)
+        return self.cluster()
+
+    def _decide_and_act(self, nodes, vas, server_time, opened):
+        by_name = {n['metadata']['name']: n for n in nodes if n['metadata']['name'] in self.addrs}
+        cluster = self._settle(self.cluster(), by_name, opened)
+        self.started = True
         fenced = cluster.fenced()
         history = fence_policy.BootHistory.load(fence_policy.HISTORY_PATH)
-        prev, self.watched = self.watched, {}  # an exception below leaves it empty: a gap, so the safe side
-        if self.watched_at is None or read_at - self.watched_at > 2 * self.cfg['loop_seconds']:
-            prev = {}  # a slow loop is a gap: the worker may have been Ready unwatched in between
-        # A NotReady bootID stays unseen only if the fencer watched it appear (a slow reboot, ADR 0017 :372-374).
-        # After a gap the worker may have been Ready on it unwatched (blind, then partitioned), so it counts as seen.
-        for n in nodes:
-            name, b = n['metadata']['name'], fence_policy._boot_id(n)
-            if name in self.addrs and name not in fenced and not fence_policy._ready(n)[0] and \
-                    (name not in prev or prev[name] not in (b, history.last_ready(name))):
-                history.record(name, b, False)
-        v = fence_policy.evaluate(nodes, vas, cluster, history, self.cfg, server_time)
+        v = fence_policy.evaluate(nodes, vas, cluster, history, self.cfg, server_time, opened)
         if cluster.errors:
             # Re-apply the valid fences only: a bad tag may stand for a fenced worker, so nothing is relaxed or added.
             for e in cluster.errors:
@@ -181,22 +210,18 @@ class Fencer:
             # Steps 2-6 again, holds or not (a hold only blocks new fences); a foreign VA still blocks the taint, which
             # would force-detach a disk this fence proves nothing about (ADR 0017 "It is level-triggered").
             taint = not _foreign_va(vas, name, self.cfg['csi_driver'])
-            self._attempt(f'fence {name}', lambda: proven(self.fence_steps(lio_, name, fenced[name], True, taint)))
+            self._attempt(f'fence {name}', lambda: proven(self.fence_steps(lio_, name, True, taint)))
         if v.fence:
             host.log(f'fence {v.fence}: NotReady past {self.cfg["not_ready_seconds"]} s')
-            self._attempt(f'fence {v.fence}', lambda: proven(self.fence_steps(lio_, v.fence, v.boot_id, False, True)))
+            self._attempt(f'fence {v.fence}', lambda: proven(self.fence_steps(lio_, v.fence, False, True)))
         for name in v.unfence:
             self._attempt(f'unfence {name}', lambda: self.unfence_steps(lio_, name, fenced[name]))
         for name, reason in sorted(v.reasons.items()):
             host.log(f'{name}: {reason}')
         self.active = set(self.cluster().fenced())
-        for n in nodes:
-            name = n['metadata']['name']
-            if name in self.addrs and name not in self.active:  # a fenced worker's history is frozen
-                self.watched[name] = fence_policy._boot_id(n)
-                if fence_policy._ready(n)[0]:
-                    history.record(name, self.watched[name], True)
-        self.watched_at = read_at
+        for name, n in sorted(by_name.items()):
+            if name not in self.active:  # any Ready state; a fenced worker's history is frozen
+                history.record(name, fence_policy._boot_id(n))
         history.save(fence_policy.HISTORY_PATH)
 
     def write_metrics(self):
@@ -216,21 +241,14 @@ class Fencer:
 
     # Manual commands. They never write the metrics textfile: its counters belong to the running loop.
 
-    def manual_fence(self, name, bootid):
+    def manual_fence(self, name):
+        """No API read: the tag is unknown (or an existing one is kept), and a running loop settles it."""
         self.worker(name)
-        if bootid is None:
-            try:
-                n = self.api.get(f'{NODES}/{name}')[0]
-            except kube.ApiError as e:
-                raise RuntimeError(f'cannot read the bootID from the API ({e}); pass --boot-id <id> or --boot-id unknown')
-            bootid = fence_policy.BootHistory.load(fence_policy.HISTORY_PATH).last_ready(name) or fence_policy._boot_id(n)
-        if not FENCED.match(tag_fenced(name, bootid)):
-            raise ValueError(f'--boot-id must be a bootID UUID or unknown, not {bootid!r}')
         with host.LIO_LOCK:
             fenced = self.cluster().fenced()
-            if name in fenced and fenced[name] != bootid:
+            if name in fenced:
                 host.log(f'fence {name}: already tagged with bootID {fenced[name]}; keeping that tag')
-            p = self.fence_steps(lio.Lio(), name, fenced.get(name, bootid), name in fenced, taint=False)
+            p = self.fence_steps(lio.Lio(), name, name in fenced, taint=False)
         print(json.dumps(p))
         return 0 if proven(p) else 1
 
@@ -270,9 +288,7 @@ def main(argv=None):
     p.add_argument('--config', default=str(config.PATH))
     sub = p.add_subparsers(dest='cmd', required=True)
     sub.add_parser('run')
-    f = sub.add_parser('fence')
-    f.add_argument('node')
-    f.add_argument('--boot-id')
+    sub.add_parser('fence').add_argument('node')
     u = sub.add_parser('unfence')
     u.add_argument('node')
     u.add_argument('--confirm-stopped', action='store_true')
@@ -289,7 +305,7 @@ def main(argv=None):
         if args.cmd == 'run':
             return fz.run()
         if args.cmd == 'fence':
-            return fz.manual_fence(args.node, args.boot_id)
+            return fz.manual_fence(args.node)
         if args.cmd == 'unfence':
             return fz.manual_unfence(args.node, args.confirm_stopped)
         if args.cmd == 'prove':

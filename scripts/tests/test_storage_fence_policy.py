@@ -36,16 +36,15 @@ def history(data=None):
     return fence_policy.BootHistory(data or {})
 
 
-def evaluate(nodes, vas=(), tags=(), hist=None, cfg=CFG, now=NOW):
+def evaluate(nodes, vas=(), tags=(), hist=None, cfg=CFG, now=NOW, opened=None):
     return fence_policy.evaluate(nodes, list(vas), ledger.Cluster.from_tags(list(tags), 'retained'),
-                                 hist or history(), cfg, now)
+                                 hist or history(), cfg, now, opened or {})
 
 
 class FencePolicyTest(unittest.TestCase):
     def test_fences_after_window(self):
         v = evaluate([node('w1'), node('w2', ready=False, age=301)])
         self.assertEqual(v.fence, 'w2')
-        self.assertEqual(v.boot_id, A)
 
     def test_not_before_window(self):
         v = evaluate([node('w1'), node('w2', ready=False, age=299)])
@@ -92,36 +91,42 @@ class FencePolicyTest(unittest.TestCase):
                 self.assertIsNone(v.fence)
                 self.assertEqual(v.reasons['w2'], hold)
 
-    def test_bootid_is_last_ready(self):
-        v = evaluate([node('w1'), node('w2', ready=False, age=301, bootid=B)],
-                     hist=history({'w2': {'seen': [A, B], 'last_ready': A}}))
-        self.assertEqual((v.fence, v.boot_id), ('w2', A))
-
-    def test_bootid_falls_back_to_current(self):
+    def test_fence_names_node_only(self):
         v = evaluate([node('w1'), node('w2', ready=False, age=301, bootid=B)])
-        self.assertEqual(v.boot_id, B)
+        self.assertEqual(v.fence, 'w2')
+        self.assertFalse(hasattr(v, 'boot_id'))
+
+    def test_unsettled_never_unfences(self):
+        v = evaluate([node('w1'), node('w2', bootid=C)], tags=['fenced:w2:unknown'], opened={'w2': True})
+        self.assertEqual((v.unfence, v.continue_fence), ([], ['w2']))
+        self.assertEqual(v.reasons['w2'], 'unsettled')
+
+    def test_unfence_needs_opening_proof(self):
+        for opened, reason in ((False, 'not-proven'), (None, 'proof-error')):
+            with self.subTest(opened=opened):
+                v = evaluate([node('w1'), node('w2', bootid=C)], tags=[ledger.tag_fenced('w2', A)],
+                             opened={'w2': opened})
+                self.assertEqual((v.unfence, v.continue_fence, v.reasons['w2']), ([], ['w2'], reason))
+        v = evaluate([node('w1'), node('w2', bootid=C)], tags=[ledger.tag_fenced('w2', A)], opened={'w2': True})
+        self.assertEqual(v.unfence, ['w2'])
 
     def test_unfence_needs_unseen_bootid(self):
-        hist = {'w2': {'seen': [A, B], 'last_ready': B}}
+        hist = {'w2': {'seen': [A, B]}}
         for current in (A, B):
             with self.subTest(bootid=current):
                 v = evaluate([node('w1'), node('w2', bootid=current)], tags=[ledger.tag_fenced('w2', A)],
-                             hist=history(hist))
-                self.assertEqual((v.unfence, v.continue_fence), ([], ['w2']))
+                             hist=history(hist), opened={'w2': True})
+                self.assertEqual((v.unfence, v.continue_fence, v.reasons['w2']), ([], ['w2'], 'seen-bootid'))
 
     def test_unfence_new_bootid(self):
         v = evaluate([node('w1'), node('w2', bootid=C)], tags=[ledger.tag_fenced('w2', A)],
-                     hist=history({'w2': {'seen': [A, B], 'last_ready': B}}))
+                     hist=history({'w2': {'seen': [A, B]}}), opened={'w2': True})
         self.assertEqual((v.unfence, v.continue_fence), (['w2'], []))
 
     def test_unfence_waits_for_ready(self):
-        v = evaluate([node('w1'), node('w2', ready=False, bootid=C)], tags=[ledger.tag_fenced('w2', A)])
-        self.assertEqual((v.unfence, v.continue_fence), ([], ['w2']))
-
-    def test_unknown_bootid_never_auto_unfences(self):
-        v = evaluate([node('w1'), node('w2', bootid=C)], tags=[ledger.tag_fenced('w2', 'unknown')])
-        self.assertEqual((v.unfence, v.continue_fence), ([], ['w2']))
-        self.assertEqual(v.reasons['w2'], 'unknown-bootid')
+        v = evaluate([node('w1'), node('w2', ready=False, bootid=C)], tags=[ledger.tag_fenced('w2', A)],
+                     hist=history({'w2': {'seen': [A]}}), opened={'w2': True})
+        self.assertEqual((v.unfence, v.continue_fence, v.reasons['w2']), ([], ['w2'], 'not-ready'))
 
     def test_unconfigured_node_ignored(self):
         v = evaluate([node('w1'), node('w2'), node('m1', ready=False, age=10000)])
@@ -139,13 +144,17 @@ class BootHistoryTest(unittest.TestCase):
             path = Path(d) / 'sub' / 'bootids.json'
             h = fence_policy.BootHistory.load(path)
             self.assertEqual(h.seen('w2'), set())
-            h.record('w2', A, ready=False)
-            h.record('w2', B, ready=True)
-            h.record('w2', A, ready=False)
+            h.record('w2', A)
+            h.record('w2', B)
+            h.record('w2', B)
             h.save(path)
-            self.assertEqual(json.loads(path.read_text()), {'w2': {'seen': [A, B], 'last_ready': B}})
-            h2 = fence_policy.BootHistory.load(path)
-            self.assertEqual((h2.seen('w2'), h2.last_ready('w2')), ({A, B}, B))
+            self.assertEqual(json.loads(path.read_text()), {'w2': {'seen': [A, B]}})
+            self.assertEqual(fence_policy.BootHistory.load(path).seen('w2'), {A, B})
+            path.write_text(json.dumps({'w2': {'seen': [A, C], 'last_ready': A}}))  # written by the old fencer
+            h3 = fence_policy.BootHistory.load(path)
+            self.assertEqual(h3.seen('w2'), {A, C})
+            h3.save(path)
+            self.assertEqual(json.loads(path.read_text()), {'w2': {'seen': [A, C]}})
 
 
 class FakeResponse(io.BytesIO):

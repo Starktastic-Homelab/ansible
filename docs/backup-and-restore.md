@@ -296,8 +296,15 @@ A role deploy also starts the timer again, so don't merge `proxmox_backup` chang
 
 ### Off-site-only DR from the key kit
 
-For when `pve`, TrueNAS and `usbbk` are all gone. Not yet drilled end to end; the restic password from Keychain
-alone has opened the repository (2026-11-09, from `pve`).
+For when `pve`, TrueNAS and `usbbk` are all gone. Steps 1-3 were drilled on 2026-11-16 from a throwaway Alpine 3.22
+container (restic 0.18.0) on the operator computer: the fingerprint matched, `install-ssh-key` added the key, the
+Keychain restic password opened the repository, and `/etc/pve/storage.cfg`, `qemu-server/100.conf` and one Immich
+original restored byte-identical to the live files in 34 s. Step 4 (the rebuild) is not drilled.
+
+After a drill, remove the drill key: `install-ssh-key` writes each key twice to `.ssh/authorized_keys` (an RFC4716
+block and an OpenSSH line). From `pve`, `get` the file over `sftp -F /etc/homelab-backup.d/ssh_config storagebox`,
+drop both entries carrying the drill key's comment, keep both `pve-restic` entries, `put` it back, and check that
+`pve` still logs in.
 
 1. On a fresh machine with restic and ssh, take the host and user from `proxmox_backup_storagebox_host` and
    `proxmox_backup_storagebox_user`. Check the host key before trusting it; the ED25519 fingerprint must be
@@ -412,9 +419,9 @@ and a newline. Loki and Tempo also need the root itself owned `10001:10001`: the
 engine then crash-loops.
 
 `k3s-block` is a Proxmox NFS storage (TrueNAS `/mnt/apps/k3s-block`, `vers=4.2`, `images` content). In `pvesm
-alloc` the `G` suffix is GiB, so `16G` matches `16Gi`; raw images are created sparse. Root writes there are expected
-to work (the CSI driver and the replica restore above do), but `pvesm alloc` there is untested; if it or the loop
-mount fails with permission denied, check the share's root mapping on TrueNAS before anything else.
+alloc` the `G` suffix is GiB, so `16G` matches `16Gi`; raw images are created sparse. Root writes there work: the
+2026-11-16 dry run ran `pvesm alloc`, `mkfs.ext4` and the loop mount there as root. If one of them fails with
+permission denied, check the share's root mapping on TrueNAS before anything else.
 
 The image is built under a temporary name and linked into place only after it is unmounted: the CSI driver keeps
 retrying the attach of the missing handle, and must not attach a half-built image.
@@ -545,11 +552,13 @@ and all 50 originals matching. That script is not in this repo: it pins one run'
 - [ ] Remove the restored copies; no mounts or loop devices left; `journalctl -k` clean.
 - [ ] Re-initialisation dry run: steps 1-3 of **Re-initialise an excluded image** with `n=loki` on a scratch name
       (`tmp=vm-9999-reinit-drill.raw`, size `1G`, and `final=` a second scratch name), check `ls -lanR`, then
-      `pvesm free` both scratch names. Not yet run; the CSI attach stays untested.
+      `pvesm free` both scratch names. Last run 2026-11-16 (1 s; layout, owners, marker bytes, `ln` refusing an
+      existing name and `e2fsck -fn` all as expected). The CSI attach stays untested.
 - [ ] Re-run `truenas-keykit-export.py` and store the new kit.
 - [ ] Record the times here.
 
 ### Yearly DR drill
 
 From a machine that is not `pve`, with only Keychain and the key kit: run the off-site-only DR steps above, open
-the key kit, restore one image and a few Immich originals, and check them as in the quarterly test. Not yet done.
+the key kit, restore one image and a few Immich originals, and check them as in the quarterly test. Not yet done in full: the
+2026-11-16 drill ran steps 1-3 of the off-site-only DR (above) but did not open the key kit or restore an image.

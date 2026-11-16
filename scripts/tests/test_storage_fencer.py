@@ -505,6 +505,25 @@ class SettleTest(Base):
                     self.loop(fz)
                     self.assertUnfenced(f)
 
+    def test_fall_off_survives_blind_loop(self):
+        # A fall-off seen just before the API fails, then an external re-cut: C must not unfence on A's tag.
+        f = self.fake(nodes=[node('w1', bootid=B), node('w2', ready=False, taints=[OOS])],
+                      tags=[f'fenced:w2:{A}'], fenced_set=[W2_ADDR], acls=[W1], history={'w2': {'seen': [A]}})
+        fz = self.running()
+        f.fenced_set.discard(W2_ADDR)
+        for t in f.lio.targets_.values():
+            t['acls'].add(W2)
+        f.api.error = kube.ApiUnreachable('down')
+        self.loop(fz)
+        f.fenced_set.add(W2_ADDR)  # re-cut from outside (reconcile + nft reload, or a manual fence)
+        for t in f.lio.targets_.values():
+            t['acls'].discard(W2)
+        f.api.error = None
+        self.w2(bootid=C)
+        self.loop(fz)
+        self.assertEqual(f.fence_tags(), {UNSETTLED})
+        self.assertFencedLive(f)
+
     def test_proof_error_is_not_a_fall_off(self):
         f = self.fake(nodes=[node('w1', bootid=B), node('w2', bootid=C, taints=[OOS])], tags=[f'fenced:w2:{A}'],
                       fenced_set=[W2_ADDR], acls=[W1], history={'w2': {'seen': [A]}})

@@ -174,6 +174,8 @@ class Fencer:
             except Exception as e:
                 host.log(f'error: fence {name}: opening proof: {e}')
                 opened[name] = None
+        # Kept until the retag lands: a blind or failed loop before _settle must not lose a seen fall-off.
+        self.unsettle_failed |= {n for n in tagged if opened[n] is False and fenced[n] != fence_policy.UNKNOWN}
         return opened
 
     def _settle(self, cluster, by_name, opened):

@@ -8,5 +8,7 @@ RequiresMountsFor=%f
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/sbin/losetup --direct-io=on --find --show %f
+# Skip a file that is already attached (by hand, or before a restart): a second loop device on it gives LVM duplicate
+# PVs and it refuses the VG.
+ExecStart=/bin/sh -c '[ -n "$$(/sbin/losetup -j "$$1" -O NAME -n)" ] || exec /sbin/losetup --direct-io=on --find --show "$$1"' _ %f
 ExecStop=/bin/sh -c 'for dev in $$(/sbin/losetup -j "$$1" -O NAME -n); do /sbin/losetup -d "$$dev"; done' _ %f

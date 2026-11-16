@@ -626,7 +626,9 @@ class VariantNTests(unittest.TestCase):
 
     def test_loop_uses_direct_io(self):
         loop = unit_lines(render('storage-loop@.service.j2'))
-        self.assertIn('ExecStart=/sbin/losetup --direct-io=on --find --show %f', loop)
+        start = [line for line in loop if line.startswith('ExecStart=')]
+        self.assertEqual(len(start), 1)
+        self.assertIn('/sbin/losetup --direct-io=on --find --show "$$1"', start[0])
         self.assertIn('Type=oneshot', loop)
         self.assertIn('RemainAfterExit=yes', loop)
         stop = [line for line in loop if line.startswith('ExecStop=')]
@@ -651,6 +653,22 @@ class VariantNTests(unittest.TestCase):
             calls = log.read_text().splitlines()
         self.assertEqual(calls[0].split()[:2], ['-j', '/srv/labn/regen-n.raw'])
         self.assertEqual(calls[1:], ['-d /dev/loop3', '-d /dev/loop7'])
+
+    def test_loop_start_skips_an_attached_file(self):
+        start = next(line for line in unit_lines(render('storage-loop@.service.j2')) if line.startswith('ExecStart='))
+        args = shlex.split(start.split('=', 1)[1].replace('$$', '$').replace('%f', '/srv/labn/regen-n.raw'))
+        self.assertEqual((args[:2], args[3:]), (['/bin/sh', '-c'], ['_', '/srv/labn/regen-n.raw']))
+        for attached, expected in (('/dev/loop3', []), ('', ['--direct-io=on --find --show /srv/labn/regen-n.raw'])):
+            with tempfile.TemporaryDirectory() as tmp:
+                log = Path(tmp) / 'log'
+                fake = Path(tmp) / 'losetup'
+                fake.write_text(f'#!/bin/sh\necho "$@" >> {log}\n'
+                                f'case "$1" in -j) [ -n "{attached}" ] && echo {attached};; esac\nexit 0\n')
+                fake.chmod(0o755)
+                subprocess.run([*args[:2], args[2].replace('/sbin/losetup', str(fake)), *args[3:]], check=True)
+                calls = log.read_text().splitlines()
+            self.assertEqual(calls[0].split()[:2], ['-j', '/srv/labn/regen-n.raw'])
+            self.assertEqual(calls[1:], expected, attached)
 
     def test_variant_n_settings_asserted(self):
         that = module(by_name(role_tasks('assert'), 'Require the variant N settings'), 'assert')['that']

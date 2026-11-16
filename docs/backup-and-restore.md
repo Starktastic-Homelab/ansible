@@ -58,6 +58,31 @@ flowchart LR
 
 `maint` forgets by tag, prunes, then runs `restic check --read-data-subset 5%`.
 
+### Settings outside restic
+
+The role manages two `pve` settings: the vzdump job `backup-f56bebaa-4912` (VM100 + VM300, Sun 01:00, snapshot
+mode, `compress 0`, keep-last 3, storage `usbbk-vz`, notes `{{guestname}}`) and the `quota=150G` on
+`rpool/var-lib-vz` (storage `local`, `/var/lib/vz`). It sets the job's `enabled` only when it creates the job, so
+a disable in the Proxmox UI sticks, and it refuses to create a second job that covers VM100 or VM300.
+
+The TrueNAS side is not managed. When `proxmox_backup_enabled` is true, each `proxmox-backup.yml` deploy reads it
+read-only through the VM100 guest agent and fails if it differs from `proxmox_backup_truenas_expected`:
+
+- replication `apps to pve usbbk`: push over SSH with credential `pve-tnrepl`, `apps/k3s-block` and `apps/pv` to
+  `usbbk/tn`, automatic, custom retention 2 weeks, readonly set, properties sent minus `quota`, `reservation` and
+  `refreservation`, no re-encryption, no replication from scratch, `exclude` empty
+- the snapshot tasks of `apps/pv`, `apps/k3s-block`, `main/media` and `main/immich`: full schedule, retention,
+  recursive, naming `auto-%Y-%m-%d_%H-%M`, allow empty, enabled and `exclude` empty. `apps/pv` (recursive) and
+  `apps/k3s-block` run at :30 of 03, 09, 15, 21, kept 1 week; `main/media` at 04:00, 1 week; `main/immich` at :45
+  of 03, 09, 15, 21, 2 weeks; all every day, 00:00-23:59
+- exactly two NFS shares on `/mnt/main/immich`, both enabled, `mapall media:media`, no `maproot`, no host list and
+  default security: read-write for `10.9.8.0/24`, read-only for `10.9.9.20/32` (`pve`)
+- NFS `bindip` includes `10.9.8.30` and `10.9.9.30`
+
+Make TrueNAS changes by hand in its UI, then update `proxmox_backup_truenas_expected`. A rebuilt TrueNAS gets them
+back from the config export in the key kit, which is older than some changes: see **Stale TrueNAS config** under
+the off-site-only DR known gaps.
+
 ### Checks the backup refuses or flags
 
 - **Refuses (nothing uploaded):** a kernel crash record in `/var/lib/systemd/pstore`, `usbbk` not ONLINE,
@@ -315,8 +340,10 @@ of it (restore one in the Hetzner Console). Reading a repository straight from t
 
 Known gaps:
 
-- **Stale TrueNAS config:** the key kit holds the 2026-11-08 export, and nothing refreshes it; the VM100 dump stays
-  local. Re-run `truenas-keykit-export.py` after any TrueNAS config change and at each drill.
+- **Stale TrueNAS config:** the key kit holds the export Ben last ran (2026-11-15), and nothing refreshes it;
+  the VM100 dump stays local. Re-run `truenas-keykit-export.py` after any TrueNAS config change and at each
+  drill. If the kit's export predates the 2026-11-15 deletion of the `apps/iscsi` ZVOL and its snapshot task 2,
+  delete snapshot task 2 again after restoring TrueNAS from it.
 - **vzdump keep-last 2** keeps a complete VM300 dump through one failed upload before Sunday's maint, not two: a
   dump that stays unreadable into the next Sunday, or a failing manual re-run between Sunday's 04:30 `/fail` and
   the 05:30 maint, leaves only incomplete snapshots. After a vzdump `/fail`, fix the cause before the next Sunday,

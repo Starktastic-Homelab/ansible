@@ -468,7 +468,7 @@ On a fresh cluster where no NFS backup exists yet, the restore step **gracefully
 |----------|--------|---------|
 | `i915-sriov.yml` | Proxmox host | Install/upgrade Intel SR-IOV GPU driver |
 | `ser2net.yml` | Proxmox host | Configure TCP bridge for USB Zigbee dongle (port 3333) |
-| `proxmox-backup.yml` | Proxmox host | Host-side backup: `usbbk` import, restic and health timers, vzdump storage `usbbk-vz` |
+| `proxmox-backup.yml` | Proxmox host | Host-side backup: `usbbk` import, restic and health timers, vzdump storage `usbbk-vz` and job `backup-f56bebaa-4912`, 150G quota on `local` (`rpool/var-lib-vz`), and a read-only check of the TrueNAS replication, snapshot tasks and NFS shares (`docs/backup-and-restore.md`) |
 | `proxmox-guest-startup.yml` | Proxmox host | Guest boot order: TrueNAS (VM 100) starts first and waits 180 s so `k3s-block` NFS is up before the workers (`group_vars/proxmox_hosts/guest_startup.yml`). Also reboots the host 10 s after a kernel oops or failed ZFS assertion instead of hanging, and installs intel-microcode. kdump, KFENCE, rasdaemon and KSM off were removed on 2026-11-16 |
 
 ---
@@ -590,14 +590,14 @@ independent of K3s and NAS availability; it survives job cancellation and reboot
 No age-based takeover or unconditional unlock exists. Prohibit concurrent manual
 Proxmox GUI start/recreate operations during a maintenance operation.
 
-VM300 has 4096 MiB with a balloon floor of 4096 MiB, set by hand on November 6,
-2026 (`qm set 300 --balloon 4096`; VM300 is not in Terraform). It is the host's
-only ballooned VM, and with the host near full, auto-ballooning had held it at the
-old 1024 MiB floor. That OOM-killed helm-diff during the ArgoCD 3.6 chart upgrade:
+VM300 has 4096 MiB with a balloon floor of 2048 MiB (VM300 is not in Terraform;
+when and by whom 2048 was set is not recorded). It is the host's only ballooned
+VM, and with the host near full, auto-ballooning can hold it at the floor. At the
+old 1024 MiB floor that OOM-killed helm-diff during the ArgoCD 3.6 chart upgrade:
 the runner still had helm-diff 3.15.7, whose diff needed about 3.4 GB for the
 ArgoCD CRDs. `bootstrap_cluster` now reinstalls helm-diff whenever it differs from
-the pin. Measure a large chart diff on the current helm-diff before lowering the
-floor.
+the pin. The 2048 MiB floor is below that 3.4 GB figure and unmeasured on the
+current helm-diff: measure a large chart diff before relying on it or lowering it.
 
 Before merging workflows, run `maintenance-runner.yml` against an explicitly
 reviewed `maintenance_runner` inventory host for **VM300**, after confirming its

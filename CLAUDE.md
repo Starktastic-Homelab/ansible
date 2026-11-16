@@ -50,7 +50,7 @@ Playbook runs need the real vault, SSH key and `PROXMOX_*` env; the inventory qu
 
 Run the touched area's tests and `ansible-lint --offline`; for playbook changes, ask to run `--check`.
 Report what ran. GPU work is done only when `i915-acceptance.yml` passes post-reboot; never reboot twice.
-A new guest image (replaced VMs) uses `current-stack` mode instead, plus the OpenCL/OpenVINO check in README.
+A new guest image (replaced VMs) uses `current-stack` mode instead, plus the OpenCL/OpenVINO check in `docs/i915-sriov.md`.
 
 ## Gotchas and past decisions
 
@@ -62,14 +62,14 @@ A new guest image (replaced VMs) uses `current-stack` mode instead, plus the Ope
 - Node retirement is enabled: one host at a time, skipped in check mode. Drain recovery uncordons only
   nodes in both the dispatch payload and the inventory, after all are Ready (`k3s.yml`).
 - CSI: 29 attachment slots per worker; OS disks stay on virtio0/ide2, never scsi1-29
-  (`group_vars/all/proxmox_csi.yml`, README "Proxmox CSI bootstrap"). Changing the budget means changing
+  (`group_vars/all/proxmox_csi.yml`, `docs/maintenance-coordination.md` "Proxmox CSI bootstrap"). Changing the budget means changing
   apps' capacity alert too. The TLS anchor `files/proxmox-api-trust.pem` expires 2027-06-14.
-- Maintenance lock (README "External maintenance coordination"): failed runs keep it; never remove one for being old.
+- Maintenance lock (`docs/maintenance-coordination.md` "External maintenance coordination"): failed runs keep it; never remove one for being old.
 - apps owns ArgoCD's notifications ConfigMap/Secret (`create: false`, `bootstrap_cluster/tasks/argocd.yml`).
 - Keep host i915 pins as double-quoted YAML (`key: "value"`): packer regex-reads them.
 - Guest CCS: packer boots the K3s VMs with `i915.xelp_enable_ccs=1`, which needs the host PF to run CCS.
   Host `2026.09.16`+ only does with the same param, so `i915_sriov_grub_params` carries it; dropping it means
-  dropping the guest param in the same change (README "Host and guest driver versions differ on purpose").
+  dropping the guest param in the same change (`docs/i915-sriov.md` "Host and guest driver versions differ on purpose").
 - The Proxmox host boots systemd-boot from `/etc/kernel/cmdline` (UEFI, ZFS root); `/etc/default/grub` is
   ignored there. `i915_sriov` appends missing params to the file and runs `proxmox-boot-tool refresh`; no other
   role edits that file.

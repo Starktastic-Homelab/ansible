@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="250" viewBox="0 0 1100 250" role="img" aria-labelledby="t d">
+  <title id="t">ansible · Starktastic Homelab</title>
+  <desc id="d">Configures the Proxmox host, installs K3s and bootstraps Argo CD.</desc>
+  <defs>
+    <radialGradient id="ga"><stop offset="0" stop-color="#3B82F6" stop-opacity=".55"/><stop offset="1" stop-color="#3B82F6" stop-opacity="0"/></radialGradient>
+    <radialGradient id="gb"><stop offset="0" stop-color="#6366F1" stop-opacity=".45"/><stop offset="1" stop-color="#6366F1" stop-opacity="0"/></radialGradient>
+    <radialGradient id="gc"><stop offset="0" stop-color="#0891B2" stop-opacity=".35"/><stop offset="1" stop-color="#0891B2" stop-opacity="0"/></radialGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1B1D33"/><stop offset="1" stop-color="#0F0F1A"/></linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFFFFF" stop-opacity=".5"/><stop offset=".5" stop-color="#FFFFFF" stop-opacity=".08"/><stop offset="1" stop-color="#93C5FD" stop-opacity=".35"/></linearGradient>
+    <linearGradient id="edge" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="1100" y2="0"><stop offset="0" stop-color="#60A5FA"/><stop offset="1" stop-color="#22D3EE"/></linearGradient>
+    <linearGradient id="sq" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1B1D33"/><stop offset="1" stop-color="#0F0F1A"/></linearGradient>
+    <radialGradient id="glow" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#3B82F6" stop-opacity=".5"/><stop offset="1" stop-color="#3B82F6" stop-opacity="0"/></radialGradient>
+    <linearGradient id="st" gradientUnits="userSpaceOnUse" x1="12" y1="8" x2="36" y2="42"><stop offset="0" stop-color="#FFFFFF"/><stop offset=".35" stop-color="#93C5FD"/><stop offset=".75" stop-color="#3B82F6"/><stop offset="1" stop-color="#22D3EE"/></linearGradient>
+    <linearGradient id="wm" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="182" y2="0"><stop offset="0" stop-color="#FFFFFF"/><stop offset=".55" stop-color="#93C5FD"/><stop offset="1" stop-color="#67E8F9"/></linearGradient>
+    <clipPath id="clip"><rect width="1100" height="250" rx="28"/></clipPath>
+    <symbol id="i-ansible" viewBox="0 0 128 128"><path fill="#1A1918" d="M126 64c0 34.2-27.8 62-62 62S2 98.2 2 64 29.8 2 64 2s62 27.8 62 62"/><path fill="#FFF" d="M65 39.9l16 39.6-24.1-19.1L65 39.9zm28.5 48.7L68.9 29.2c-.7-1.7-2.1-2.6-3.8-2.6-1.7 0-3.2.9-3.9 2.6L34 94.3h9.3L54 67.5l32 25.9c1.3 1 2.2 1.5 3.4 1.5 2.4 0 4.5-1.8 4.5-4.4.1-.5-.1-1.2-.4-1.9z"/></symbol>
+  </defs>
+  <style>
+    text { font-family: Manrope, Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', 'Noto Sans', Arial, sans-serif; }
+    .mono { font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; }
+    .panel { fill: #0B0C16; }
+    .card { fill: url(#card); fill-opacity: .8; }
+    .rim { fill: none; stroke: url(#rim); }
+    .lit { fill: none; stroke: #60A5FA; stroke-width: 2; }
+    .lane { fill: #FFFFFF; fill-opacity: .035; stroke: #FFFFFF; stroke-opacity: .09; }
+    .tile { fill: #262A52; }
+    .t1 { fill: #F5F7FF; }
+    .t2 { fill: #AEB9D6; }
+    .t3 { fill: #7F8AAB; }
+    .acc { fill: #93C5FD; }
+    .vio { fill: #C4B5FD; }
+    .amb { fill: #FCD34D; }
+    .rule { stroke: #FFFFFF; stroke-opacity: .1; }
+    .chip { fill: #3B82F6; fill-opacity: .16; stroke: #60A5FA; stroke-opacity: .45; }
+    .chipt { fill: #DBEAFE; }
+    .wf { fill: #FFFFFF; fill-opacity: .06; stroke: #FFFFFF; stroke-opacity: .2; }
+    .wft { fill: #E6EBFA; }
+    .dot { fill: #22D3EE; }
+    .edge { fill: none; stroke: url(#edge); stroke-width: 2.5; stroke-opacity: .35; }
+    .flow { fill: none; stroke: url(#edge); stroke-width: 2.5; stroke-linecap: round; stroke-dasharray: 2 10; animation: flow 1.1s linear infinite; }
+    .head { fill: #22D3EE; }
+    .badge { fill: #0F1124; stroke: #60A5FA; stroke-width: 1.5; }
+    .badget { fill: #DBEAFE; }
+    .side { fill: none; stroke: #A78BFA; stroke-width: 1.5; stroke-dasharray: 3 5; stroke-linecap: round; animation: flow 3s linear infinite; }
+    .sidehead { fill: #A78BFA; }
+    .pill { fill: #171331; stroke: #A78BFA; stroke-opacity: .55; }
+    .pillt { fill: #DDD6FE; }
+    .wire { fill: none; stroke: #8A94B8; stroke-opacity: .6; stroke-width: 1.5; }
+    .wirehead { fill: #8A94B8; }
+    .hum { fill: #2A2110; stroke: #FBBF24; stroke-opacity: .6; }
+    .humt { fill: #FDE68A; }
+    .gate { fill: none; stroke: #FBBF24; stroke-opacity: .7; stroke-width: 1.5; stroke-dasharray: 6 6; }
+    .tag { fill: #151936; stroke: #8A94B8; stroke-opacity: .5; }
+    .tagt { fill: #C9D1EA; }
+    .here { fill: #13244D; stroke: #60A5FA; }
+    .heret { fill: #DBEAFE; }
+    .dim { opacity: .5; }
+    @keyframes flow { to { stroke-dashoffset: -24; } }
+    @media (prefers-reduced-motion: reduce) { .flow, .side { animation: none; } }
+  </style>
+  <g clip-path="url(#clip)"><rect class="panel" width="1100" height="250"/><g class="blob"><ellipse cx="957" cy="17.5" rx="429" ry="260" fill="url(#ga)"/><ellipse cx="110" cy="242.5" rx="429" ry="260" fill="url(#gb)"/><ellipse cx="759" cy="267.5" rx="385" ry="200" fill="url(#gc)"/></g></g>
+  <g transform="translate(48 38) scale(2.2)"><rect x="1" y="1" width="46" height="46" rx="14" fill="url(#sq)"/><circle cx="24" cy="24" r="20" fill="url(#glow)"/><path d="M37.5 14.75H20.5A9.75 9.75 0 1 0 20.5 34.25A9.75 9.75 0 1 0 20.5 14.75" fill="none" stroke="url(#st)" stroke-linecap="round" stroke-linejoin="round" stroke-width="6.25"/><rect x="1.5" y="1.5" width="45" height="45" rx="13.5" fill="none" stroke="url(#rim)" stroke-width=".6"/></g>
+  <text x="178" y="66" font-size="13" font-weight="700" letter-spacing="3" fill="#93C5FD">STARKTASTIC HOMELAB · STAGE 3 OF 4</text>
+  <text x="176" y="116" font-size="46" font-weight="800" fill="#F5F7FF">ansible</text>
+  <text x="178" y="146" font-size="17" fill="#C7D0EA">Configures the Proxmox host, installs K3s and bootstraps Argo CD.</text>
+  <rect class="tile" x="958" y="40" width="94" height="94" rx="28.2"/><use href="#i-ansible" x="976.8" y="58.8" width="56.4" height="56.4"/>
+  <g font-size="14" fill="#AEB9D6">
+    <rect x="48" y="176" width="184" height="50" rx="15" fill="#FFFFFF" fill-opacity=".06" stroke="#FFFFFF" stroke-opacity=".16"/>
+    <text x="68" y="209" font-size="23" font-weight="800" fill="#F5F7FF">9</text><text x="93" y="207">playbooks</text>
+    <rect x="249" y="176" width="184" height="50" rx="15" fill="#FFFFFF" fill-opacity=".06" stroke="#FFFFFF" stroke-opacity=".16"/>
+    <text x="269" y="209" font-size="23" font-weight="800" fill="#F5F7FF">12</text><text x="309" y="207">roles</text>
+    <rect x="450" y="176" width="184" height="50" rx="15" fill="#FFFFFF" fill-opacity=".06" stroke="#FFFFFF" stroke-opacity=".16"/>
+    <text x="470" y="209" font-size="23" font-weight="800" fill="#F5F7FF">8</text><text x="495" y="207">plays to a cluster</text>
+    <rect x="651" y="176" width="184" height="50" rx="15" fill="#FFFFFF" fill-opacity=".06" stroke="#FFFFFF" stroke-opacity=".16"/>
+    <text x="671" y="209" font-size="23" font-weight="800" fill="#F5F7FF">10</text><text x="711" y="207">workflows</text>
+  </g>
+</svg>

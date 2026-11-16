@@ -361,33 +361,22 @@ Known gaps:
 ### Re-initialise an excluded image
 
 Restic tag `daily` never holds `vm-9999-{prometheus,alertmanager,loki,tempo,karakeep-meilisearch}.raw` (the
-excludes); only the `usbbk/tn/k3s-block` replica holds a current copy (older 2026-10-16 copies of the four
-monitoring images may exist, step 2 below). This section applies when the live image is missing **and** no
+excludes); only the `usbbk/tn/k3s-block` replica holds a copy (the 2026-10-16 monitoring cutover copies were
+deleted on 2026-11-16, Ben's decision). This section applies when the live image is missing **and** no
 `usbbk/tn/k3s-block@auto-*` snapshot has it, or `usbbk` itself is lost. To check the replica, hold the lock
 (**Hold the backup lock**) and run `ls /srv/restore-src/images/9999/` on each snapshot mounted as in **One image
 from the replica**.
 
 **Pre-approved.** Ben decided on 2026-11-16 that these five images may be re-initialised blank, accepting the loss
-of their history, once the checks above show no replica copy. No further approval is needed, and step 2 below is
-optional. This is the only exception to the apps rule against creating a marker or initialising an empty replacement
-(apps `docs/runbooks/monitoring-storage.md`, `docs/runbooks/operations-home-storage.md`). It covers only a missing
+of their history, once the checks above show no replica copy. No further approval is needed. This is the only
+exception to the apps rule against creating a marker or initialising an empty replacement (apps
+`docs/runbooks/monitoring-storage.md`, `docs/runbooks/operations-home-storage.md`). It covers only a missing
 image; one that exists but is damaged still needs Ben.
 
 Decision order:
 
 1. **The replica.** Restore from `usbbk/tn/k3s-block` as in **One image from the replica**.
-2. **The 2026-10-16 cold copies** (optional, the four monitoring images only). The monitoring cutover left encrypted
-   copies and their keys on VM300 under `/var/lib/homelab-maintenance/operations/monitoring-csi-cutover-20261016/`
-   (`recovery/`, 6.1G, and `keys/`, seen 2026-11-16), and on the operator computer
-   (`~/.local/share/homelab-recovery/monitoring-csi-cutover-20261016/`, keys under `~/.config/homelab-recovery-keys/`).
-   The VM300 copies should be inside the VM300 dump in restic tag `vzdump`; nobody has checked a dump for them. apps
-   `docs/runbooks/monitoring-storage.md` only sets the rules (verify the complete SHA256, decrypt and restore
-   independently, keep all POSIX metadata); no step-by-step restore is written down, and none was drilled.
-   Prometheus, Loki and Tempo data in them is older than those engines' retention, so they are expected (not tested)
-   to delete it on first start or compaction: use it only to inspect old data offline, or raise retention first in
-   a separate change. For Alertmanager, the copy's `silences` file is the only record of long-lived silences: read
-   it offline to re-create them. Skip the operations-home copies for Meilisearch; a reindex rebuilds it.
-3. **Blank re-initialisation**, below.
+2. **Blank re-initialisation**, below.
 
 What is lost:
 

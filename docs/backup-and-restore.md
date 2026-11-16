@@ -317,8 +317,6 @@ Known gaps:
 
 - **Stale TrueNAS config:** the key kit holds the 2026-11-08 export, and nothing refreshes it; the VM100 dump stays
   local. Re-run `truenas-keykit-export.py` after any TrueNAS config change and at each drill.
-- **`apps/iscsi`** (the retired Jellyfin ZVOL, kept by `jellyfin-storage-hold`) has no replica and no off-site
-  copy. Ben decides whether to accept its loss or retire it.
 - **vzdump keep-last 2** keeps a complete VM300 dump through one failed upload before Sunday's maint, not two: a
   dump that stays unreadable into the next Sunday, or a failing manual re-run between Sunday's 04:30 `/fail` and
   the 05:30 maint, leaves only incomplete snapshots. After a vzdump `/fail`, fix the cause before the next Sunday,
@@ -332,14 +330,10 @@ replica). After a loss they need re-initialisation as empty volumes. **TODO:** t
 ## After a kernel crash
 
 `proxmox_guest_startup` makes the host reboot 10 s after a kernel oops (`kernel.panic_on_oops=1`,
-`kernel.panic=10`) and panic on a failed ZFS assertion (`spl_panic_halt=1`); `crash_kexec_post_notifiers` keeps
-the pstore record below. kdump is installed but off by default: in the 2026-11-15 sysrq-c test makedumpfile was
-OOM-killed at `crashkernel=1G` and the crash kernel never rebooted, so pve sat there until a power cycle. Setting
-`proxmox_guest_startup_kdump_enabled: true` reserves `proxmox_guest_startup_crashkernel` (default `2G`) at the next
-boot and saves `/var/crash/<stamp>/{dmesg,dump}.<stamp>` (2 kept) before rebooting; a failed save now reboots too
-(`KDUMP_FAIL_CMD`, `FailureAction=reboot-force`). Test it attended. A `dump` file can exist even when makedumpfile
-failed, so open it with `crash` before relying on it. Before that, the 2026-11-10 ZFS
-`arc_evict` oops during a backup left the host hung for 4.5 h. At boot systemd-pstore archives the crash record in
+`kernel.panic=10`) and panic on a failed ZFS assertion (`spl_panic_halt=1`). A panic writes the kernel log to
+pstore, which is the record below. kdump, KFENCE and rasdaemon were removed on 2026-11-16 (kdump never saved a dump:
+in the 2026-11-15 test makedumpfile ran out of memory and the host hung). Before the reboot settings, the 2026-11-10
+ZFS `arc_evict` oops during a backup left the host hung for 4.5 h. At boot systemd-pstore archives the crash record in
 `/var/lib/systemd/pstore`, and `proxmox_backup` overrides systemd's 14-day cleanup of it
 (`/etc/tmpfiles.d/systemd-pstore.conf`).
 

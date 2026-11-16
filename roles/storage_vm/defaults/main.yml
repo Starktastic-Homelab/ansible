@@ -25,3 +25,10 @@ storage_vm_timings:
   pause_after: []
 storage_vm_maintenance_root: /maintenance
 storage_vm_csi_driver: org.democratic-csi.node-manual
+
+# Variant N (ADR 0017 D1): NFS mounts the storage VM makes itself, [{what, where, options}]; options must hold hard
+# and vers=4.2, since a soft mount can drop acknowledged writes.
+storage_vm_nfs_mounts: []
+# Data files on those mounts, attached as loop devices before the LIO restore, [{file, vg}]. vg is retained or regen
+# (one file each) and only records which VG the device carries.
+storage_vm_loop_disks: []

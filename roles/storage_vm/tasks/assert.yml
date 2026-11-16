@@ -22,3 +22,30 @@
     fail_msg: >-
       storage_vm_ssh_sources must be a non-empty list of IPv4 addresses or CIDRs, storage_vm_bridge_address an IPv4
       address, and storage_vm_workers a non-empty list of unique {name, bridge_address}.
+
+# Variant N values go into unit files, so paths and options are refused unless they are plain (no %, \ or newline).
+- name: Require the variant N settings
+  ansible.builtin.assert:
+    that:
+      - storage_vm_nfs_mounts is sequence and storage_vm_nfs_mounts is not string and storage_vm_nfs_mounts is not mapping
+      - storage_vm_loop_disks is sequence and storage_vm_loop_disks is not string and storage_vm_loop_disks is not mapping
+      - >-
+        storage_vm_nfs_mounts | map(attribute='where', default='') | select('string')
+        | select('regex', '(/[A-Za-z0-9_][A-Za-z0-9_.-]*)+', match_type='fullmatch') | unique | list | length == storage_vm_nfs_mounts | length
+      - >-
+        storage_vm_nfs_mounts | map(attribute='what', default='') | select('string')
+        | select('regex', '[A-Za-z0-9.-]+:/[A-Za-z0-9_./-]*', match_type='fullmatch') | list | length == storage_vm_nfs_mounts | length
+      - >-
+        storage_vm_nfs_mounts | map(attribute='options', default='') | select('string')
+        | select('regex', '[A-Za-z0-9_=.:,-]+', match_type='fullmatch') | map('split', ',') | select('contains', 'hard')
+        | select('contains', 'vers=4.2') | reject('contains', 'soft') | list | length == storage_vm_nfs_mounts | length
+      - >-
+        storage_vm_loop_disks | map(attribute='file', default='') | select('string')
+        | select('regex', '(/[A-Za-z0-9_][A-Za-z0-9_.-]*)+', match_type='fullmatch') | unique | list | length == storage_vm_loop_disks | length
+      - >-
+        storage_vm_loop_disks | map(attribute='vg', default='') | select('in', ['retained', 'regen']) | unique | list
+        | length == storage_vm_loop_disks | length
+    fail_msg: >-
+      storage_vm_nfs_mounts must be a list of {what, where, options} with unique plain paths and options holding hard
+      and vers=4.2 (never soft), and storage_vm_loop_disks a list of {file, vg} with unique plain files and one entry
+      at most per VG (retained or regen).

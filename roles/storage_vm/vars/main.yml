@@ -1,0 +1,9 @@
+---
+# systemd-escape --path names for the paths assert.yml allows ([A-Za-z0-9_.-] components): only '-' needs \x2d.
+storage_vm_mount_units: >-
+  {{ storage_vm_nfs_mounts | map(attribute='where') | map('regex_replace', '^/', '') | map('replace', '-', '\x2d')
+     | map('replace', '/', '-') | map('regex_replace', '$', '.mount') | list }}
+storage_vm_loop_units: >-
+  {{ storage_vm_loop_disks | map(attribute='file') | map('regex_replace', '^/', '') | map('replace', '-', '\x2d')
+     | map('replace', '/', '-') | map('regex_replace', '^', 'storage-loop@')
+     | map('regex_replace', '$', '.service') | list }}

@@ -1,6 +1,9 @@
 """Offline checks for the storage VM role, storage.yml, storage-expiry.yml and the lab guard (ADR 0017)."""
 import json
 import re
+import shlex
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -16,6 +19,24 @@ from homelab_storage import config, lio  # noqa: E402
 WORKERS = [{'name': 'k3s-worker-01', 'bridge_address': '10.77.0.21'},
            {'name': 'k3s-worker-02', 'bridge_address': '10.77.0.22'}]
 BRIDGE = '10.77.0.10'
+# Byte copy of packer files/storage/rtslib-fb-targetctl.service.d/10-lvm.conf (Task A11), the other drop-in.
+IMAGE_LVM_DROPIN = '''[Unit]
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStartPre=/sbin/vgchange -ay retained
+ExecStartPre=-/sbin/vgchange -ay regen
+'''
+# The targetctl drop-in with both variant N lists empty, byte for byte as before Task A16.
+TARGETCTL_DROPIN = (
+    "# managed\n# The image's 10-lvm.conf activates the VGs; this re-applies fences, strips fenced ACLs and checks "
+    "LUN 0 per\n# ledgered LV. A failed start skips ExecStop (targetctl clear), so a failing check never clears "
+    "targets.\n[Unit]\nAfter=nftables.service\n\n[Service]\nExecStartPost=/usr/local/sbin/storage-fencer "
+    "restore-set\nExecStartPost=/usr/local/sbin/storage-reconcile boot-check --config "
+    "/etc/homelab-storage/config.json\n")
+LABN_MOUNT = {'what': '198.51.100.30:/srv/labn', 'where': '/srv/labn', 'options': 'vers=4.2,hard'}
+LABN_LOOP = {'file': '/srv/labn/regen-n.raw', 'vg': 'regen'}
 
 
 def load(path):
@@ -32,6 +53,7 @@ def role_tasks(name='main'):
 
 def defaults(**values):
     variables = load(ROLE / 'defaults/main.yml')
+    variables.update(load(ROLE / 'vars/main.yml'))
     variables.update({'vip_address': '10.9.9.99', 'argocd_repo_url': 'https://example.invalid/apps.git',
                       'ansible_managed': 'managed', 'storage_vm_workers': WORKERS, 'storage_vm_bridge_address': BRIDGE,
                       'storage_vm_ssh_sources': ['10.9.9.0/24', '10.9.8.0/24'], 'storage_vm_bridge_iface': 'eth1',
@@ -532,6 +554,138 @@ class ExpiryPlaybookTests(unittest.TestCase):
         self.assertIn('ansible.builtin.fail', fail)
         self.assertTrue(holds([fail['when']], storage_vm_expiry_refused=['a']))
         self.assertFalse(holds([fail['when']]))
+
+
+def unit_lines(text):
+    return [line.strip() for line in text.splitlines() if line.strip() and not line.startswith('#')]
+
+
+def derived(name, **values):
+    return list(Templar(variables=defaults(**values)).template(load(ROLE / 'vars/main.yml')[name]))
+
+
+class VariantNTests(unittest.TestCase):
+    def test_no_nfs_units_by_default(self):
+        self.assertEqual((load(ROLE / 'defaults/main.yml')['storage_vm_nfs_mounts'],
+                          load(ROLE / 'defaults/main.yml')['storage_vm_loop_disks']), ([], []))
+        self.assertEqual(render('rtslib-fb-targetctl.service.d-50-homelab.conf.j2'), TARGETCTL_DROPIN)
+        self.assertEqual((derived('storage_vm_mount_units'), derived('storage_vm_loop_units')), ([], []))
+        tasks = role_tasks()
+        mounts = by_name(tasks, 'Write the NFS mount units')
+        self.assertEqual(mounts['loop'], '{{ storage_vm_nfs_mounts | zip(storage_vm_mount_units) | list }}')
+        self.assertEqual(by_name(tasks, 'Attach the loop disks')['loop'], '{{ storage_vm_loop_units }}')
+
+    def test_unit_names_match_systemd_escape(self):
+        paths = ['/srv/labn', '/srv/lab-n/regen-n.raw', '/mnt/a_b/c.d/x-1']
+        mounts = derived('storage_vm_mount_units', storage_vm_nfs_mounts=[dict(LABN_MOUNT, where=p) for p in paths])
+        loops = derived('storage_vm_loop_units', storage_vm_loop_disks=[dict(LABN_LOOP, file=p) for p in paths])
+        self.assertEqual(mounts[0], 'srv-labn.mount')
+        self.assertEqual(loops[1], 'storage-loop@srv-lab\\x2dn-regen\\x2dn.raw.service')
+        if not shutil.which('systemd-escape'):
+            self.skipTest('systemd-escape not installed')
+        for path, mount, loop in zip(paths, mounts, loops):
+            def esc(*args):
+                return subprocess.run(['systemd-escape', '--path', *args, path], check=True, capture_output=True,
+                                      text=True).stdout.strip()
+            self.assertEqual(mount, esc('--suffix=mount'))
+            self.assertEqual(loop, esc('--template=storage-loop@.service'))
+
+    def test_mount_before_loop_before_targetctl(self):
+        mount = render('storage-nfs.mount.j2', item=[LABN_MOUNT, 'srv-labn.mount'])
+        self.assertEqual(unit_lines(mount), ['[Mount]', 'What=198.51.100.30:/srv/labn', 'Where=/srv/labn',
+                                             'Type=nfs4', 'Options=vers=4.2,hard', '[Install]',
+                                             'WantedBy=remote-fs.target'])
+        loop = unit_lines(render('storage-loop@.service.j2'))
+        self.assertIn('RequiresMountsFor=%f', loop)
+        self.assertLess(loop.index('[Unit]'), loop.index('RequiresMountsFor=%f'), loop)
+        self.assertLess(loop.index('RequiresMountsFor=%f'), loop.index('[Service]'))
+        unit = 'storage-loop@srv-labn-regen\\x2dn.raw.service'
+        dropin = unit_lines(render('rtslib-fb-targetctl.service.d-50-homelab.conf.j2', storage_vm_loop_disks=[LABN_LOOP]))
+        self.assertEqual(dropin[:4], ['[Unit]', 'After=nftables.service', f'Requires={unit}', f'After={unit}'])
+        self.assertEqual(dropin[4:], unit_lines(TARGETCTL_DROPIN)[2:])
+        # systemd merges both drop-ins into one unit: the image's vgchange ExecStartPre lines run only once every
+        # After= unit is up, so the loop device exists before regen is activated.
+        image = unit_lines(IMAGE_LVM_DROPIN)
+        self.assertIn('ExecStartPre=-/sbin/vgchange -ay regen', image)
+        self.assertNotIn('vgchange', ' '.join(dropin))
+        tasks = role_tasks()
+        names = [t['name'] for t in tasks]
+        self.assertLess(names.index('Write the NFS mount units'), names.index('Write the loop disk unit'))
+        self.assertLess(names.index('Write the loop disk unit'),
+                        names.index('Re-apply fences and check targets after the LIO restore'))
+        # storage-fencer's start reloads systemd, so the new units are loaded before they are started.
+        self.assertLess(names.index('Enable and start storage-fencer'), names.index('Start the NFS mounts'))
+        self.assertLess(names.index('Start the NFS mounts'), names.index('Attach the loop disks'))
+        self.assertLess(names.index('Attach the loop disks'), names.index('Apply unit and ruleset changes before the reconcile'))
+        start = module(by_name(tasks, 'Start the NFS mounts'), 'systemd')
+        self.assertEqual(start, {'name': '{{ item }}', 'enabled': True, 'state': 'started'})
+        self.assertEqual(module(by_name(tasks, 'Attach the loop disks'), 'systemd'),
+                         {'name': '{{ item }}', 'state': 'started'})
+        write = module(by_name(tasks, 'Write the NFS mount units'), 'template')
+        self.assertEqual(write['dest'], '/etc/systemd/system/{{ item.1 }}')
+
+    def test_loop_uses_direct_io(self):
+        loop = unit_lines(render('storage-loop@.service.j2'))
+        self.assertIn('ExecStart=/sbin/losetup --direct-io=on --find --show %f', loop)
+        self.assertIn('Type=oneshot', loop)
+        self.assertIn('RemainAfterExit=yes', loop)
+        stop = [line for line in loop if line.startswith('ExecStop=')]
+        self.assertEqual(len(stop), 1)
+        self.assertIn('/sbin/losetup -j', stop[0])
+        self.assertIn('/sbin/losetup -d', stop[0])
+        self.assertNotRegex(stop[0], r'losetup[^;]* -D|--detach-all')
+        dest = module(by_name(role_tasks(), 'Write the loop disk unit'), 'template')['dest']
+        self.assertEqual(dest, '/etc/systemd/system/storage-loop@.service')
+
+    def test_loop_stop_detaches_only_its_file(self):
+        stop = next(line for line in unit_lines(render('storage-loop@.service.j2')) if line.startswith('ExecStop='))
+        args = shlex.split(stop.split('=', 1)[1].replace('$$', '$').replace('%f', '/srv/labn/regen-n.raw'))
+        self.assertEqual((args[:2], args[3:]), (['/bin/sh', '-c'], ['_', '/srv/labn/regen-n.raw']))
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'log'
+            fake = Path(tmp) / 'losetup'
+            fake.write_text(f'#!/bin/sh\necho "$@" >> {log}\n'
+                            'case "$1" in -j) echo /dev/loop3; echo /dev/loop7;; esac\n')
+            fake.chmod(0o755)
+            subprocess.run([*args[:2], args[2].replace('/sbin/losetup', str(fake)), *args[3:]], check=True)
+            calls = log.read_text().splitlines()
+        self.assertEqual(calls[0].split()[:2], ['-j', '/srv/labn/regen-n.raw'])
+        self.assertEqual(calls[1:], ['-d /dev/loop3', '-d /dev/loop7'])
+
+    def test_variant_n_settings_asserted(self):
+        that = module(by_name(role_tasks('assert'), 'Require the variant N settings'), 'assert')['that']
+        ok = {'storage_vm_nfs_mounts': [LABN_MOUNT], 'storage_vm_loop_disks': [LABN_LOOP]}
+        self.assertTrue(holds(that))
+        self.assertTrue(holds(that, **ok))
+        both = [LABN_LOOP, {'file': '/srv/labn/retained-n.raw', 'vg': 'retained'}]
+        self.assertTrue(holds(that, storage_vm_loop_disks=both))
+        bad = [
+            {'storage_vm_nfs_mounts': [dict(LABN_MOUNT, options='vers=4.2')]},
+            {'storage_vm_nfs_mounts': [dict(LABN_MOUNT, options='vers=4.2,hard,soft')]},
+            {'storage_vm_nfs_mounts': [dict(LABN_MOUNT, options='vers=4.1,hard')]},
+            {'storage_vm_nfs_mounts': [dict(LABN_MOUNT, options='vers=4.2,hard\nExecStart=x')]},
+            {'storage_vm_nfs_mounts': [dict(LABN_MOUNT, where='/srv/labn/')]},
+            {'storage_vm_nfs_mounts': [dict(LABN_MOUNT, where='/srv/../labn')]},
+            {'storage_vm_nfs_mounts': [dict(LABN_MOUNT, where='/srv/%n')]},
+            {'storage_vm_nfs_mounts': [dict(LABN_MOUNT, what='host:/x y')]},
+            {'storage_vm_nfs_mounts': [LABN_MOUNT, LABN_MOUNT]},
+            {'storage_vm_nfs_mounts': LABN_MOUNT},
+            {'storage_vm_loop_disks': [dict(LABN_LOOP, vg='other')]},
+            {'storage_vm_loop_disks': [LABN_LOOP, dict(LABN_LOOP, vg='retained')]},
+            {'storage_vm_loop_disks': [LABN_LOOP, dict(LABN_LOOP, file='/srv/labn/b.raw')]},
+            {'storage_vm_loop_disks': [dict(LABN_LOOP, file='srv/labn/regen-n.raw')]},
+            {'storage_vm_loop_disks': [{'file': '/srv/labn/regen-n.raw'}]},
+        ]
+        for values in bad:
+            self.assertFalse(holds(that, **values), values)
+
+    def test_guest_panics_on_oops(self):
+        t = by_name(role_tasks(), 'Reboot 10 s after a kernel oops')
+        self.assertEqual(module(t, 'sysctl') or t.get('ansible.posix.sysctl'), {
+            'name': '{{ item.key }}', 'value': '{{ item.value }}', 'sysctl_file': '/etc/sysctl.d/90-panic-reboot.conf',
+            'sysctl_set': True, 'state': 'present', 'reload': True})
+        self.assertEqual(t['loop'], [{'key': 'kernel.panic_on_oops', 'value': '1'}, {'key': 'kernel.panic', 'value': '10'}])
+        self.assertNotIn('when', t)
 
 
 class WorkflowTests(unittest.TestCase):

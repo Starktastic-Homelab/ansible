@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+# Variant N: attaches one data file (the unescaped instance path) as a loop device before rtslib-fb-targetctl
+# activates the VGs. Stopping it detaches only that file's device, and stops targetctl through its Requires=.
+[Unit]
+Description=Loop device for %f
+RequiresMountsFor=%f
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/losetup --direct-io=on --find --show %f
+ExecStop=/bin/sh -c 'for dev in $$(/sbin/losetup -j "$$1" -O NAME -n); do /sbin/losetup -d "$$dev"; done' _ %f

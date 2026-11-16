@@ -3,6 +3,10 @@
 # ledgered LV. A failed start skips ExecStop (targetctl clear), so a failing check never clears targets.
 [Unit]
 After=nftables.service
+{% for unit in storage_vm_loop_units %}
+Requires={{ unit }}
+After={{ unit }}
+{% endfor %}
 
 [Service]
 ExecStartPost=/usr/local/sbin/storage-fencer restore-set

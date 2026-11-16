@@ -706,6 +706,28 @@ class LabExampleTests(unittest.TestCase):
         self.assertNotEqual(lab_vars['vip_address'], '10.9.9.99')
         self.assertTrue(lab_vars['storage_vm_ssh_sources'])
 
+    def test_examples_match_the_plan(self):
+        groups = load(ROOT / 'lab/inventory.example.yml')['all']['children']['all_k3s']['children']
+        self.assertEqual((set(groups['masters']['hosts']), set(groups['workers']['hosts'])),
+                         ({'lab-server'}, {'lab-server', 'lab-agent'}))
+        lab_vars = load(ROOT / 'lab/vars.example.yml')
+        self.assertEqual({k: lab_vars[k] for k in ('mgmt_iface', 'flannel_iface', 'proxmox_csi_enabled',
+                                                   'k3s_node_retirement_enabled')},
+                         {'mgmt_iface': 'eth0', 'flannel_iface': 'eth1', 'proxmox_csi_enabled': False,
+                          'k3s_node_retirement_enabled': False})
+        self.assertRegex(lab_vars['storage_vm_inventory_repo'], r'^/maintenance/lab-storage/.+[.]git$')
+        self.assertEqual(lab_vars['storage_vm_timings']['quarantine_seconds'], 900)
+        self.assertEqual(set(lab_vars['storage_vm_timings']), set(load(ROLE / 'defaults/main.yml')['storage_vm_timings']))
+
+    def test_variant_n_example_passes_the_role_checks(self):
+        text = (ROOT / 'lab/vars.example.yml').read_text()
+        commented = '\n'.join(line[2:] for line in text.splitlines() if line.startswith('# storage_vm_'))
+        example = DataLoader().load(commented)
+        self.assertEqual(example['storage_vm_loop_disks'], [{'file': '/srv/labn/regen-n.raw', 'vg': 'regen'}])
+        self.assertEqual([m['where'] for m in example['storage_vm_nfs_mounts']], ['/srv/labn'])
+        that = module(by_name(role_tasks('assert'), 'Require the variant N settings'), 'assert')['that']
+        self.assertTrue(holds(that, **example))
+
 
 if __name__ == '__main__':
     unittest.main()

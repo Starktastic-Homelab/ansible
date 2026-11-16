@@ -14,7 +14,10 @@ all:
           hosts:
             lab-server:
               ansible_host: 192.0.2.41
+        # lab-server is also a worker: the k3s server schedules the CSI node plugin, which needs the label
+        # k3s_workers sets (its join step skips a node that already has k3s).
         workers:
           hosts:
+            lab-server:
             lab-agent:
               ansible_host: 192.0.2.42

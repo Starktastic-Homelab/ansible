@@ -28,12 +28,12 @@ class _Conflict(ApiUnreachable):
 
 
 def with_out_of_service(node, present):
-    """The node's taints with the out-of-service taint added or removed; every other taint is kept as is."""
+    """The node's taints with exactly one out-of-service taint (key, value and effect) added or removed; other keys are kept as is."""
     taints = (node.get('spec') or {}).get('taints') or []
     others = [t for t in taints if t.get('key') != OUT_OF_SERVICE['key']]
     if not present:
         return others
-    return taints if len(others) < len(taints) else others + [OUT_OF_SERVICE]
+    return taints if [t for t in taints if t.get('key') == OUT_OF_SERVICE['key']] == [OUT_OF_SERVICE] else others + [OUT_OF_SERVICE]
 
 
 class Client:

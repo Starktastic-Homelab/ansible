@@ -242,6 +242,21 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(kube.with_out_of_service(node('w2', taints=[other, OOS]), True), [other, OOS])
         self.assertEqual(kube.with_out_of_service(node('w2', taints=[other, OOS]), False), [other])
 
+    def test_taint_replaces_other_effect(self):
+        other = {'key': 'example.com/keep', 'effect': 'NoSchedule'}
+        for stale in ({**OOS, 'effect': 'NoSchedule'}, {**OOS, 'value': 'x'}):
+            n = node('w2', taints=[stale, other, {**OOS, 'effect': 'PreferNoSchedule'}])
+            self.assertEqual(kube.with_out_of_service(n, True), [other, OOS])
+
+    def test_taint_kept_when_exact(self):
+        taints = [OOS, {'key': 'example.com/keep', 'effect': 'NoSchedule'}]
+        self.assertIs(kube.with_out_of_service(node('w2', taints=taints), True), taints)
+
+    def test_untaint_removes_all_with_key(self):
+        other = {'key': 'example.com/keep', 'effect': 'NoSchedule'}
+        n = node('w2', taints=[other, {**OOS, 'effect': 'NoSchedule'}, OOS])
+        self.assertEqual(kube.with_out_of_service(n, False), [other])
+
     def test_patch_conflict_retries(self):
         other = {'key': 'example.com/new', 'effect': 'NoSchedule'}
         fresh = node('w2', taints=[other])

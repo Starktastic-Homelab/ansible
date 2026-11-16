@@ -469,7 +469,7 @@ On a fresh cluster where no NFS backup exists yet, the restore step **gracefully
 | `i915-sriov.yml` | Proxmox host | Install/upgrade Intel SR-IOV GPU driver |
 | `ser2net.yml` | Proxmox host | Configure TCP bridge for USB Zigbee dongle (port 3333) |
 | `proxmox-backup.yml` | Proxmox host | Host-side backup: `usbbk` import, restic and health timers, vzdump storage `usbbk-vz` |
-| `proxmox-guest-startup.yml` | Proxmox host | Guest boot order: TrueNAS (VM 100) starts first and waits 180 s so `k3s-block` NFS is up before the workers (`group_vars/proxmox_hosts/guest_startup.yml`). Also reboots the host 10 s after a kernel oops or failed ZFS assertion instead of hanging, and keeps KSM off. Crash instrumentation: KFENCE sampling (live and on the kernel command line, `proxmox_guest_startup_debug_cmdline`) and rasdaemon for machine-check events. kdump is installed but off by default (`proxmox_guest_startup_kdump_enabled`) |
+| `proxmox-guest-startup.yml` | Proxmox host | Guest boot order: TrueNAS (VM 100) starts first and waits 180 s so `k3s-block` NFS is up before the workers (`group_vars/proxmox_hosts/guest_startup.yml`). Also reboots the host 10 s after a kernel oops or failed ZFS assertion instead of hanging, and installs intel-microcode. kdump, KFENCE, rasdaemon and KSM off were removed on 2026-11-16 |
 
 ---
 

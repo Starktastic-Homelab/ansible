@@ -26,7 +26,7 @@ flowchart LR
 
 | Tag | Contents |
 |---|---|
-| `daily` | `/srv/backup-src/{k3s-block,pv}`, `/etc` (including `/etc/pve`), `/usbbk/git`, `/root`; minus `/etc/homelab-backup` and the excludes in `/etc/homelab-backup.d/excludes.txt` (five images re-initialised blank after a loss, see **Re-initialise an excluded image**; Immich `thumbs/` and `encoded-video/`) |
+| `daily` | `/srv/backup-src/{k3s-block,pv}`, `/etc` (including `/etc/pve`), `/usbbk/git`, `/root`; minus `/etc/homelab-backup` and the excludes in `/etc/homelab-backup.d/excludes.txt` (five images re-initialised blank after a loss, see **Re-initialise an excluded image**; Immich `thumbs/` and `encoded-video/`; until the ADR 0017 lab ends, the lab's `images/9970`) |
 | `vzdump` | the newest `vzdump-qemu-300-*.vma` (Garage Terraform state). The VM100 dump stays local. |
 | `nfs` | `/srv/backup-src/immich`, uploaded last so a broken share can't hold back the others |
 

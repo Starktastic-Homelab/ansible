@@ -537,12 +537,18 @@ and all 50 originals matching. That script is not in this repo: it pins one run'
       XFS), and `od -An -t u8 -N8 <pgdata>/global/pg_control` prints `7584099661242523698` (postgres) and
       `7614955115223928876` (immich-postgres).
 - [ ] 50 random Immich originals from tag `nfs` are byte-identical (`cmp`) to the live share on a read-only mount.
-- [ ] SQLite `integrity_check` on an app database from tag `daily` (in the design, not yet run).
+- [ ] SQLite `integrity_check` on an app database from tag `daily`: restore a live block image (not a retired NFS
+      source), attach it with `losetup -r`, mount it `ro,noload` and check each `*.db`. Last run 2026-11-16 on the
+      Sonarr and Home Assistant images: every database `ok`.
 - [ ] Remove the restored copies; no mounts or loop devices left; `journalctl -k` clean.
 - [ ] Re-initialisation dry run: steps 1-3 of **Re-initialise an excluded image** with `n=loki` on a scratch name
       (`tmp=vm-9999-reinit-drill.raw`, size `1G`, and `final=` a second scratch name), check `ls -lanR`, then
       `pvesm free` both scratch names. Last run 2026-11-16 (1 s; layout, owners, marker bytes, `ln` refusing an
-      existing name and `e2fsck -fn` all as expected). The CSI attach stays untested.
+      existing name and `e2fsck -fn` all as expected).
+- [ ] CSI attach of a re-initialised image: a scratch PV/PVC (`proxmox-retained`, RWOP, handle
+      `homelab//k3s-block/9999/vm-9999-csi-attach-drill.raw`) and a pod that reads the marker and writes as 10001,
+      then delete them and check that no VolumeAttachment or worker VM config (201, 202) still names the image before
+      `pvesm free`. Last run 2026-11-16 (attached in 15 s, all as expected).
 - [ ] Re-run `truenas-keykit-export.py` and store the new kit.
 - [ ] Record the times here.
 

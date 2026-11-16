@@ -260,19 +260,48 @@ class FenceTest(Base):
                 self.assertEqual({t for t in f.tags() if t.startswith('fenced:')}, {f'fenced:w2:{A}'})
                 self.assertFencedLive(f)
 
-    def test_continue_fence_untainted_under_hold(self):
-        # Under hold_fence (the migration) a manual fence keeps its drop, but only a person applies the taint.
-        f = self.fake(nodes=[node('w1'), node('w2', ready=False)], tags=['hold_fence', f'fenced:w2:{A}'])
+    def continue_under(self, hold):
+        # ADR 0017 "It is level-triggered": a hold blocks new fences only, so a started fence still gets its taint.
+        f = self.fake(nodes=[node('w1'), node('w2', ready=False)], tags=[hold, f'fenced:w2:{A}'])
         self.loop()
-        self.assertEqual(f.find('api.patch'), [])
-        self.assertIn(W2_ADDR, f.fenced_set)
-        f.tags().discard('hold_fence')
-        f.api.vas = [{'spec': {'nodeName': 'w2', 'attacher': 'csi.proxmox.sinextra.dev'}}]
-        self.loop()
-        self.assertEqual(f.find('api.patch'), [])
-        f.api.vas = []
-        self.loop()
+        self.assertFencedLive(f)
         self.assertEqual(len(f.find('api.patch')), 1)
+        self.assertIn('storage_fence_active{node="w2"} 1\n', self.prom())
+        self.assertIn('storage_fence_failures_total 0\n', self.prom())
+
+    def test_continue_fence_taints_under_hold_fence(self):
+        self.continue_under('hold_fence')
+
+    def test_continue_fence_taints_under_hold_create(self):
+        self.continue_under('hold_create')
+
+    def test_continue_fence_no_taint_with_foreign_va(self):
+        # A foreign VA blocks step 6, hold or not: the taint would force-detach a disk the fence proves nothing about.
+        for tags in ([], ['hold_fence']):
+            with self.subTest(tags=tags):
+                self.tmp = Path(tempfile.mkdtemp())
+                self.addCleanup(shutil.rmtree, self.tmp)
+                f = self.fake(nodes=[node('w1'), node('w2', ready=False)], tags=[*tags, f'fenced:w2:{A}'])
+                f.api.vas = [{'spec': {'nodeName': 'w2', 'attacher': 'csi.proxmox.sinextra.dev'}}]
+                self.loop()
+                self.assertEqual(f.find('api.patch'), [])
+                self.assertIn(W2_ADDR, f.fenced_set)
+                self.assertEqual(len(f.find('lio.save')), 1)  # steps 2-5 still run
+                f.api.vas = []
+                self.loop()
+                self.assertEqual(len(f.find('api.patch')), 1)
+
+    def test_new_fence_refused_under_hold(self):
+        for hold in ('hold_fence', 'hold_create'):
+            with self.subTest(hold=hold):
+                self.tmp = Path(tempfile.mkdtemp())
+                self.addCleanup(shutil.rmtree, self.tmp)
+                f = self.hung_w2(tags=[hold])
+                self.loop()
+                self.assertEqual(f.find('vgchange'), [])
+                self.assertEqual(f.find('api.patch'), [])
+                self.assertEqual(f.fenced_set, set())
+                self.assertIn(f'w2: {hold}', self.err)
 
 
 class UnfenceTest(Base):

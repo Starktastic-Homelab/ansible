@@ -157,7 +157,7 @@ class Fencer:
 
     def _decide_and_act(self, nodes, vas, server_time, read_at):
         cluster = self.cluster()
-        fenced, holds = cluster.fenced(), cluster.holds()
+        fenced = cluster.fenced()
         history = fence_policy.BootHistory.load(fence_policy.HISTORY_PATH)
         prev, self.watched = self.watched, {}  # an exception below leaves it empty: a gap, so the safe side
         if self.watched_at is None or read_at - self.watched_at > 2 * self.cfg['loop_seconds']:
@@ -178,8 +178,9 @@ class Fencer:
             v.continue_fence, v.fence, v.unfence = sorted(v.continue_fence + v.unfence), None, []
         lio_ = lio.Lio()
         for name in v.continue_fence:
-            # Steps 2-6 again; under a hold or with a foreign VA only a person applies the taint (manual fallback).
-            taint = not holds and not _foreign_va(vas, name, self.cfg['csi_driver'])
+            # Steps 2-6 again, holds or not (a hold only blocks new fences); a foreign VA still blocks the taint, which
+            # would force-detach a disk this fence proves nothing about (ADR 0017 "It is level-triggered").
+            taint = not _foreign_va(vas, name, self.cfg['csi_driver'])
             self._attempt(f'fence {name}', lambda: proven(self.fence_steps(lio_, name, fenced[name], True, taint)))
         if v.fence:
             host.log(f'fence {v.fence}: NotReady past {self.cfg["not_ready_seconds"]} s')

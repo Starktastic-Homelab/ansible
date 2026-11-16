@@ -26,7 +26,7 @@ flowchart LR
 
 | Tag | Contents |
 |---|---|
-| `daily` | `/srv/backup-src/{k3s-block,pv}`, `/etc` (including `/etc/pve`), `/usbbk/git`, `/root`; minus `/etc/homelab-backup` and the excludes in `/etc/homelab-backup.d/excludes.txt` (five regenerable images, Immich `thumbs/` and `encoded-video/`) |
+| `daily` | `/srv/backup-src/{k3s-block,pv}`, `/etc` (including `/etc/pve`), `/usbbk/git`, `/root`; minus `/etc/homelab-backup` and the excludes in `/etc/homelab-backup.d/excludes.txt` (five images re-initialised blank after a loss, see **Re-initialise an excluded image**; Immich `thumbs/` and `encoded-video/`) |
 | `vzdump` | the newest `vzdump-qemu-300-*.vma` (Garage Terraform state). The VM100 dump stays local. |
 | `nfs` | `/srv/backup-src/immich`, uploaded last so a broken share can't hold back the others |
 
@@ -242,7 +242,8 @@ inside VM100 nor a 2.4 to 2.3 send has been tried. Outline:
    key kit's apps key. Clear `readonly` on the restored datasets.
 4. Hand the disk back to `pve`, re-run the role, and check the replication task before relying on it.
 
-If `usbbk` is lost too, restore the images from restic tag `daily` instead.
+If `usbbk` is lost too, restore the images from restic tag `daily` instead, and re-initialise the five it excludes
+(**Re-initialise an excluded image**).
 
 ### Immich
 
@@ -332,8 +333,9 @@ alone has opened the repository (2026-11-09, from `pve`).
    ```
 
 4. Rebuild in order: TrueNAS from the key kit's config, then `pve` from `/etc` in tag `daily` and this repo, then
-   the cluster from git (the mirrors are in tag `daily` under `/usbbk/git`), the volumes from tag `daily`, Immich
-   from tag `nfs`, and Garage's Terraform state from the VM300 dump in tag `vzdump`.
+   the cluster from git (the mirrors are in tag `daily` under `/usbbk/git`), the volumes from tag `daily`
+   (re-initialise the five excluded images, see **Re-initialise an excluded image**), Immich from tag `nfs`, and
+   Garage's Terraform state from the VM300 dump in tag `vzdump`.
 
 If the repository itself was wiped, the weekly Storage Box snapshots under `/.zfs/snapshot/` are read-only copies
 of it (restore one in the Hetzner Console). Reading a repository straight from there is untested.
@@ -349,10 +351,144 @@ Known gaps:
   the 05:30 maint, leaves only incomplete snapshots. After a vzdump `/fail`, fix the cause before the next Sunday,
   and don't re-run backup by hand in that Sunday window.
 
-### The five excluded images
+### Re-initialise an excluded image
 
-`vm-9999-{prometheus,loki,tempo,alertmanager,karakeep-meilisearch}.raw` have no off-site copy (they are in the
-replica). After a loss they need re-initialisation as empty volumes. **TODO:** that runbook is still to write.
+Restic tag `daily` never holds `vm-9999-{prometheus,alertmanager,loki,tempo,karakeep-meilisearch}.raw` (the
+excludes); only the `usbbk/tn/k3s-block` replica holds a current copy (older 2026-10-16 copies of the four
+monitoring images may exist, step 2 below). This section applies when the live image is missing **and** no
+`usbbk/tn/k3s-block@auto-*` snapshot has it, or `usbbk` itself is lost. To check the replica, hold the lock
+(**Hold the backup lock**) and run `ls /srv/restore-src/images/9999/` on each snapshot mounted as in **One image
+from the replica**.
+
+**Pre-approved.** Ben decided on 2026-11-16 that these five images may be re-initialised blank, accepting the loss
+of their history, once the checks above show no replica copy. No further approval is needed, and step 2 below is
+optional. This is the only exception to the apps rule against creating a marker or initialising an empty replacement
+(apps `docs/runbooks/monitoring-storage.md`, `docs/runbooks/operations-home-storage.md`). It covers only a missing
+image; one that exists but is damaged still needs Ben.
+
+Decision order:
+
+1. **The replica.** Restore from `usbbk/tn/k3s-block` as in **One image from the replica**.
+2. **The 2026-10-16 cold copies** (optional, the four monitoring images only). The monitoring cutover left encrypted
+   copies and their keys on VM300 under `/var/lib/homelab-maintenance/operations/monitoring-csi-cutover-20261016/`
+   (`recovery/`, 6.1G, and `keys/`, seen 2026-11-16), and on the operator computer
+   (`~/.local/share/homelab-recovery/monitoring-csi-cutover-20261016/`, keys under `~/.config/homelab-recovery-keys/`).
+   The VM300 copies should be inside the VM300 dump in restic tag `vzdump`; nobody has checked a dump for them. apps
+   `docs/runbooks/monitoring-storage.md` only sets the rules (verify the complete SHA256, decrypt and restore
+   independently, keep all POSIX metadata); no step-by-step restore is written down, and none was drilled.
+   Prometheus, Loki and Tempo data in them is older than those engines' retention, so they are expected (not tested)
+   to delete it on first start or compaction: use it only to inspect old data offline, or raise retention first in
+   a separate change. For Alertmanager, the copy's `silences` file is the only record of long-lived silences: read
+   it offline to re-create them. Skip the operations-home copies for Meilisearch; a reindex rebuilds it.
+3. **Blank re-initialisation**, below.
+
+What is lost:
+
+| Image | Lost | After |
+|---|---|---|
+| `vm-9999-prometheus.raw` | metrics, up to 15d / 8GB | none |
+| `vm-9999-loki.raw` | logs, up to 30d | none |
+| `vm-9999-tempo.raw` | traces, up to 72h | none |
+| `vm-9999-alertmanager.raw` | silences and the notification log | re-create long-lived silences (git has no record of them); firing alerts may notify again |
+| `vm-9999-karakeep-meilisearch.raw` | the search index | Reindex All Bookmarks (below) |
+
+Meilisearch is a sidecar in the Karakeep pod, so while its image is missing Karakeep is down too.
+
+Each image must match its PV in apps
+`infrastructure/base-configs/templates/{monitoring,operations-home}-block-storage/`: ext4, handle
+`homelab//k3s-block/9999/vm-9999-<name>.raw`, and this size:
+
+| `<name>` | Size | Root owner | Contents (besides the marker) |
+|---|---|---|---|
+| `prometheus` | `16G` | `0:0` | dirs `prometheus-db/`, `prometheus-db/wal/`, `1000:2000` |
+| `alertmanager` | `2G` | `0:0` | dir `alertmanager-db/`, empty files `alertmanager-db/silences` and `alertmanager-db/nflog`, all `1000:2000` |
+| `loki` | `10G` | `10001:10001` | dirs `wal/`, `chunks/`, `tsdb-shipper-active/`, `compactor/`, `10001:10001` |
+| `tempo` | `5G` | `10001:10001` | dirs `wal/`, `traces/`, `10001:10001` |
+| `karakeep-meilisearch` | `4G` | `0:0` | nothing (Meilisearch writes its version marker on first start) |
+
+The marker is `.homelab-<name>-data` in the filesystem root, mode `0644`, containing exactly `homelab/<name>/data/v1`
+and a newline. Loki and Tempo also need the root itself owned `10001:10001`: they create `rules/`,
+`tsdb-shipper-cache/` (Loki) and `live-store/` (Tempo) there. The guard does not check this, so it passes and the
+engine then crash-loops.
+
+`k3s-block` is a Proxmox NFS storage (TrueNAS `/mnt/apps/k3s-block`, `vers=4.2`, `images` content). In `pvesm
+alloc` the `G` suffix is GiB, so `16G` matches `16Gi`; raw images are created sparse. Root writes there are expected
+to work (the CSI driver and the replica restore above do), but `pvesm alloc` there is untested; if it or the loop
+mount fails with permission denied, check the share's root mapping on TrueNAS before anything else.
+
+The image is built under a temporary name and linked into place only after it is unmounted: the CSI driver keeps
+retrying the attach of the missing handle, and must not attach a half-built image.
+
+On `pve` as root, one image at a time:
+
+1. Set the name, derive the size, and check the image is absent:
+
+   ```bash
+   n=prometheus   # or alertmanager, loki, tempo, karakeep-meilisearch
+   case $n in prometheus) size=16G;; alertmanager) size=2G;; loki) size=10G;; tempo) size=5G;;
+     karakeep-meilisearch) size=4G;; *) size=; echo "STOP: unknown name";; esac
+   pvesm list k3s-block --vmid 9999 | grep -F "vm-9999-$n" && echo "STOP: an image exists" || echo "OK: absent"
+   # Available must exceed $size: the image is sparse, but the apps quota rules count its full size
+   pvesm status --storage k3s-block
+   ```
+
+2. Allocate, format and mount it under the temporary name. The `&&` chain stops at the first failure:
+
+   ```bash
+   tmp="vm-9999-$n-reinit.raw"
+   [ -n "$size" ] && pvesm alloc k3s-block 9999 "$tmp" "$size" --format raw &&
+     img=$(pvesm path "k3s-block:9999/$tmp") && ls -ls "$img" &&
+     mkfs.ext4 -q "$img" && mnt=$(mktemp -d) && mount -o loop "$img" "$mnt" &&
+     echo "OK: $img on $mnt" || echo "STOP: do not continue"
+   ```
+
+3. Lay it out, write the marker, unmount, and link it into place (`ln` refuses an existing name):
+
+   ```bash
+   case $n in
+     prometheus) install -d -o 1000 -g 2000 -m 0755 "$mnt/prometheus-db" "$mnt/prometheus-db/wal";;
+     alertmanager) install -d -o 1000 -g 2000 -m 0755 "$mnt/alertmanager-db" &&
+       install -o 1000 -g 2000 -m 0644 /dev/null "$mnt/alertmanager-db/silences" &&
+       install -o 1000 -g 2000 -m 0644 /dev/null "$mnt/alertmanager-db/nflog";;
+     loki) chown 10001:10001 "$mnt" &&
+       install -d -o 10001 -g 10001 -m 0755 "$mnt"/{wal,chunks,tsdb-shipper-active,compactor};;
+     tempo) chown 10001:10001 "$mnt" && install -d -o 10001 -g 10001 -m 0755 "$mnt"/{wal,traces};;
+   esac
+   printf 'homelab/%s/data/v1\n' "$n" > "$mnt/.homelab-$n-data" && chmod 0644 "$mnt/.homelab-$n-data"
+   ls -lanR "$mnt"
+   final="${img%/*}/vm-9999-$n.raw"
+   umount "$mnt" && rmdir "$mnt" && ln "$img" "$final" && rm "$img" && ls -ls "$final"
+   ```
+
+4. From the runner, delete the app's stuck pod so it retries the attach now instead of after its back-off:
+
+   ```bash
+   # monitoring: prometheus-kube-prometheus-stack-prometheus-0,
+   # alertmanager-kube-prometheus-stack-alertmanager-0, the loki and tempo pods
+   kubectl -n monitoring get pods
+   kubectl -n operations get pods     # karakeep
+   kubectl -n <namespace> delete pod <pod>
+   ```
+
+Post-checks:
+
+- The guard initContainer accepted it: `kubectl -n monitoring logs <pod> -c retained-state` prints `Retained
+  monitoring identity and native paths accepted.`; for Karakeep, `kubectl -n operations logs <pod> -c
+  retained-meilisearch` prints `Retained identity and native paths accepted.`
+- The pod is Ready and its engine has fresh data: Prometheus shows its targets up, Loki receives new logs, and Tempo
+  receives new spans (Grafana Explore). For Alertmanager, the `alertmanager-watchdog` check on healthchecks.io gets
+  pings again (about every 2 min).
+- Karakeep: run `Admin Settings > Background Jobs > Reindex All Bookmarks` (ADR 0010 in apps). If it fails with
+  `index_not_found`, restart Karakeep, then retry. Search is empty until it finishes.
+- If the CSI node stage fails on the new image, compare `dumpe2fs -h` features with a sibling image (the host's
+  e2fsprogs may enable features an older guest `fsck` lacks).
+
+Tested: a local Docker drill (2026-11-16) started all four monitoring engines, at the digests then on apps `main`,
+on this layout, with each guard accepting first, and took a first write (scrape, silence and notification log, log
+push, trace push). Prometheus and Alertmanager ran with operator-like args, not rendered through the operator. Loki
+and Tempo failed to start without the root owned `10001:10001`. Untested: the steps on `pve` (`pvesm alloc` on
+`k3s-block`, the loop mount over NFS, the rename, the CSI attach of the new image), Meilisearch, the real cluster
+configs, and long-running work (Prometheus head compaction, Loki retention, Tempo block flush).
 
 ## After a kernel crash
 
@@ -407,6 +543,9 @@ and all 50 originals matching. That script is not in this repo: it pins one run'
 - [ ] 50 random Immich originals from tag `nfs` are byte-identical (`cmp`) to the live share on a read-only mount.
 - [ ] SQLite `integrity_check` on an app database from tag `daily` (in the design, not yet run).
 - [ ] Remove the restored copies; no mounts or loop devices left; `journalctl -k` clean.
+- [ ] Re-initialisation dry run: steps 1-3 of **Re-initialise an excluded image** with `n=loki` on a scratch name
+      (`tmp=vm-9999-reinit-drill.raw`, size `1G`, and `final=` a second scratch name), check `ls -lanR`, then
+      `pvesm free` both scratch names. Not yet run; the CSI attach stays untested.
 - [ ] Re-run `truenas-keykit-export.py` and store the new kit.
 - [ ] Record the times here.
 

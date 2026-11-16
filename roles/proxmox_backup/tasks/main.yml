@@ -34,6 +34,36 @@
     label: "{{ item.item }}"
   when: proxmox_backup_enabled
 
+# Read-only: ansible never writes TrueNAS. no_log in case a query ever returns key material; the queries select
+# only the compared fields, because replication rows embed the SSH credential's private key.
+- name: Read the TrueNAS backup settings through the VM 100 guest agent
+  ansible.builtin.command:
+    argv: >-
+      {{ ['qm', 'guest', 'exec', proxmox_backup_truenas_vmid | string, '--timeout', '60', '--']
+         + (item.key | proxmox_backup_truenas_call(item.value)) }}
+  loop: "{{ proxmox_backup_truenas_expected | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: proxmox_backup_truenas_reads
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+  timeout: 120
+  when: proxmox_backup_enabled
+
+- name: Refuse TrueNAS backup settings drift
+  ansible.builtin.fail:
+    msg: >-
+      TrueNAS backup settings differ from proxmox_backup_truenas_expected. Fix them in the TrueNAS UI (ansible never
+      writes TrueNAS), or update the expected values if the change is intended: {{ proxmox_backup_truenas_drift }}
+  vars:
+    proxmox_backup_truenas_drift: >-
+      {{ proxmox_backup_truenas_reads.results | proxmox_backup_truenas_drift(proxmox_backup_truenas_expected) }}
+  when:
+    - proxmox_backup_enabled
+    - proxmox_backup_truenas_drift | length > 0
+
 - name: Install restic, git and the NFS client
   ansible.builtin.apt:
     name: [restic, git, nfs-common]
@@ -240,6 +270,36 @@
   when:
     - proxmox_backup_vz_mounted.rc == 0
     - "'usbbk-vz' not in (proxmox_backup_storage_definitions.stdout | from_json | map(attribute='storage') | list)"
+  changed_when: true
+
+- name: Read the local storage quota
+  ansible.builtin.command:
+    argv: [zfs, get, -Hp, -o, value, quota, "{{ proxmox_backup_vz_dataset }}"]
+  register: proxmox_backup_vz_quota_live
+  changed_when: false
+  check_mode: false
+
+- name: Cap the local storage dataset
+  ansible.builtin.command:
+    argv: [zfs, set, "quota={{ proxmox_backup_vz_quota }}", "{{ proxmox_backup_vz_dataset }}"]
+  when: proxmox_backup_vz_quota_live.stdout | trim != proxmox_backup_vz_quota | human_to_bytes | string
+  changed_when: true
+
+- name: Read the vzdump jobs
+  ansible.builtin.command:
+    argv: [pvesh, get, /cluster/backup, --output-format, json]
+  register: proxmox_backup_vzdump_jobs
+  changed_when: false
+  check_mode: false
+
+# Creates the job when absent, or sets only the drifted options; nothing runs when it matches.
+- name: Create or update the vzdump job
+  ansible.builtin.command:
+    argv: "{{ proxmox_backup_vzdump_change }}"
+  vars:
+    proxmox_backup_vzdump_change: >-
+      {{ proxmox_backup_vzdump_jobs.stdout | from_json | proxmox_backup_vzdump_argv(proxmox_backup_vzdump_job) }}
+  when: proxmox_backup_vzdump_change | length > 0
   changed_when: true
 
 - name: Enable or disable the backup timers

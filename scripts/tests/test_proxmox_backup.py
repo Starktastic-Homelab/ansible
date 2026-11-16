@@ -9,6 +9,7 @@ from pathlib import Path
 import unittest
 import yaml
 from ansible.parsing.dataloader import DataLoader
+from ansible.plugins.loader import filter_loader, init_plugin_loader
 from ansible.template import Templar, trust_as_template
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,7 +40,60 @@ def task(name):
 
 def runs(name, **values):
     templar = Templar(variables=defaults(**values))
-    return all(templar.evaluate_expression(expr) for expr in task(name)['when'])
+    when = task(name)['when']
+    return all(templar.evaluate_expression(expr) for expr in ([when] if isinstance(when, str) else when))
+
+def evaluate(name, expr, **values):
+    """Evaluate one expression of a task the way Ansible would, with the role's filters and the task's vars."""
+    init_plugin_loader()
+    filter_loader.add_directory(str(ROLE / 'filter_plugins'))
+    templar = Templar(variables=defaults(**dict(task(name).get('vars', {}), **values)))
+    expr = trust_as_template(expr)
+    return templar.template(expr) if '{{' in expr else templar.evaluate_expression(expr)
+
+# pvesh get /cluster/backup and the TrueNAS objects as read live on 2026-11-16.
+LIVE_JOB = {'compress': '0', 'enabled': 1, 'fleecing': {'enabled': 0}, 'id': 'backup-f56bebaa-4912', 'mode': 'snapshot',
+            'notes-template': '{{guestname}}', 'notification-mode': 'notification-system',
+            'prune-backups': {'keep-last': '3'}, 'repeat-missed': 0, 'schedule': 'sun 01:00', 'storage': 'usbbk-vz',
+            'type': 'vzdump', 'vmid': '100,300', 'node': 'pve'}
+
+def snapshot_task(id_, dataset, recursive, weeks, minute, hour):
+    return {'id': id_, 'dataset': dataset, 'recursive': recursive, 'lifetime_value': weeks, 'lifetime_unit': 'WEEK',
+            'naming_schema': 'auto-%Y-%m-%d_%H-%M', 'enabled': True, 'allow_empty': True, 'exclude': [],
+            'schedule': {'minute': minute, 'hour': hour, 'dom': '*', 'month': '*', 'dow': '*', 'begin': '00:00',
+                         'end': '23:59'}}
+
+def truenas_live():
+    snapshots = [snapshot_task(1, 'apps/pv', True, 1, '30', '3,9,15,21'),
+                 snapshot_task(3, 'apps/k3s-block', False, 1, '30', '3,9,15,21'),
+                 snapshot_task(4, 'main/media', False, 1, '0', '4'),
+                 snapshot_task(5, 'main/immich', False, 2, '45', '3,9,15,21')]
+    replication = {'name': 'apps to pve usbbk', 'direction': 'PUSH', 'transport': 'SSH',
+                   'source_datasets': ['apps/k3s-block', 'apps/pv'], 'target_dataset': 'usbbk/tn', 'recursive': False,
+                   'auto': True, 'enabled': True, 'retention_policy': 'CUSTOM', 'lifetime_value': 2,
+                   'lifetime_unit': 'WEEK', 'readonly': 'SET', 'properties': True,
+                   'properties_exclude': ['quota', 'reservation', 'refreservation'], 'encryption': False,
+                   'large_block': True, 'compressed': True, 'allow_from_scratch': False,
+                   'periodic_snapshot_tasks': [snapshots[1], snapshots[0]], 'exclude': [],
+                   'ssh_credentials': {'name': 'pve-tnrepl', 'id': 2}}
+    share = {'path': '/mnt/main/immich', 'hosts': [], 'maproot_user': None, 'maproot_group': None,
+             'mapall_user': 'media', 'mapall_group': 'media', 'security': [], 'enabled': True}
+    shares = [dict(share, networks=['10.9.8.0/24'], ro=False), dict(share, networks=['10.9.9.20/32'], ro=True),
+              {'path': '/mnt/apps/k3s-block', 'networks': ['10.9.9.20/32'], 'ro': False, 'enabled': True}]
+    return {'replication.query': [replication], 'pool.snapshottask.query': snapshots, 'sharing.nfs.query': shares,
+            'nfs.config': {'bindip': ['10.9.8.30', '10.9.9.30'], 'protocols': ['NFSV3', 'NFSV4']}}
+
+def script_filters():
+    spec = importlib.util.spec_from_file_location('proxmox_backup_filters', ROLE / 'filter_plugins/proxmox_backup.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+def guest_reads(live, rc=0, exitcode=0):
+    return {'results': [{'item': {'key': method}, 'rc': rc, 'stderr': 'VM 100 not running' if rc else '',
+                         'stdout': '' if rc else json.dumps({'exitcode': exitcode, 'exited': 1,
+                                                             'out-data': json.dumps(value) + '\n'})}
+                        for method, value in live.items()]}
 
 class FakeHost:
     """Stands in for zpool/zfs/mount/git/restic; records every command in order."""
@@ -442,6 +496,184 @@ class HostSafetyTests(unittest.TestCase):
             self.assertIn(path, ignored)
         own = yaml.safe_load((ROOT / '.github/workflows/proxmox-backup.yml').read_text())[True]['push']['paths']
         self.assertEqual(sorted(own), ['proxmox-backup.yml', 'roles/proxmox_backup/**'])
+
+class HostSettingsTests(unittest.TestCase):
+    CHANGE = 'Create or update the vzdump job'
+
+    def vzdump_change(self, jobs):
+        return evaluate(self.CHANGE, 'proxmox_backup_vzdump_change', proxmox_backup_vzdump_jobs={'stdout': json.dumps(jobs)})
+
+    def test_live_vzdump_job_needs_no_change(self):
+        self.assertEqual(self.vzdump_change([LIVE_JOB]), [])
+        self.assertFalse(evaluate(self.CHANGE, task(self.CHANGE)['when'],
+                                  proxmox_backup_vzdump_jobs={'stdout': json.dumps([LIVE_JOB])}))
+        self.assertEqual(task(self.CHANGE)['ansible.builtin.command']['argv'], '{{ proxmox_backup_vzdump_change }}')
+
+    def test_drifted_vzdump_job_sets_only_the_drifted_options(self):
+        drifted = dict(LIVE_JOB, schedule='sat 01:00', **{'prune-backups': {'keep-last': '2'}})
+        drifted.pop('enabled')
+        self.assertEqual(self.vzdump_change([{'id': 'other'}, drifted]),
+                         ['pvesh', 'set', '/cluster/backup/backup-f56bebaa-4912', '--schedule', 'sun 01:00',
+                          '--prune-backups', 'keep-last=3'])
+
+    def test_vzdump_job_disabled_by_hand_stays_disabled(self):
+        self.assertEqual(self.vzdump_change([dict(LIVE_JOB, enabled=0)]), [])
+
+    def test_prune_backups_compares_sorted_pairs(self):
+        job = defaults()['proxmox_backup_vzdump_job']
+        job = dict(job, options=dict(job['options'], **{'prune-backups': 'keep-weekly=2,keep-last=3'}))
+        live = dict(LIVE_JOB, **{'prune-backups': {'keep-last': '3', 'keep-weekly': '2'}})
+        change = evaluate(self.CHANGE, 'proxmox_backup_vzdump_change', proxmox_backup_vzdump_job=job,
+                          proxmox_backup_vzdump_jobs={'stdout': json.dumps([live])})
+        self.assertEqual(change, [])
+
+    def test_absent_vzdump_job_refuses_to_duplicate_another_job(self):
+        for other in ({'id': 'backup-old', 'type': 'vzdump', 'vmid': '300'},
+                      {'id': 'backup-all', 'type': 'vzdump', 'all': 1},
+                      {'id': 'backup-pool', 'type': 'vzdump', 'pool': 'k3s'}):
+            with self.subTest(other=other['id']):
+                with self.assertRaisesRegex(Exception, f"absent but .*{other['id']}"):
+                    self.vzdump_change([other])
+        self.assertEqual(self.vzdump_change([{'id': 'backup-k3s', 'type': 'vzdump', 'vmid': '201,202'}])[:2],
+                         ['pvesh', 'create'])
+
+    def test_absent_vzdump_job_is_created_with_a_literal_notes_template(self):
+        argv = self.vzdump_change([])
+        self.assertEqual(argv[:5], ['pvesh', 'create', '/cluster/backup', '--id', 'backup-f56bebaa-4912'])
+        options = dict(zip(argv[5::2], argv[6::2]))
+        self.assertEqual(options, {'--schedule': 'sun 01:00', '--vmid': '100,300', '--storage': 'usbbk-vz',
+                                   '--mode': 'snapshot', '--compress': '0', '--prune-backups': 'keep-last=3',
+                                   '--enabled': '1', '--notification-mode': 'notification-system',
+                                   '--notes-template': '{{guestname}}'})
+
+    def test_a_job_created_while_the_role_is_off_starts_disabled(self):
+        argv = evaluate(self.CHANGE, 'proxmox_backup_vzdump_change', proxmox_backup_enabled=False,
+                        proxmox_backup_vzdump_jobs={'stdout': '[]'})
+        self.assertEqual(dict(zip(argv[5::2], argv[6::2]))['--enabled'], '0')
+
+    def test_quota_is_set_only_when_it_differs(self):
+        name = 'Cap the local storage dataset'
+        for live, expected in [('161061273600\n', False), ('107374182400\n', True), ('0\n', True)]:
+            with self.subTest(live=live):
+                self.assertEqual(runs(name, proxmox_backup_vz_quota_live={'stdout': live}), expected)
+        self.assertEqual(task(name)['ansible.builtin.command']['argv'],
+                         ['zfs', 'set', 'quota={{ proxmox_backup_vz_quota }}', '{{ proxmox_backup_vz_dataset }}'])
+
+    def test_reads_run_in_check_mode(self):
+        for name in ('Read the local storage quota', 'Read the vzdump jobs',
+                     'Read the TrueNAS backup settings through the VM 100 guest agent'):
+            with self.subTest(name=name):
+                self.assertIs(task(name)['check_mode'], False)
+                self.assertIs(task(name)['changed_when'], False)
+
+    def truenas_drift(self, reads):
+        return evaluate('Refuse TrueNAS backup settings drift', 'proxmox_backup_truenas_drift',
+                        proxmox_backup_truenas_reads=reads)
+
+    def test_truenas_check_passes_on_the_live_settings(self):
+        self.assertEqual(self.truenas_drift(guest_reads(truenas_live())), [])
+
+    def test_truenas_drift_names_object_field_expected_and_actual(self):
+        live = truenas_live()
+        live['replication.query'][0]['lifetime_value'] = 1
+        live['sharing.nfs.query'][1]['ro'] = False
+        live['pool.snapshottask.query'][3]['schedule']['hour'] = '3'
+        live['nfs.config']['bindip'] = ['10.9.8.30']
+        problems = self.truenas_drift(guest_reads(live))
+        self.assertEqual(problems, [
+            'replication.query name=apps to pve usbbk: lifetime_value expected 2, actual 1',
+            'pool.snapshottask.query dataset=main/immich: schedule.hour expected 3,9,15,21, actual 3',
+            "sharing.nfs.query path=/mnt/main/immich networks=['10.9.9.20/32']: ro expected True, actual False",
+            "nfs.config: bindip expected to contain 10.9.9.30, actual ['10.9.8.30']"])
+        self.assertIn('TrueNAS UI', task('Refuse TrueNAS backup settings drift')['ansible.builtin.fail']['msg'])
+
+    def test_truenas_missing_object_or_failed_guest_exec_is_drift(self):
+        live = truenas_live()
+        live['pool.snapshottask.query'].pop()
+        self.assertIn('pool.snapshottask.query dataset=main/immich: expected 1 matching, found 0',
+                      self.truenas_drift(guest_reads(live)))
+        stopped = self.truenas_drift(guest_reads(truenas_live(), rc=2))
+        self.assertEqual(len(stopped), 4)
+        self.assertTrue(all('rc 2' in p and 'VM 100 not running' in p for p in stopped), stopped)
+        self.assertTrue(all('midclt exited 1' in p for p in self.truenas_drift(guest_reads(truenas_live(), exitcode=1))))
+
+    def test_truenas_queries_select_fields_and_never_the_ssh_credentials(self):
+        name = 'Read the TrueNAS backup settings through the VM 100 guest agent'
+        self.assertIs(task(name)['no_log'], True)
+        expected = defaults()['proxmox_backup_truenas_expected']
+        for method, entries in expected.items():
+            argv = evaluate(name, task(name)['ansible.builtin.command']['argv'], item={'key': method, 'value': entries})
+            self.assertEqual(argv[:7] + argv[7:10], ['qm', 'guest', 'exec', '100', '--timeout', '60', '--',
+                                                      'midclt', 'call', method])
+            if method == 'nfs.config':
+                self.assertEqual(len(argv), 10)
+                continue
+            self.assertEqual(argv[10], '[]')
+            select = json.loads(argv[11])['select']
+            self.assertNotIn('ssh_credentials', select)
+            self.assertTrue({'name', 'lifetime_value', 'dataset', 'path', 'networks', 'ro'} & set(select))
+            if method == 'replication.query':
+                self.assertIn('ssh_credentials.name', select)
+
+    def test_truenas_check_is_skipped_by_the_kill_switch(self):
+        for name in ('Read the TrueNAS backup settings through the VM 100 guest agent',
+                     'Refuse TrueNAS backup settings drift'):
+            with self.subTest(name=name):
+                # The drift expression is never evaluated, so a down TrueNAS cannot block the kill-switch deploy.
+                self.assertFalse(runs(name, proxmox_backup_enabled=False, proxmox_backup_truenas_reads=None))
+
+    def test_truenas_read_and_workflow_have_timeouts(self):
+        self.assertEqual(task('Read the TrueNAS backup settings through the VM 100 guest agent')['timeout'], 120)
+        workflow = yaml.safe_load((ROOT / '.github/workflows/proxmox-backup.yml').read_text())
+        self.assertEqual(workflow['jobs']['deploy-proxmox-backup']['timeout-minutes'], 30)
+
+    def test_truenas_call_allows_only_reads_and_ascii(self):
+        call = script_filters().truenas_call
+        self.assertEqual(call('nfs.config', {}), ['midclt', 'call', 'nfs.config'])
+        for method in ('nfs.update', 'pool.dataset.delete', 'replication.run', 'nfs.config.update'):
+            with self.subTest(method=method), self.assertRaisesRegex(ValueError, 'only'):
+                call(method, [])
+        with self.assertRaisesRegex(ValueError, 'ASCII'):
+            call('sh\u00e4ring.nfs.query', [{'match': {'path': '/x'}, 'fields': {}}])
+        with self.assertRaisesRegex(ValueError, 'ssh_credentials'):
+            call('replication.query', [{'match': {'name': 'x'}, 'fields': {'ssh_credentials': {'name': 'x'}}}])
+        with self.assertRaisesRegex(ValueError, 'ssh_credentials'):
+            call('replication.query', [{'match': {'name': 'x'}, 'fields': {'ssh_credentials.attributes': {}}}])
+
+    def test_truenas_wrong_shape_is_drift_not_a_crash(self):
+        live = truenas_live()
+        live['sharing.nfs.query'] = {'path': '/mnt/main/immich'}
+        live['nfs.config'] = ['10.9.8.30']
+        live['pool.snapshottask.query'] = ['apps/pv']
+        problems = self.truenas_drift(guest_reads(live))
+        self.assertEqual(len(problems), 3, problems)
+        self.assertIn('pool.snapshottask.query: AttributeError', problems[0])
+        self.assertIn('sharing.nfs.query: ValueError: expected a JSON list, got dict', problems[1])
+        self.assertIn('nfs.config: ValueError: expected a JSON dict, got list', problems[2])
+
+    def test_truenas_full_schedule_hosts_and_extra_share_are_drift(self):
+        live = truenas_live()
+        live['pool.snapshottask.query'][0]['schedule']['dow'] = '1'
+        live['sharing.nfs.query'][0]['hosts'] = ['10.9.8.50']
+        live['sharing.nfs.query'][1]['maproot_user'] = 'root'
+        live['replication.query'][0]['ssh_credentials']['name'] = 'other'
+        live['sharing.nfs.query'].append(dict(live['sharing.nfs.query'][1], networks=['10.9.9.0/24']))
+        self.assertEqual(self.truenas_drift(guest_reads(live)), [
+            'replication.query name=apps to pve usbbk: ssh_credentials.name expected pve-tnrepl, actual other',
+            'pool.snapshottask.query dataset=apps/pv: schedule.dow expected *, actual 1',
+            'sharing.nfs.query path=/mnt/main/immich: expected 2 matching, found 3',
+            "sharing.nfs.query path=/mnt/main/immich networks=['10.9.8.0/24']: hosts expected [], actual ['10.9.8.50']",
+            "sharing.nfs.query path=/mnt/main/immich networks=['10.9.9.20/32']: maproot_user expected None, actual root"])
+
+    def test_truenas_null_and_missing_differ(self):
+        live = truenas_live()
+        del live['sharing.nfs.query'][0]['maproot_group']
+        live['sharing.nfs.query'][1]['mapall_user'] = None
+        self.assertEqual(self.truenas_drift(guest_reads(live)), [
+            "sharing.nfs.query path=/mnt/main/immich networks=['10.9.8.0/24']: maproot_group expected None, "
+            'actual <missing>',
+            "sharing.nfs.query path=/mnt/main/immich networks=['10.9.9.20/32']: mapall_user expected media, "
+            'actual None'])
 
 if __name__ == '__main__':
     unittest.main()

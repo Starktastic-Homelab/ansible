@@ -1,7 +1,8 @@
 """storage-fencer: cut a hung worker off at the storage side, prove it, and only then taint it (ADR 0017).
 
 run                                     the loop, every loop_seconds; SIGTERM is honoured between loops
-fence NODE                              manual fence: steps 1-5 with bootID unknown, no taint; prints the proof
+fence NODE                              manual fence: steps 1-5 with bootID unknown, no taint of its own; prints the proof.
+                                        A running fencer then finishes it (taint too, even under a hold) and settles the tag
 unfence NODE [--confirm-stopped]        manual unfence; a bootID-unknown tag needs --confirm-stopped
 prove NODE                              read-only proof as JSON; exit 1 if any leg fails
 restore-set                             re-add every tagged worker's address to the nft set

@@ -674,14 +674,14 @@ class UnfenceTest(Base):
         self.assertTrue(all(held for c, held in f.calls if c[0] == 'api.get'))
 
     def test_bad_fence_tag_reapplies_valid_fences_only(self):
-        # w2 is validly tagged and its fence fell off (address gone, ACL back); w1 has a malformed tag and w2 is
-        # Ready on a new bootID. The loop re-applies w2's fence, unfences nothing and counts a failure each loop.
+        # w2 is validly tagged and settled, the fencer has just started (the restart rule un-settles every tag) and the
+        # fence is not in place (address gone, ACL back); w1 has a malformed tag and w2 is Ready on a new bootID. The loop re-applies w2's fence, unfences nothing and counts a failure each loop.
         f = self.fake(nodes=[node('w1', bootid=B), node('w2', bootid=C)], tags=['fenced:w1:bad', f'fenced:w2:{A}'],
                       history={'w2': {'seen': [A]}})
         fz = self.loop()
         self.assertIn(W2_ADDR, f.fenced_set, self.err)
         self.assertFalse(any(W2 in t['acls'] for t in f.lio.targets_.values()))
-        self.assertIn(UNSETTLED, f.tags())  # the fall-off un-settles it; the bad tag then blocks the settle
+        self.assertIn(UNSETTLED, f.tags())  # the restart rule un-settled it; the bad tag then blocks the settle
         self.assertNotIn('lio.add_acl', f.writes())
         self.assertIn('malformed fence tag', self.err)
         self.loop(fz)

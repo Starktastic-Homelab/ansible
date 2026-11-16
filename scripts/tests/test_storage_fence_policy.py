@@ -252,6 +252,10 @@ class ClientTest(unittest.TestCase):
         taints = [OOS, {'key': 'example.com/keep', 'effect': 'NoSchedule'}]
         self.assertIs(kube.with_out_of_service(node('w2', taints=taints), True), taints)
 
+    def test_taint_kept_with_server_fields(self):
+        taints = [{**OOS, 'timeAdded': '2026-11-16T00:00:00Z'}]
+        self.assertIs(kube.with_out_of_service(node('w2', taints=taints), True), taints)
+
     def test_untaint_removes_all_with_key(self):
         other = {'key': 'example.com/keep', 'effect': 'NoSchedule'}
         n = node('w2', taints=[other, {**OOS, 'effect': 'NoSchedule'}, OOS])

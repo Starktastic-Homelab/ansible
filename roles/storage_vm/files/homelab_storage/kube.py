@@ -33,7 +33,10 @@ def with_out_of_service(node, present):
     others = [t for t in taints if t.get('key') != OUT_OF_SERVICE['key']]
     if not present:
         return others
-    return taints if [t for t in taints if t.get('key') == OUT_OF_SERVICE['key']] == [OUT_OF_SERVICE] else others + [OUT_OF_SERVICE]
+    oos = [t for t in taints if t.get('key') == OUT_OF_SERVICE['key']]
+    # extra fields (timeAdded) are ignored so a server-filled taint is not re-patched every loop
+    keep = len(oos) == 1 and all(oos[0].get(k) == OUT_OF_SERVICE[k] for k in ('value', 'effect'))
+    return taints if keep else others + [OUT_OF_SERVICE]
 
 
 class Client:

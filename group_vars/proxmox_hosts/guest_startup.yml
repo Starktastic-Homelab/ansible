@@ -6,3 +6,12 @@
 # 180 s before the unordered guests. Terraform ignores startup on the K3s VMs.
 proxmox_guest_startup:
   "100": "order=1,up=180"
+
+# ZFS ARC ceiling, applied live and at boot by a tmpfiles.d line. It wins over the installer's
+# 13481541632 in /etc/modprobe.d/zfs.conf after boot. 8 GiB leaves room for the guests.
+proxmox_guest_startup_zfs_arc_max_bytes: 8589934592
+
+# Balloon target per guest, in MiB. Equal to the guest's memory, so it never balloons and the
+# change applies to the running VM (0 would wait for a restart). VM300 is the runner (4096 MiB).
+proxmox_guest_startup_balloon:
+  "300": 4096

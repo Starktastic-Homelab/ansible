@@ -1,7 +1,7 @@
 ---
-# Apply proxmox_guest_startup ({vmid: "order=N,up=S"}) to existing guests, and make the host reboot on a
-# kernel crash, with current CPU microcode. Startup order and microcode take effect at the next host boot; nothing
-# is restarted.
+# Apply proxmox_guest_startup ({vmid: "order=N,up=S"}) and balloon targets to existing guests, cap the ZFS ARC,
+# and make the host reboot on a kernel crash, with current CPU microcode. Startup order and microcode take effect
+# at the next host boot; balloon and ARC cap apply live. Nothing is restarted.
 
 - name: Read guest configs
   ansible.builtin.command:
@@ -9,6 +9,7 @@
   loop: "{{ proxmox_guest_startup | dict2items }}"
   register: proxmox_guest_startup_configs
   changed_when: false
+  check_mode: false
 
 - name: Set guest startup order and delay
   ansible.builtin.command:
@@ -55,6 +56,47 @@
   ansible.builtin.command:
     argv: [systemd-tmpfiles, --create, /etc/tmpfiles.d/spl-panic-halt.conf]
   when: proxmox_guest_startup_spl_panic_halt.content | b64decode | trim != '1'
+  changed_when: true
+
+# Before the balloon tasks, so the freed memory is there for pvestatd. zfs_arc_max is writable at runtime;
+# this tmpfiles line overrides /etc/modprobe.d/zfs.conf after each boot.
+- name: Cap the ZFS ARC
+  ansible.builtin.copy:
+    dest: /etc/tmpfiles.d/zfs-arc-max.conf
+    content: |
+      # Managed by ansible (proxmox_guest_startup). Overrides /etc/modprobe.d/zfs.conf after boot.
+      w /sys/module/zfs/parameters/zfs_arc_max - - - - {{ proxmox_guest_startup_zfs_arc_max_bytes }}
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Read the running ZFS ARC cap
+  ansible.builtin.slurp:
+    src: /sys/module/zfs/parameters/zfs_arc_max
+  register: proxmox_guest_startup_zfs_arc_max
+
+- name: Apply the ZFS ARC cap to the running kernel
+  ansible.builtin.command:
+    argv: [systemd-tmpfiles, --create, /etc/tmpfiles.d/zfs-arc-max.conf]
+  when: proxmox_guest_startup_zfs_arc_max.content | b64decode | trim != proxmox_guest_startup_zfs_arc_max_bytes | string
+  changed_when: true
+
+- name: Read ballooned guest configs
+  ansible.builtin.command:
+    argv: [pvesh, get, "/nodes/{{ inventory_hostname }}/qemu/{{ item.key }}/config", --output-format, json]
+  loop: "{{ proxmox_guest_startup_balloon | dict2items }}"
+  register: proxmox_guest_startup_balloon_configs
+  changed_when: false
+  check_mode: false
+
+# Sets the balloon minimum live; the actual size follows via pvestatd, or a one-off `qm balloon` if the host is busy.
+- name: Set guest balloon target
+  ansible.builtin.command:
+    argv: [qm, set, "{{ item.item.key }}", --balloon, "{{ item.item.value }}"]
+  loop: "{{ proxmox_guest_startup_balloon_configs.results }}"
+  loop_control:
+    label: "{{ item.item.key }}: {{ item.item.value }}"
+  when: (item.stdout | from_json).balloon | default('') | string != item.item.value | string
   changed_when: true
 
 # The BIOS loads microcode 0x36 on the i7-12700K; Debian's package loads a newer revision early in each boot (0x3d

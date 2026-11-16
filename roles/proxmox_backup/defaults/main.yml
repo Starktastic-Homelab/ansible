@@ -72,3 +72,121 @@ proxmox_backup_schedules:
   health: hourly
 
 proxmox_backup_secrets: [restic.pass, id_storagebox, healthchecks.env, apps.key, usbbk.key]
+
+# Weekly vzdump of TrueNAS (VM 100) and VM 300 to usbbk-vz. Options are pvesh flags; only these are managed.
+proxmox_backup_vzdump_job:
+  id: backup-f56bebaa-4912
+  options:
+    schedule: "sun 01:00"
+    vmid: "100,300"
+    storage: usbbk-vz
+    mode: snapshot
+    compress: "0"
+    prune-backups: keep-last=3
+    enabled: "{{ 1 if proxmox_backup_enabled else 0 }}" # create only; a job disabled in the UI stays disabled
+    notification-mode: notification-system
+    # vzdump fills this in per guest (its own syntax, no spaces); !unsafe keeps Jinja from templating it.
+    notes-template: !unsafe "{{guestname}}" # noqa: jinja[spacing]
+
+# Quota on the dataset behind storage 'local' (/var/lib/vz), so ISOs and local dumps cannot fill the root pool.
+proxmox_backup_vz_dataset: rpool/var-lib-vz
+proxmox_backup_vz_quota: 150G
+
+# Read-only drift check of the TrueNAS side of the backup, via the guest agent of VM 100. Ansible never writes
+# TrueNAS: on drift the play fails and the fix is made in the TrueNAS UI. Each query entry is matched by
+# `match` (exactly one object, or `count`) and compares only `fields`; a dict field compares only its listed keys,
+# a dotted field reads one nested key, and null means the live value is null.
+proxmox_backup_truenas_vmid: 100
+proxmox_backup_truenas_expected:
+  replication.query:
+    - match: { name: apps to pve usbbk }
+      fields:
+        direction: PUSH
+        transport: SSH
+        source_datasets: [apps/k3s-block, apps/pv]
+        target_dataset: usbbk/tn
+        recursive: false
+        auto: true
+        enabled: true
+        retention_policy: CUSTOM
+        lifetime_value: 2
+        lifetime_unit: WEEK
+        readonly: SET
+        properties: true
+        properties_exclude: [quota, reservation, refreservation]
+        encryption: false
+        large_block: true
+        compressed: true
+        allow_from_scratch: false
+        periodic_snapshot_tasks: [apps/k3s-block, apps/pv]
+        exclude: []
+        # Dotted select: selecting ssh_credentials whole would return the private key.
+        ssh_credentials.name: pve-tnrepl
+  pool.snapshottask.query:
+    - match: { dataset: apps/pv }
+      fields:
+        recursive: true
+        lifetime_value: 1
+        lifetime_unit: WEEK
+        naming_schema: auto-%Y-%m-%d_%H-%M
+        schedule: { minute: "30", hour: "3,9,15,21", dom: "*", month: "*", dow: "*", begin: "00:00", end: "23:59" }
+        exclude: []
+        enabled: true
+        allow_empty: true
+    - match: { dataset: apps/k3s-block }
+      fields:
+        recursive: false
+        lifetime_value: 1
+        lifetime_unit: WEEK
+        naming_schema: auto-%Y-%m-%d_%H-%M
+        schedule: { minute: "30", hour: "3,9,15,21", dom: "*", month: "*", dow: "*", begin: "00:00", end: "23:59" }
+        exclude: []
+        enabled: true
+        allow_empty: true
+    - match: { dataset: main/media }
+      fields:
+        recursive: false
+        lifetime_value: 1
+        lifetime_unit: WEEK
+        naming_schema: auto-%Y-%m-%d_%H-%M
+        schedule: { minute: "0", hour: "4", dom: "*", month: "*", dow: "*", begin: "00:00", end: "23:59" }
+        exclude: []
+        enabled: true
+        allow_empty: true
+    - match: { dataset: main/immich }
+      fields:
+        recursive: false
+        lifetime_value: 2
+        lifetime_unit: WEEK
+        naming_schema: auto-%Y-%m-%d_%H-%M
+        schedule: { minute: "45", hour: "3,9,15,21", dom: "*", month: "*", dow: "*", begin: "00:00", end: "23:59" }
+        exclude: []
+        enabled: true
+        allow_empty: true
+  sharing.nfs.query:
+    # A third share on the Immich path is drift.
+    - match: { path: /mnt/main/immich }
+      count: 2
+    - match: { path: /mnt/main/immich, networks: [10.9.8.0/24] }
+      fields:
+        ro: false
+        hosts: []
+        maproot_user: null
+        maproot_group: null
+        mapall_user: media
+        mapall_group: media
+        security: []
+        enabled: true
+    # The share homelab-backup reads Immich originals from (proxmox_backup_nfs_sources).
+    - match: { path: /mnt/main/immich, networks: [10.9.9.20/32] }
+      fields:
+        ro: true
+        hosts: []
+        maproot_user: null
+        maproot_group: null
+        mapall_user: media
+        mapall_group: media
+        security: []
+        enabled: true
+  # Each listed address must be among the bound ones.
+  nfs.config: { bindip: [10.9.8.30, 10.9.9.30] }

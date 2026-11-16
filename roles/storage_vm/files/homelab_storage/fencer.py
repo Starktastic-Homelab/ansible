@@ -52,6 +52,7 @@ class Fencer:
         self.last_api_success = 0  # 0 until the first success, so StorageFencerBlind sees a series from the start
         self.active = set()
         self.started = False  # until a loop reaches its decision: a restart is a gap this process did not watch
+        self.unsettle_failed = set()  # a fell-off signal kept until the retag to unknown lands
 
     def worker(self, name):
         if name not in self.addrs:
@@ -159,11 +160,15 @@ class Fencer:
 
     def _opening_proofs(self, lio_):
         """{tagged worker: True (still cut) | False (not cut) | None (the proof failed to run)}."""
-        tagged = sorted(n for n in self.cluster().fenced() if n in self.addrs)
+        fenced = self.cluster().fenced()
+        tagged = sorted(n for n in fenced if n in self.addrs)
+        self.unsettle_failed &= {n for n, b in fenced.items() if b != fence_policy.UNKNOWN}
         if not self.started:
             return dict.fromkeys(tagged, False)  # nothing saw the gap before this process
-        opened = {}
+        opened = dict.fromkeys(self.unsettle_failed, False)
         for name in tagged:
+            if name in opened:
+                continue
             try:
                 opened[name] = proven(self.proof(lio_, name))
             except Exception as e:
@@ -185,6 +190,9 @@ class Fencer:
                 new, msg = b, f'settled on bootID {b}'
             else:
                 continue
+
+            if new == unknown:
+                self.unsettle_failed.add(name)  # the next opening proof could pass with the tag still settled
 
             def retag():  # one vgchange: never zero tags, never two
                 lvm.vg_tags('retained', add=[tag_fenced(name, new)], delete=[tag_fenced(name, tagged)])

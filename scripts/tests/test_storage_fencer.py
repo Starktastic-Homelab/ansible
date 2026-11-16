@@ -469,6 +469,42 @@ class SettleTest(Base):
         self.loop(fz)
         self.assertFencedLive(f)
 
+    def test_failed_unsettle_is_sticky(self):
+        # The un-settle vgchange fails once: the fell-off signal must survive until it lands, or C unfences on A's tag.
+        for restart in (False, True):
+            with self.subTest(restart=restart):
+                self.tmp = Path(tempfile.mkdtemp())
+                self.addCleanup(shutil.rmtree, self.tmp)
+                f = self.fake(nodes=[node('w1', bootid=B), node('w2', ready=False, taints=[OOS])],
+                              tags=[f'fenced:w2:{A}'], fenced_set=[W2_ADDR], acls=[W1], history={'w2': {'seen': [A]}})
+                fz = fencer.Fencer(config()) if restart else self.running()
+                if not restart:
+                    f.fenced_set.discard(W2_ADDR)
+                    for t in f.lio.targets_.values():
+                        t['acls'].add(W2)
+                real, fails = fencer.lvm.vg_tags, [1]
+
+                def vg_tags(vg, add=(), delete=()):
+                    if fails and f'fenced:w2:{A}' in delete:
+                        fails.pop()
+                        raise subprocess.CalledProcessError(5, ['vgchange'], '', 'fake failure')
+                    real(vg, add, delete)
+                with mock.patch.object(fencer.lvm, 'vg_tags', vg_tags):
+                    self.loop(fz)
+                    self.assertEqual(f.fence_tags(), {f'fenced:w2:{A}'})
+                    self.assertFencedLive(f)
+                    self.w2(bootid=C)  # C mounted in the open window, hung, and is Ready again
+                    self.loop(fz)
+                    self.assertEqual(f.fence_tags(), {UNSETTLED})
+                    self.assertFencedLive(f)
+                    self.loop(fz)
+                    self.assertEqual(f.fence_tags(), {f'fenced:w2:{C}'})
+                    self.loop(fz)
+                    self.assertFencedLive(f)
+                    self.w2(bootid=D)
+                    self.loop(fz)
+                    self.assertUnfenced(f)
+
     def test_proof_error_is_not_a_fall_off(self):
         f = self.fake(nodes=[node('w1', bootid=B), node('w2', bootid=C, taints=[OOS])], tags=[f'fenced:w2:{A}'],
                       fenced_set=[W2_ADDR], acls=[W1], history={'w2': {'seen': [A]}})

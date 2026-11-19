@@ -1,0 +1,208 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="624" viewBox="0 0 1100 624" role="img" aria-labelledby="t d">
+  <title id="t">Backup path: three streams from the host to one off-site restic repository</title>
+  <desc id="d">Three streams leave the host. First, TrueNAS snapshots apps/k3s-block and apps/pv every six hours and replicates them raw into usbbk/tn on the encrypted USB pool usbbk; restic uploads them, with /etc, /root and mirrors of the five repositories, as the snapshot tagged daily. Second, a weekly vzdump on Sundays at 01:00 writes VM 100 and VM 300 to usbbk-vz; restic uploads the newest VM 300 dump as the snapshot tagged vzdump, and the VM 100 dump stays local. Third, the Immich originals on main/immich have no copy on usbbk; restic reads the share over read-only NFS and uploads it last as the snapshot tagged nfs. All three go to a restic repository on a Hetzner Storage Box over SFTP, which keeps its own weekly snapshots against deletion. Three systemd timers on the Proxmox host drive this, in Asia/Jerusalem time: homelab-backup-backup.timer daily at 04:30, homelab-backup-maint.timer on Sundays at 05:30, and homelab-backup-health.timer hourly. Every run pings healthchecks.io, which holds the checks pve-backup, pve-backup-maint and pve-health and alerts by email.</desc>
+  <defs>
+    <radialGradient id="ga"><stop offset="0" stop-color="#3B82F6" stop-opacity=".55"/><stop offset="1" stop-color="#3B82F6" stop-opacity="0"/></radialGradient>
+    <radialGradient id="gb"><stop offset="0" stop-color="#6366F1" stop-opacity=".45"/><stop offset="1" stop-color="#6366F1" stop-opacity="0"/></radialGradient>
+    <radialGradient id="gc"><stop offset="0" stop-color="#0891B2" stop-opacity=".35"/><stop offset="1" stop-color="#0891B2" stop-opacity="0"/></radialGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1B1D33"/><stop offset="1" stop-color="#0F0F1A"/></linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFFFFF" stop-opacity=".5"/><stop offset=".5" stop-color="#FFFFFF" stop-opacity=".08"/><stop offset="1" stop-color="#93C5FD" stop-opacity=".35"/></linearGradient>
+    <linearGradient id="edge" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="1100" y2="0"><stop offset="0" stop-color="#60A5FA"/><stop offset="1" stop-color="#22D3EE"/></linearGradient>
+    <linearGradient id="sq" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1B1D33"/><stop offset="1" stop-color="#0F0F1A"/></linearGradient>
+    <radialGradient id="glow" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#3B82F6" stop-opacity=".5"/><stop offset="1" stop-color="#3B82F6" stop-opacity="0"/></radialGradient>
+    <linearGradient id="st" gradientUnits="userSpaceOnUse" x1="12" y1="8" x2="36" y2="42"><stop offset="0" stop-color="#FFFFFF"/><stop offset=".35" stop-color="#93C5FD"/><stop offset=".75" stop-color="#3B82F6"/><stop offset="1" stop-color="#22D3EE"/></linearGradient>
+    <linearGradient id="wm" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="182" y2="0"><stop offset="0" stop-color="#FFFFFF"/><stop offset=".55" stop-color="#93C5FD"/><stop offset="1" stop-color="#67E8F9"/></linearGradient>
+    <clipPath id="clip"><rect width="1100" height="624" rx="28"/></clipPath>
+    <symbol id="i-proxmox" viewBox="0 0 24 24"><g fill="#E57000"><path d="M4.928 1.825c-1.09.553-1.09.64-.07 1.78 5.655 6.295 7.004 7.782 7.107 7.782.139.017 7.971-8.542 8.058-8.801.034-.07-.208-.312-.519-.536-.415-.312-.864-.433-1.712-.467-1.59-.104-2.144.242-4.115 2.455-.899 1.003-1.66 1.833-1.66 1.833-.017 0-.76-.813-1.642-1.798S8.473 2.1 8.127 1.91c-.796-.45-2.421-.484-3.2-.086zM1.297 4.367C.45 4.695 0 5.007 0 5.248c0 .121 1.331 1.678 2.94 3.459 1.625 1.78 2.939 3.268 2.939 3.302 0 .035-1.331 1.522-2.94 3.303C1.314 17.11.017 18.683.035 18.822c.086.467 1.504 1.055 2.541 1.055 1.678-.018 2.058-.312 5.603-4.202 1.78-1.954 3.233-3.614 3.233-3.666 0-.069-1.435-1.694-3.199-3.63-2.3-2.508-3.423-3.632-3.96-3.874-.812-.398-2.126-.467-2.956-.138zm18.467.12c-.502.26-1.764 1.505-3.943 3.891-1.763 1.937-3.199 3.562-3.199 3.631 0 .07 1.453 1.712 3.234 3.666 3.544 3.89 3.925 4.184 5.602 4.202 1.038 0 2.455-.588 2.542-1.055.017-.156-1.28-1.712-2.905-3.493-1.608-1.78-2.94-3.285-2.94-3.32 0-.034 1.332-1.539 2.94-3.32C22.72 6.91 24.017 5.352 24 5.214c-.087-.45-1.366-.968-2.473-1.038-.795-.034-1.21.035-1.763.312zM7.954 16.973c-2.144 2.369-3.908 4.374-3.943 4.46-.034.07.208.312.52.537.414.311.864.432 1.711.467 1.574.103 2.161-.26 4.15-2.508.864-.968 1.608-1.78 1.625-1.78s.761.812 1.643 1.798c2.023 2.248 2.559 2.576 4.132 2.49.848-.035 1.297-.156 1.712-.467.311-.225.553-.467.519-.536-.087-.26-7.92-8.819-8.058-8.801-.069 0-1.867 1.954-4.011 4.34z"/></g></symbol>
+    <symbol id="i-truenas" viewBox="0 0 24 24"><g fill="#0095D5"><path d="M24 10.049v5.114l-10.949 6.324v-5.114L24 10.049zm-24 0v5.114l10.956 6.324v-5.114L0 10.049zm12.004-.605l-4.433 2.559 4.433 2.559 4.429-2.559-4.429-2.559zm10.952-1.207l-9.905-5.723v5.118l5.473 3.164 4.432-2.559zm-12-.605V2.513L1.044 8.236l4.432 2.555 5.48-3.159z"/></g></symbol>
+  </defs>
+  <style>
+    text { font-family: Manrope, Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', 'Noto Sans', Arial, sans-serif; }
+    .mono { font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; }
+    .panel { fill: #0B0C16; }
+    .card { fill: url(#card); fill-opacity: .8; }
+    .rim { fill: none; stroke: url(#rim); }
+    .lit { fill: none; stroke: #60A5FA; stroke-width: 2; }
+    .lane { fill: #FFFFFF; fill-opacity: .035; stroke: #FFFFFF; stroke-opacity: .09; }
+    .tile { fill: #262A52; }
+    .t1 { fill: #F5F7FF; }
+    .t2 { fill: #AEB9D6; }
+    .t3 { fill: #7F8AAB; }
+    .acc { fill: #93C5FD; }
+    .vio { fill: #C4B5FD; }
+    .amb { fill: #FCD34D; }
+    .rule { stroke: #FFFFFF; stroke-opacity: .1; }
+    .chip { fill: #3B82F6; fill-opacity: .16; stroke: #60A5FA; stroke-opacity: .45; }
+    .chipt { fill: #DBEAFE; }
+    .wf { fill: #FFFFFF; fill-opacity: .06; stroke: #FFFFFF; stroke-opacity: .2; }
+    .wft { fill: #E6EBFA; }
+    .dot { fill: #22D3EE; }
+    .edge { fill: none; stroke: url(#edge); stroke-width: 2.5; stroke-opacity: .35; }
+    .flow { fill: none; stroke: url(#edge); stroke-width: 2.5; stroke-linecap: round; stroke-dasharray: 2 10; animation: flow 1.1s linear infinite; }
+    .head { fill: #22D3EE; }
+    .badge { fill: #0F1124; stroke: #60A5FA; stroke-width: 1.5; }
+    .badget { fill: #DBEAFE; }
+    .side { fill: none; stroke: #A78BFA; stroke-width: 1.5; stroke-dasharray: 3 5; stroke-linecap: round; animation: flow 3s linear infinite; }
+    .sidehead { fill: #A78BFA; }
+    .pill { fill: #171331; stroke: #A78BFA; stroke-opacity: .55; }
+    .pillt { fill: #DDD6FE; }
+    .wire { fill: none; stroke: #8A94B8; stroke-opacity: .6; stroke-width: 1.5; }
+    .wirehead { fill: #8A94B8; }
+    .hum { fill: #2A2110; stroke: #FBBF24; stroke-opacity: .6; }
+    .humt { fill: #FDE68A; }
+    .gate { fill: none; stroke: #FBBF24; stroke-opacity: .7; stroke-width: 1.5; stroke-dasharray: 6 6; }
+    .tag { fill: #151936; stroke: #8A94B8; stroke-opacity: .5; }
+    .tagt { fill: #C9D1EA; }
+    .here { fill: #13244D; stroke: #60A5FA; }
+    .heret { fill: #DBEAFE; }
+    .dim { opacity: .5; }
+    @keyframes flow { to { stroke-dashoffset: -24; } }
+    @media (prefers-reduced-motion: reduce) { .flow, .side { animation: none; } }
+    @media (prefers-color-scheme: light) {
+      .panel { fill: #F3F6FF; }
+      .blob { opacity: .4; }
+      .card { fill: #FFFFFF; fill-opacity: .85; }
+      .rim { stroke: #C7D2FE; }
+      .lit { stroke: #2563EB; }
+      .lane { fill: #FFFFFF; fill-opacity: .55; stroke: #C7D2FE; stroke-opacity: .9; }
+      .tile { fill: #EEF2FF; }
+      .t1 { fill: #0E1330; }
+      .t2 { fill: #4A5578; }
+      .t3 { fill: #6B7699; }
+      .acc { fill: #2563EB; }
+      .vio { fill: #6D28D9; }
+      .amb { fill: #B45309; }
+      .rule { stroke: #0E1330; stroke-opacity: .1; }
+      .chip { fill: #2563EB; fill-opacity: .08; stroke: #2563EB; stroke-opacity: .35; }
+      .chipt { fill: #1E3A8A; }
+      .wf { fill: #FFFFFF; fill-opacity: .9; stroke: #B6C2EC; stroke-opacity: 1; }
+      .wft { fill: #1B2147; }
+      .dot { fill: #0891B2; }
+      .edge, .flow { stroke: #2563EB; }
+      .head { fill: #2563EB; }
+      .badge { fill: #FFFFFF; stroke: #2563EB; }
+      .badget { fill: #1E3A8A; }
+      .side { stroke: #7C3AED; }
+      .sidehead { fill: #7C3AED; }
+      .pill { fill: #F5F3FF; stroke: #7C3AED; stroke-opacity: .45; }
+      .pillt { fill: #5B21B6; }
+      .wire { stroke: #64709A; }
+      .wirehead { fill: #64709A; }
+      .hum { fill: #FFFBEB; stroke: #D97706; stroke-opacity: .6; }
+      .humt { fill: #92400E; }
+      .gate { stroke: #D97706; }
+      .tag { fill: #FFFFFF; stroke: #64709A; stroke-opacity: .5; }
+      .tagt { fill: #2A3358; }
+      .here { fill: #EAF0FF; stroke: #2563EB; }
+      .heret { fill: #1E3A8A; }
+    }
+  </style>
+  <g clip-path="url(#clip)"><rect class="panel" width="1100" height="624"/><g class="blob"><ellipse cx="957" cy="43.68" rx="429" ry="312" fill="url(#ga)"/><ellipse cx="110" cy="605.28" rx="429" ry="312" fill="url(#gb)"/><ellipse cx="759" cy="667.68" rx="385" ry="249.6" fill="url(#gc)"/></g></g>
+
+  <text class="acc" x="40" y="52" font-size="14" font-weight="700" letter-spacing="3">BACKUP PATH</text>
+  <text class="t1" x="40" y="86" font-size="26" font-weight="800">Three streams, one off-site repository</text>
+  <g class="t2" font-size="13.5">
+    <path class="wire" d="M690 48H730"/><path class="wirehead" d="M739 48l-8 -4.5v9.0z"/>
+    <text x="750" y="52.5">pings</text>
+    <path class="edge" d="M836 48H886"/><path class="flow" d="M836 48H886"/>
+    <text x="898" y="52.5">copies to</text>
+    <path class="side" d="M836 76H886"/>
+    <text x="898" y="80.5">read in place</text>
+  </g>
+
+  <g class="acc" font-size="11.5" font-weight="700" letter-spacing="1.5">
+    <text x="30" y="130">SOURCE</text>
+    <text x="316" y="130">LOCAL COPY · USB POOL</text>
+    <text x="622" y="130">RESTIC SNAPSHOT, BY TAG</text>
+    <text x="894" y="130">OFF-SITE</text>
+  </g>
+
+  <!-- stream 1: block volumes and NFS volumes -->
+  <rect class="card" x="30" y="142" width="230" height="80" rx="16"/><rect class="rim" x="30.5" y="142.5" width="229" height="79" rx="15.5"/>
+  <rect class="tile" x="42" y="154" width="32" height="32" rx="9.6"/><use href="#i-truenas" x="48.4" y="160.4" width="19.2" height="19.2"/>
+  <text class="t1 mono" x="84" y="167" font-size="13">apps/k3s-block</text>
+  <text class="t1 mono" x="84" y="185" font-size="13">apps/pv</text>
+  <text class="t2" x="84" y="207" font-size="12.5">TrueNAS, every 6 h</text>
+  <rect class="card" x="316" y="142" width="250" height="80" rx="16"/><rect class="rim" x="316.5" y="142.5" width="249" height="79" rx="15.5"/>
+  <rect class="tile" x="328" y="154" width="32" height="32" rx="9.6"/><text class="acc" x="344" y="173.8" font-size="10" font-weight="800" text-anchor="middle">USB</text>
+  <text class="t1 mono" x="370" y="167" font-size="13">usbbk/tn/k3s-block</text>
+  <text class="t1 mono" x="370" y="185" font-size="13">usbbk/tn/pv</text>
+  <text class="t2" x="370" y="207" font-size="12.5">raw replicas, kept 2 weeks</text>
+  <rect class="card" x="622" y="142" width="216" height="80" rx="16"/><rect class="rim" x="622.5" y="142.5" width="215" height="79" rx="15.5"/>
+  <text class="t1 mono" x="636" y="167" font-size="13.5" font-weight="700">daily</text>
+  <text class="t2" x="636" y="188" font-size="12.5">replicas, /etc, /root and</text>
+  <text class="t2" x="636" y="205" font-size="12.5">mirrors of the five repos</text>
+
+  <!-- stream 2: vzdump -->
+  <rect class="card" x="30" y="236" width="230" height="70" rx="16"/><rect class="rim" x="30.5" y="236.5" width="229" height="69" rx="15.5"/>
+  <rect class="tile" x="42" y="248" width="32" height="32" rx="9.6"/><use href="#i-proxmox" x="48.4" y="254.4" width="19.2" height="19.2"/>
+  <text class="t1" x="84" y="263" font-size="13.5" font-weight="700">VM 100 and VM 300</text>
+  <text class="t2" x="84" y="282" font-size="12.5">vzdump, Sundays 01:00</text>
+  <rect class="card" x="316" y="236" width="250" height="70" rx="16"/><rect class="rim" x="316.5" y="236.5" width="249" height="69" rx="15.5"/>
+  <rect class="tile" x="328" y="248" width="32" height="32" rx="9.6"/><text class="acc" x="344" y="267.8" font-size="10" font-weight="800" text-anchor="middle">USB</text>
+  <text class="t1 mono" x="370" y="263" font-size="13">usbbk-vz</text>
+  <text class="t2" x="370" y="282" font-size="12.5">.vma archives, last 3 kept</text>
+  <rect class="card" x="622" y="236" width="216" height="70" rx="16"/><rect class="rim" x="622.5" y="236.5" width="215" height="69" rx="15.5"/>
+  <text class="t1 mono" x="636" y="259" font-size="13.5" font-weight="700">vzdump</text>
+  <text class="t2" x="636" y="279" font-size="12.5">the newest VM 300 dump;</text>
+  <text class="t2" x="636" y="296" font-size="12.5">the VM 100 dump stays local</text>
+
+  <!-- stream 3: Immich originals -->
+  <rect class="card" x="30" y="320" width="230" height="70" rx="16"/><rect class="rim" x="30.5" y="320.5" width="229" height="69" rx="15.5"/>
+  <rect class="tile" x="42" y="332" width="32" height="32" rx="9.6"/><use href="#i-truenas" x="48.4" y="338.4" width="19.2" height="19.2"/>
+  <text class="t1 mono" x="84" y="347" font-size="13">main/immich</text>
+  <text class="t2" x="84" y="366" font-size="12.5">Immich originals</text>
+  <path class="side" d="M262 355H612"/><path class="sidehead" d="M621 355l-9 -5v10z"/>
+  <rect class="pill" x="321" y="342" width="240" height="26" rx="13"/><text class="pillt" x="441" y="359.5" font-size="12.5" text-anchor="middle">read-only NFS, no copy on usbbk</text>
+  <rect class="card" x="622" y="320" width="216" height="70" rx="16"/><rect class="rim" x="622.5" y="320.5" width="215" height="69" rx="15.5"/>
+  <text class="t1 mono" x="636" y="343" font-size="13.5" font-weight="700">nfs</text>
+  <text class="t2" x="636" y="363" font-size="12.5">the share, read live and</text>
+  <text class="t2" x="636" y="380" font-size="12.5">uploaded last</text>
+
+  <!-- off-site -->
+  <rect class="card" x="894" y="142" width="176" height="248" rx="20"/><rect class="lit" x="894.5" y="142.5" width="175" height="247" rx="19.5"/>
+  <rect class="tile" x="908" y="158" width="36" height="36" rx="10.8"/><text class="acc" x="926" y="179.8" font-size="10" font-weight="800" text-anchor="middle">SB</text>
+  <text class="t1" x="908" y="222" font-size="15" font-weight="800">Hetzner</text>
+  <text class="t1" x="908" y="241" font-size="15" font-weight="800">Storage Box</text>
+  <text class="t2" x="908" y="264" font-size="12.5">restic repository,</text>
+  <text class="t2" x="908" y="281" font-size="12.5">reached over SFTP</text>
+  <path class="rule" d="M908 298H1056"/>
+  <text class="t2" x="908" y="321" font-size="12.5">its own weekly</text>
+  <text class="t2" x="908" y="338" font-size="12.5">snapshots guard</text>
+  <text class="t2" x="908" y="355" font-size="12.5">against deletion</text>
+
+  <path class="edge" d="M262 182H306"/><path class="flow" d="M262 182H306"/><path class="head" d="M315 182l-10 -5.5v11.0z"/>
+  <path class="edge" d="M568 182H612"/><path class="flow" d="M568 182H612"/><path class="head" d="M621 182l-10 -5.5v11.0z"/>
+  <path class="edge" d="M840 182H884"/><path class="flow" d="M840 182H884"/><path class="head" d="M893 182l-10 -5.5v11.0z"/>
+  <path class="edge" d="M262 271H306"/><path class="flow" d="M262 271H306"/><path class="head" d="M315 271l-10 -5.5v11.0z"/>
+  <path class="edge" d="M568 271H612"/><path class="flow" d="M568 271H612"/><path class="head" d="M621 271l-10 -5.5v11.0z"/>
+  <path class="edge" d="M840 271H884"/><path class="flow" d="M840 271H884"/><path class="head" d="M893 271l-10 -5.5v11.0z"/>
+  <path class="edge" d="M840 355H884"/><path class="flow" d="M840 355H884"/><path class="head" d="M893 355l-10 -5.5v11.0z"/>
+
+  <!-- timers and the watcher -->
+  <rect class="lane" x="30" y="416" width="1040" height="174" rx="22"/><rect class="rim" x="30.5" y="416.5" width="1039" height="173" rx="21.5"/>
+  <text class="acc" x="48" y="441" font-size="11.5" font-weight="700" letter-spacing="1.5">THREE SYSTEMD TIMERS ON THE PROXMOX HOST · ASIA/JERUSALEM TIME</text>
+  <rect class="wf" x="46" y="456" width="240" height="28" rx="8"/><text class="wft mono" x="56" y="474.375" font-size="12.5">homelab-backup-backup.timer</text>
+  <rect class="wf" x="300" y="456" width="240" height="28" rx="8"/><text class="wft mono" x="310" y="474.375" font-size="12.5">homelab-backup-maint.timer</text>
+  <rect class="wf" x="554" y="456" width="240" height="28" rx="8"/><text class="wft mono" x="564" y="474.375" font-size="12.5">homelab-backup-health.timer</text>
+  <g class="t2" font-size="12.5">
+    <text x="46" y="516">04:30 daily: refuses a replica</text>
+    <text x="46" y="533">older than 8 h, then uploads the</text>
+    <text x="46" y="550">three snapshots</text>
+    <text x="300" y="516">Sundays 05:30: forgets and prunes</text>
+    <text x="300" y="533">old snapshots, then checks 5% of</text>
+    <text x="300" y="550">the repository data</text>
+    <text x="554" y="516">hourly: pools, replica age and</text>
+    <text x="554" y="533">recent kernel crash records</text>
+  </g>
+  <g class="t3" font-size="12.5">
+    <text x="46" y="574">check <tspan class="t2 mono">pve-backup</tspan></text>
+    <text x="300" y="574">check <tspan class="t2 mono">pve-backup-maint</tspan></text>
+    <text x="554" y="574">check <tspan class="t2 mono">pve-health</tspan></text>
+  </g>
+  <path class="wire" d="M166 486V490Q166 494 170 494H840M420 486V494M674 486V494"/><path class="wirehead" d="M849 494l-8 -4.5v9.0z"/>
+  <rect class="card" x="850" y="456" width="204" height="78" rx="14"/><rect class="rim" x="850.5" y="456.5" width="203" height="77" rx="13.5"/>
+  <text class="t1" x="864" y="481" font-size="14.5" font-weight="800">healthchecks.io</text>
+  <text class="t2" x="864" y="501" font-size="12.5">every run pings it;</text>
+  <text class="t2" x="864" y="518" font-size="12.5">it alerts by email</text>
+</svg>

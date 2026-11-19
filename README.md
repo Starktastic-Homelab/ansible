@@ -1,881 +1,196 @@
-<div align="center">
+<p align="center">
+  <img src="docs/diagrams/banner.svg" alt="ansible, stage 3 of 4 in the Starktastic Homelab: configures the Proxmox host, installs K3s and bootstraps Argo CD. 9 playbooks, 12 roles, 8 plays to a cluster, 10 workflows.">
+</p>
 
-# ⚙️ Ansible — Cluster Configuration
+<p align="center">
+  <a href="https://github.com/Starktastic-Homelab/ansible/actions/workflows/deploy.yml"><img src="https://github.com/Starktastic-Homelab/ansible/actions/workflows/deploy.yml/badge.svg" alt="deploy"></a>
+  <a href="https://github.com/Starktastic-Homelab/ansible/actions/workflows/validate.yml"><img src="https://github.com/Starktastic-Homelab/ansible/actions/workflows/validate.yml/badge.svg" alt="validate"></a>
+  <a href="https://github.com/Starktastic-Homelab/ansible/actions/workflows/i915-compat.yml"><img src="https://github.com/Starktastic-Homelab/ansible/actions/workflows/i915-compat.yml/badge.svg" alt="i915 compatibility check"></a>
+</p>
 
-**Zero-touch K3s provisioning with HA, GPU virtualization, and GitOps bootstrap**
+This repository turns the VMs that terraform clones into a K3s cluster and hands that cluster to Argo CD.
+It also owns the Proxmox host under them: the Intel GPU driver that gives the workers virtual functions,
+the host-side backup, the guest boot order and a serial bridge for Zigbee. A deploy takes the same
+maintenance lock as terraform's apply, and a GPU driver change counts as done only after every worker
+has encoded video on the new driver.
 
-[![Ansible](https://img.shields.io/badge/Ansible-EE0000?style=for-the-badge&logo=ansible&logoColor=white)](https://www.ansible.com/)
-[![K3s](https://img.shields.io/badge/K3s-FFC61C?style=for-the-badge&logo=k3s&logoColor=black)](https://k3s.io/)
-[![Kubernetes](https://img.shields.io/badge/Kubernetes-326CE5?style=for-the-badge&logo=kubernetes&logoColor=white)](https://kubernetes.io/)
-[![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+## Where it sits
 
-*Transforms bare Debian VMs into a production-grade Kubernetes cluster with a single playbook run*
+<p align="center">
+  <img src="docs/diagrams/chain.svg" alt="The delivery chain packer, terraform, ansible, apps, with ansible highlighted: it takes in the dispatch from terraform or a push to main, and hands over K3s, Argo CD with its root app, and the KUBECONFIG_RAW secret.">
+</p>
 
-</div>
+Terraform's apply sends the `repository_dispatch` event `infrastructure-changed` when it has changed the
+VMs, and `deploy.yml` answers it. A push to `main` or a manual run starts the same deploy. What leaves
+is a cluster running Argo CD with the root app `cluster-bootstrap` on the
+[apps](https://github.com/Starktastic-Homelab/apps) repository, and the kubeconfig as the organization
+secret `KUBECONFIG_RAW` for terraform and apps. The
+[organization profile](https://github.com/Starktastic-Homelab) shows the whole chain.
 
----
+## How it works
 
-## Table of Contents
+### One deploy, from trigger to hand-off
 
-- [Overview](#overview)
-- [Deployment Pipeline](#deployment-pipeline)
-- [Roles](#roles)
-- [Inventory \& Discovery](#inventory--discovery)
-- [Key Features](#key-features)
-- [Additional Playbooks](#additional-playbooks)
-- [CI/CD Automation](#cicd-automation)
-- [Cross-Repo Integration](#cross-repo-integration)
-- [Prerequisites](#prerequisites)
-- [Usage](#usage)
-- [License \& Contributing](#license--contributing)
+<p align="center">
+  <img src="docs/diagrams/deploy-flow.svg" alt="One run of deploy.yml: three triggers start job provision on the self-hosted runner, which takes the maintenance lock, runs the eight plays of k3s.yml, releases the lock and uploads an encrypted kubeconfig; job handoff on a GitHub-hosted runner writes KUBECONFIG_RAW for terraform and apps. A second row lists what play 8 does, ending at the Argo CD root app.">
+</p>
 
----
+`deploy.yml` has two jobs. `provision` runs on the self-hosted runner, a VM on the Proxmox host that can
+reach the nodes over SSH. `handoff` runs on a GitHub-hosted runner, so the token that writes organization
+secrets never touches the self-hosted machine. The kubeconfig crosses between them encrypted, because
+anyone can download the artifacts of a public repository.
 
-## Overview
+- **One lock for applies and deploys.** `scripts/maintenance_lock.py` records the owner on the runner's disk,
+  and terraform's apply takes the same lock. A deploy releases it only after the playbook succeeds, so a
+  failed run keeps the lock until someone has looked.
+- **No host list.** `inventory/proxmox.yml` builds the groups `all_k3s`, `masters` and `workers` from the
+  Proxmox tags that terraform sets on the VMs.
+- **One API address.** Play 2 starts kube-vip on the control plane, and every other node joins through
+  `10.9.9.99`.
+- **Replaced workers are retired first.** Play 5 goes through the workers one at a time and deletes the
+  stale Node object of a VM that was replaced, before the new agent joins.
+- **Drained nodes come back last.** Terraform sends the names it drained as `drained_nodes`. Play 7 waits
+  until every node is Ready, then uncordons only the listed nodes that are still in the inventory.
+- **Secrets work on the first sync.** Play 8 seeds the Sealed Secrets key and restores the TLS
+  certificates from their NFS backup before it installs Argo CD. From the root app on, Argo CD pulls
+  `main` of apps by itself.
 
-This repository takes freshly provisioned Debian VMs (from Terraform) and transforms them into a fully operational K3s Kubernetes cluster. The main `k3s.yml` playbook executes a 6-play pipeline that:
+A newer run never cancels a deploy in progress, because an interrupted `helm upgrade` would leave a
+pending release. It waits its turn instead.
 
-1. Waits for VMs to become reachable via SSH
-2. Initializes the first control plane node with embedded etcd
-3. Deploys **Kube-VIP** for a highly available virtual IP
-4. Joins additional masters and workers to the cluster
-5. Labels worker nodes with GPU capabilities
-6. Bootstraps the cluster with **Sealed Secrets**, **TLS certificate recovery**, and **ArgoCD** with SSO
+### A GPU driver change, from pin to proof
 
-Beyond K3s, dedicated playbooks manage **Intel i915 SR-IOV GPU drivers** on the Proxmox host and a **ser2net bridge** for Zigbee home automation hardware.
+<p align="center">
+  <img src="docs/diagrams/gpu-driver-lifecycle.svg" alt="A host GPU driver change in three phases: on the pull request, i915-compat.yml checks the host pin against the guest pin read from packer; after a person merges, i915-sriov-upgrade.yml checks the target, captures the i915-before baseline and installs the driver, and the host reboots with the runner on it; after the reboot a person dispatches i915-acceptance.yml in post-reboot mode.">
+</p>
 
----
+The host runs the `i915-sriov-dkms` driver, which splits the integrated GPU into seven virtual functions.
+Packer bakes the guest side into the VM image, and the two sides run different releases on purpose. Every
+pull request therefore runs `scripts/i915_compat.py`, the same file that packer carries, against both
+pins. It reads upstream metadata and a short list of releases known to be bad. It does not test hardware.
 
-## Deployment Pipeline
+Merging a change to `group_vars/proxmox_hosts/i915_sriov.yml` installs the driver and reboots the host a
+minute later, without taking the maintenance lock, so it belongs in a maintenance window. The runner is a
+VM on that host, so the workflow ends before the reboot and cannot see the result. Acceptance is a
+separate run that a person starts: it compares every machine's boot ID with the baseline captured before
+the install, and runs encode probes on every worker. The version policy, the recovery steps and the
+acceptance modes are in [docs/i915-sriov.md](docs/i915-sriov.md).
 
-The main `k3s.yml` playbook orchestrates cluster creation through six sequential plays:
+### Backups that leave the host
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Runner as CI Runner
-    participant M0 as Master-01
-    participant M1 as Master-N
-    participant W as Workers
-    participant Cluster as K3s Cluster
+<p align="center">
+  <img src="docs/diagrams/backup-path.svg" alt="The host-side backup as three streams: TrueNAS datasets replicate to the USB pool usbbk, a weekly vzdump writes VM 100 and VM 300 to usbbk-vz, and the Immich share is read over read-only NFS; restic uploads them as snapshots tagged daily, vzdump and nfs to a Hetzner Storage Box. Three systemd timers run the backup, the maintenance and an hourly health check, and each run pings healthchecks.io.">
+</p>
 
-    rect rgb(60, 60, 60)
-    Note over Runner, W: Play 1 — Wait for SSH
-    Runner->>M0: SSH probe (10s delay, 300s timeout)
-    Runner->>M1: SSH probe
-    Runner->>W: SSH probe
-    end
+The `proxmox_backup` role installs `homelab-backup`, a script around restic, with three systemd timers.
+The volumes reach the host as raw, still encrypted ZFS replicas on a portable USB pool. The photo library
+is too large for that disk, so restic reads it over a read-only NFS mount instead. A backup run uploads
+nothing when a replica is more than 8 hours old or a kernel crash record is waiting to be read.
 
-    rect rgb(123, 66, 188)
-    Note over M0: Play 2 — Initialize First Master
-    Runner->>M0: Role: k3s_init
-    M0->>M0: Install K3s (--cluster-init)
-    M0->>M0: Deploy Kube-VIP DaemonSet
-    M0->>M0: Advertise VIP (10.9.9.99)
-    end
+TrueNAS is not configured from here. Each deploy of the role reads its replication, snapshot tasks and NFS
+shares through the guest agent and fails if they differ from what the role expects. The restore paths and
+the drills that tested them are in [docs/backup-and-restore.md](docs/backup-and-restore.md).
 
-    rect rgb(50, 108, 229)
-    Note over M0: Play 3 — Harvest Token
-    M0-->>Runner: node-token
-    Runner->>Runner: Set global fact
-    Runner->>Cluster: Verify VIP responds (6443)
-    end
+## What is in the repo
 
-    rect rgb(123, 66, 188)
-    Note over M1: Play 4 — Join Additional Masters
-    Runner->>M1: Role: k3s_masters
-    M1->>Cluster: Join via VIP
-    end
+| Path | What it holds |
+|---|---|
+| `k3s.yml` | The cluster playbook: eight plays, from waiting for SSH to the Argo CD root app |
+| `i915-sriov.yml`, `i915-acceptance.yml` | Host GPU driver install, and the capture and acceptance checks around it |
+| `proxmox-backup.yml`, `proxmox-guest-startup.yml`, `ser2net.yml` | Host playbooks, each deployed by its own workflow |
+| `proxmox-csi-storage.yml`, `csi-activation-preflight.yml`, `maintenance-runner.yml` | Manual setup and checks for Proxmox CSI storage and the runner |
+| `roles/` | The 12 roles listed below |
+| `inventory/` | `proxmox.yml`, the dynamic inventory from Proxmox tags, and `hosts.yml`, the Proxmox host |
+| `group_vars/` | K3s version, API address, NFS, CSI topology and the host driver pin; `all/secrets.yml` is an Ansible Vault file |
+| `scripts/` | `maintenance_lock.py`, `i915_compat.py`, `i915_acceptance.py`, the GPU probe, secrets backup and restore, and the offline tests in `scripts/tests/` |
+| `docs/` | Runbooks and qualification records |
 
-    rect rgb(50, 108, 229)
-    Note over W: Play 5 — Join Workers
-    Runner->>W: Role: k3s_workers
-    W->>Cluster: Join as agents
-    Runner->>Cluster: Label nodes (worker + GPU)
-    end
+| Role | Runs on | What it does |
+|---|---|---|
+| `k3s_common` | every K3s node, as a dependency | Kernel settings, registry credentials, a resolver for pods, the node config with its CSI topology labels, and the K3s install script |
+| `k3s_init` | first control-plane node | Starts the first K3s server with `--cluster-init`, deploys kube-vip, copies the kubeconfig to the runner |
+| `k3s_masters` | further control-plane nodes | Joins them through the kube-vip address |
+| `k3s_node_retirement` | workers, one at a time | Deletes the Node object of a replaced worker VM, after checking the Proxmox API and the maintenance lock |
+| `k3s_workers` | workers | Joins the agents and applies the worker and GPU labels |
+| `bootstrap_cluster` | the runner | CSI topology labels, a second CoreDNS replica, the Sealed Secrets key, the TLS restore, the helm-diff pin, Argo CD and its root app |
+| `i915_sriov` | Proxmox host | Installs the DKMS driver, pins the kernel, sets the boot parameters and the seven virtual functions, schedules the reboot |
+| `proxmox_backup` | Proxmox host | The backup script and timers, the USB pool import, the vzdump job, a storage quota and the TrueNAS drift check |
+| `proxmox_guest_startup` | Proxmox host | Starts TrueNAS first and waits for it, reboots the host after a kernel oops, caps the ZFS ARC, pins the runner's memory, installs CPU microcode |
+| `ser2net` | Proxmox host | Exposes the Zigbee USB dongle on TCP port 3333 |
+| `proxmox_csi_storage` | Proxmox host, by hand | Registers the NFS storage, resource pool, role and API token for Proxmox CSI, and refuses anything that already differs |
+| `maintenance_runner` | the runner VM, by hand | Creates the maintenance directory and the marker that identifies this runner |
 
-    rect rgb(238, 0, 0)
-    Note over Runner: Play 6 — Bootstrap
-    Runner->>Cluster: Pre-seed Sealed Secrets key
-    Runner->>Cluster: Mount NFS → Restore TLS certs
-    Runner->>Cluster: Install ArgoCD (Helm + OIDC)
-    Runner->>Cluster: Apply App-of-Apps bootstrap
-    end
-```
+## Workflows
 
----
+| Workflow | Runs on | What it does |
+|---|---|---|
+| `deploy.yml` | dispatch from terraform, push to `main`, manual | Runs the K3s playbook under the maintenance lock, installs Argo CD, hands the kubeconfig to terraform and apps |
+| `validate.yml` | pull request, manual | Lint, syntax check and the offline test suites |
+| `i915-compat.yml` | pull request, manual | Checks the host GPU driver pin against the guest pin in packer; can call `i915-acceptance.yml` |
+| `format.yml` | pull request | Formats YAML and JSON, and commits the result |
+| `i915-sriov-upgrade.yml` | push that changes the host driver pin, manual | Installs the host GPU driver, then reboots the host |
+| `proxmox-backup.yml` | push that changes the backup role, manual | Deploys the host-side backup |
+| `proxmox-guest-startup.yml` | push that changes the startup role, manual | Sets guest boot order and the host's crash behaviour |
+| `ser2net.yml` | push that changes the ser2net role, manual | Deploys the Zigbee serial bridge |
+| `i915-acceptance.yml` | manual, or called | Proves GPU acceleration works on the running stack or after a reboot |
+| `csi-activation-preflight.yml` | manual | Read-only check before changing Proxmox CSI storage |
 
-## Roles
+Everything that talks to the host or the cluster runs on the self-hosted runner. `format.yml`, the lint
+job of `validate.yml`, the metadata job of `i915-compat.yml` and the `handoff` job of `deploy.yml` run on
+GitHub-hosted runners.
 
-Seven roles cover the full lifecycle from bare VM to GitOps-ready cluster:
+## Run it
 
-| Role | Target | Purpose |
-|------|--------|---------|
-| **k3s_common** | All K3s nodes | Kernel tuning (inotify), Docker Hub auth, K3s binary download |
-| **k3s_init** | First master | K3s `--cluster-init`, Kube-VIP DaemonSet, kubeconfig extraction |
-| **k3s_masters** | Additional masters | Join control plane via VIP, wait for API readiness |
-| **k3s_workers** | Worker nodes | Join as agents, apply `worker` + `gpu` node labels |
-| **bootstrap_cluster** | CI runner (localhost) | Sealed Secrets key, TLS cert restore from NFS, ArgoCD + OIDC setup, App-of-Apps |
-| **i915_sriov** | Proxmox host | Intel GPU SR-IOV driver lifecycle (install, upgrade, GRUB, sysfs VF config) |
-| **ser2net** | Proxmox host | Expose USB Zigbee dongle as TCP socket for cluster consumption |
-| **proxmox_backup** | Proxmox host | TrueNAS replica pool on a USB disk, restic to a Hetzner Storage Box, healthchecks.io timers (off until `proxmox_backup_enabled`); runbook: [docs/backup-and-restore.md](docs/backup-and-restore.md) |
-
-### Role Execution Order
-
-The diagram below shows the order in which roles run across the `k3s.yml` plays. This sequence is enforced by the playbook's play order — only `k3s_common` is declared as an actual role `meta` dependency; the rest run in sequence because each play targets the next set of hosts.
-
-```mermaid
-flowchart LR
-    KC([k3s_common]) ==> KI[[k3s_init]]
-    KC ==> KM[[k3s_masters]]
-    KC ==> KW[[k3s_workers]]
-    KI ==> KM
-    KM ==> KW
-    KW ==> BC{{bootstrap_cluster}}
-
-    I915["i915_sriov"] ~~~ SER["ser2net"]
-
-    classDef common fill:#3C3C3C,stroke:#2D2D2D,color:#fff
-    classDef init fill:#7B42BC,stroke:#6A35A3,color:#fff
-    classDef bootstrap fill:#EE0000,stroke:#CC0000,color:#fff
-    classDef sriov fill:#E57000,stroke:#CC6300,color:#fff
-    classDef ser fill:#326CE5,stroke:#2B5FC2,color:#fff
-    class KC common
-    class KI init
-    class BC bootstrap
-    class I915 sriov
-    class SER ser
-```
-
----
-
-## Inventory & Discovery
-
-### Dynamic Inventory (Proxmox API)
-
-VMs are discovered automatically via the `community.proxmox.proxmox` inventory plugin, using **Proxmox tags** set by Terraform:
-
-| Ansible Group | Tag Filter | Description |
-|--------------|------------|-------------|
-| `all_k3s` | `k3s` | All Kubernetes nodes |
-| `masters` | `k3s` + `master` | Control plane nodes |
-| `workers` | `k3s` + `worker` | Worker nodes (GPU-labeled) |
-
-IP addresses are extracted from cloud-init configuration (`proxmox_ipconfig0`), eliminating any hardcoded host lists.
-
-### Static Inventory
-
-The Proxmox hypervisor itself is in a static inventory for host-level operations (GPU drivers, ser2net):
-
-```yaml
-proxmox_hosts:
-  hosts:
-    pve:
-      ansible_host: 10.9.9.20
-      ansible_user: root
-```
-
----
-
-## Key Features
-
-### High Availability — Kube-VIP
-
-The cluster API is fronted by a **virtual IP (10.9.9.99)** managed by Kube-VIP running as a DaemonSet on control plane nodes. ARP-based leader election ensures seamless failover — all clients and workers connect through the VIP, never directly to a master node.
-
-### Intel i915 SR-IOV — GPU Virtualization
-
-The `i915_sriov` role manages the full GPU driver lifecycle on the Proxmox host:
-
-- **Metadata and known-bad policy gate** — before anything destructive, `scripts/i915_compat.py` rejects reproduced runtime regressions and checks the exact release's declared kernel support; blocked, unknown or unsupported combinations abort with the host untouched. This does not test hardware
-- **DKMS driver** install/upgrade from GitHub releases
-- **Kernel pinning** — `i915_sriov_pinned_kernel` (e.g. `7.0.14-29-pve`) is the authoritative desired host kernel; the role builds and verifies the DKMS module for it *before* pinning it via `proxmox-boot-tool` and rebooting into it
-- **Kernel parameters**: `intel_iommu=on i915.enable_guc=3 i915.max_vfs=7 module_blacklist=xe i915.xelp_enable_ccs=1`, appended to `/etc/kernel/cmdline` on a systemd-boot host (this one: UEFI, ZFS root) or written to `/etc/default/grub` otherwise
-- **sysfs configuration** to create 7 virtual functions on boot
-
-#### Host and guest driver versions differ on purpose
-
-The Proxmox host (PF) and the Packer VM images (VF) run **different**
-`i915-sriov-dkms` releases, because upstream maintains parallel lines and
-states the two sides need not match:
-
-| Side | Kernel | Driver | Upstream range |
-|------|--------|--------|----------------|
-| **Host** (this repo) | 7.0.14-29-pve | `2026.11.05` | 6.18 – 7.3 |
-| **Guest** (packer repo) | 6.12 (Debian 13) | `2025.12.10.2` | 6.12 – 6.18 |
-
-Three axes are validated, all from upstream data for the exact tags — never
-from version ordering, equality or a curated allowlist:
-
-1. host driver ↔ host kernel (release notes of the tag)
-2. guest driver ↔ guest kernel (release notes of the tag)
-3. PF ↔ VF IOV ABI — `IOV_VERSION_{BASE,LATEST}_{MAJOR,MINOR}` from each tag's
-   `gt/iov/abi/iov_version_abi.h`, replayed through the upstream handshake
-
-`scripts/i915_compat.py` (stdlib only, shared verbatim with the packer repo)
-implements this and **fails closed**: a missing tag, unparsable release notes,
-a missing ABI header or a network failure all exit non-zero instead of
-passing an unverified metadata combination. The independent local exclusion
-for host release `2026.09.16` rejects the reproduced runtime regression even
-though its declared kernel/ABI metadata agrees. This is a small deny list of
-observed failures, not a host/guest compatibility allowlist.
-
-```bash
-python3 scripts/i915_compat.py \
-  --host-version 2026.11.05 --host-kernel 7.0.14-29-pve \
-  --guest-version 2025.12.10.2 --guest-kernel 6.12
-# exit 0 = metadata/policy passed, hardware NOT TESTED
-# exit 1 = unsupported or blocked · 2 = metadata cannot be established
-```
-
-Renovate is free to propose newer host releases, but the `i915-compat`
-workflow re-runs the same check against the pinned kernel (and the guest state
-on the packer repo's `main`) and fails with a sticky report if metadata or
-known-bad policy rejects it. Every report explicitly says hardware acceptance
-was not tested. A green metadata check is not approval to call an upgrade
-operationally verified. Moving the guest to a newer release line is a
-packer-repo change; the host only needs a driver whose range covers
-`i915_sriov_pinned_kernel`.
-
-The versions may differ, but the guest image assumes the PF runs Xe_LP CCS:
-the packer repo's `scripts/bootstrap.sh` boots the guests with
-`i915.xelp_enable_ccs=1`, and the host must match. Without that parameter the
-`2025.12.10.x` guest ran a 48-bit PPGTT with no `ccs0` and hung `rcs0` under
-OpenCL and OpenVINO (`GPU HANG ecode 12:1`, 2026-11-06). Host releases from
-`2026.09.16` leave CCS off unless the host cmdline adds
-`i915.xelp_enable_ccs=1`, so `i915_sriov_grub_params` carries it. Dropping it
-here means dropping the guest parameter in packer in the same change.
-`i915_compat.py` checks neither; the acceptance probe's OpenCL arm (below)
-catches the mismatch at runtime.
-
-The required-check names are versioned in `.github/required-status-checks.json`.
-After the named checks exist and pass, an authorized administrator can apply
-that exact list without replacing other branch protections:
+CI runs in `python:3.14-trixie`; this Ansible release does not import under Python 3.15.
 
 ```sh
-gh api --method PATCH \
-  repos/Starktastic-Homelab/ansible/branches/main/protection/required_status_checks \
-  --input .github/required-status-checks.json
-```
-
-#### Host-driver recovery and GPU acceptance
-
-The host pin `2026.09.14` once restored hardware encoding after the VA-API
-initialization failures observed on both workers with `2026.09.16`.
-Renovate excludes the bad release and disables automerge for host-driver
-updates; the checker also rejects it in CI and before direct Ansible
-installation. Later releases remain visible for manual review. Kernel/IOV
-metadata alone does not prove usable hardware encoding.
-
-**Merge only during an approved Proxmox maintenance window.** A push to
-`main` changing `group_vars/proxmox_hosts/i915_sriov.yml` automatically runs
-the upgrade workflow. The role schedules `sync && shutdown -r +1`, which
-interrupts the hosted VMs and potentially the whole cluster, not just
-Jellyfin. Confirm working console access and recoverable critical-workload
-backups first. Do not issue a second manual reboot.
-
-After the host returns, verify the running kernel and **loaded** module on
-the Proxmox console, not just the installed package:
-
-```sh
-uname -r
-cat /sys/module/i915/version
-dkms status
-proxmox-boot-tool kernel list
-```
-
-Expect the pinned kernel (`7.0.14-29-pve`), loaded module `2026.11.05-sriov`
-and `/sys/module/i915/parameters/xelp_enable_ccs` = `1` (the guests show `Y`). Rolling back to a
-6.17 kernel also means reinstalling `2026.09.14`: `2026.11.05` builds only
-for 6.18 – 7.3, so the old kernel boots the stock i915 with no VFs.
-Keep the guest images, GPU device plugin, and application
-encoding settings unchanged. Wait for the nodes and workloads to recover,
-then confirm Jellyfin and Immich run on different workers with
-`kubectl -n media get pods -o wide`.
-
-Readiness and advertised GPU resources can remain healthy while encoding
-is broken. Require exit zero from actual synthetic hardware encodes:
-
-```sh
-kubectl -n media exec deployment/jellyfin -c main -- \
-  s6-setuidgid abc timeout 30 /usr/lib/jellyfin-ffmpeg/ffmpeg \
-  -hide_banner -loglevel error \
-  -init_hw_device vaapi=va:/dev/dri/renderD128 -filter_hw_device va \
-  -f lavfi -i testsrc2=size=128x128:rate=30 -t 1 \
-  -vf format=nv12,hwupload -c:v h264_vaapi -low_power 1 -f null -
-
-kubectl -n media exec deployment/immich-main -- \
-  timeout 30 ffmpeg -hide_banner -loglevel error \
-  -init_hw_device vaapi=va:/dev/dri/renderD128 -filter_hw_device va \
-  -f lavfi -i testsrc2=size=128x128:rate=30 -t 1 \
-  -vf format=nv12,hwupload -c:v h264_vaapi -f null -
-```
-
-Repeat the Jellyfin command with `-c:v hevc_vaapi` to cover its other enabled
-low-power encoder. Then verify a real forced hardware transcode, HDR tone
-mapping, and seeking in Jellyfin, and inspect the new worker boots for GuC
-CT errors. Direct play is not proof. If the rollback does not restore
-encoding, stop and investigate before another driver/kernel change or
-reboot. This recovery does not address the separate SQLite contention.
-
-#### Reproducible runtime acceptance
-
-`i915-acceptance.yml` reads the loaded kernel/module, boot ID and machine ID
-over the existing infrastructure inventory. It then checks that Kubernetes
-reports those same node identities and runs a short GPU Job on **every**
-inventory worker. The jobs run the pinned official `jellyfin/jellyfin` image
-(its jellyfin-ffmpeg and bundled Intel OpenCL runtime) as UID 1000, request
-the existing `gpu.intel.com/i915` device-plugin resource, and mount no
-application volumes. They do not depend on Jellyfin or Immich deployments.
-Each job also joins the group that owns its worker's `/dev/dri/by-path/*-render`
-nodes, read from the worker. The device plugin bind-mounts those nodes with the
-worker's `render` group, Intel OpenCL opens only them, and without the group it
-reports no platform (`-1001`).
-
-Masters and workers come from the Proxmox tags (`inventory/proxmox.yml`), so
-adding masters needs no change here. Every inventory machine, the Proxmox host
-and masters included, must answer over SSH in every mode. In current-stack and
-post-reboot every Kubernetes node must also be `Ready` before the jobs run. An
-unreachable master therefore fails every mode rather than being skipped: the
-snapshot must hold evidence for every tagged machine, and post-reboot also needs
-a fresh boot on every machine that capture recorded. Every mode also lists the
-nodes Kubernetes knows from a master and fails if they differ from the tagged
-masters and workers. A guest whose Proxmox API call fails drops out of its tag
-groups with only a warning, and its node would otherwise pass without a probe.
-A Node left over from a VM that Terraform removed fails the same check; delete it
-from the runner (`k3s kubectl delete node <name>`) before an upgrade.
-
-Each worker must encode at least 30 frames through low-power H.264, low-power
-HEVC, synthetic HEVC Main10/PQ hardware decoding plus VA-API tone mapping and
-hardware encoding, and a synthetic 10-bit PQ clip tone-mapped by
-`tonemap_opencl` (VA-API to OpenCL interop) and encoded with `h264_vaapi`.
-Exit zero without the required frame evidence is not acceptance. The OpenCL
-arm drives the compute path that a PF/VF CCS mismatch hangs (`rcs0`,
-2026-11-06), which the VA-API arms pass. The playbook also reads each worker's
-`/sys/module/i915/parameters/xelp_enable_ccs` and its since-boot
-`GPU HANG` count from `journalctl -k -b` before and after the jobs, and fails
-if the count changes. OpenVINO (Immich ML) is still untested, so after a guest
-image or host driver change also run an Immich ML job on each worker.
-Temporary namespaces/jobs and private kubeconfigs are cleaned in
-nested `always` blocks; diagnostic artifacts contain no kubeconfig or SSH/Vault
-credentials.
-
-There are three explicit scopes:
-
-| Mode | Meaning |
-|------|---------|
-| `capture` | Save pre-change identities and the intended target; no GPU probes, installation or reboot. The guest fleet must match its declared target before changing the host. |
-| `current-stack` | Verify the declared target is actually loaded and run the GPU probes. Does **not** claim a reboot occurred or validate an uninstalled candidate. |
-| `post-reboot` | Require the successful installation run's saved baseline, unchanged machine identities, changed boot IDs on the host and all cluster nodes, the frozen target's loaded versions, and every GPU probe. |
-
-The installation workflow captures and uploads `i915-before` **before** changing
-the host. Its successful conclusion means installation/reboot scheduling only.
-The runner itself reboots with Proxmox, so runtime acceptance is a separate,
-explicitly invoked workflow after recovery, not a wait inside installation.
-
-Current-stack diagnostics can also be dispatched through the existing validation
-workflow:
-
-```sh
-gh workflow run i915-compat.yml --repo Starktastic-Homelab/ansible \
-  -f runtime_mode=current-stack
-```
-
-For post-upgrade acceptance, set `INSTALLATION_RUN_ID` to the successful
-`i915-sriov-upgrade.yml` run that saved the baseline:
-
-```sh
-gh workflow run i915-acceptance.yml --repo Starktastic-Homelab/ansible \
-  -f mode=post-reboot -f installation_run_id="$INSTALLATION_RUN_ID"
-```
-
-The workflow verifies the producer run and reuses its frozen target. An expired
-or missing baseline is a failure, not permission to assume fresh boots. A
-no-op installation that did not reboot can receive current-stack diagnostics,
-not post-reboot acceptance. If an emergency prevents baseline capture, use a
-separately approved recovery procedure and document that limitation rather than
-manufacturing before/after evidence.
-
-The diagnostic image is deliberately pinned independently of the application
-catalog. These synthetic probes test the hardware paths, not visual quality,
-application upgrades, seeking, or database/probe stability; retain the real
-application-level playback acceptance above.
-
-Offline guard tests, including stale boots, wrong loaded versions, missing
-workers, command failures and zero-frame false positives:
-
-```sh
-python3 scripts/tests/test_i915_compat.py
-python3 scripts/tests/test_i915_acceptance.py
-```
-
-### Sealed Secrets Bootstrap
-
-The bootstrap role **pre-seeds the Sealed Secrets TLS keypair** before any workloads deploy. This enables a "secrets-in-git" workflow — encrypted SealedSecret manifests can be committed to the Apps repo and will decrypt correctly from day zero.
-
-### ArgoCD with SSO
-
-ArgoCD is deployed via Helm with:
-
-- **Authentik OIDC integration** for single sign-on
-- **Progressive syncs** enabled for phased rollout support
-- **RBAC** with Authentik group mapping (Admins → admin role)
-- **App-of-Apps bootstrap** pointing to the Apps repo, triggering full cluster reconciliation
-
-### TLS Certificate Recovery
-
-On cluster rebuild, TLS certificates are **recovered from NFS backup** rather than re-issued. This prevents Let's Encrypt rate limiting and ensures services come back online with valid certificates immediately. The restore process orchestrates data across three systems:
-
-```mermaid
-flowchart LR
-    subgraph nfs["TrueNAS NFS Server"]
-        BACKUP[(cert-backup/\n*.yaml)]
-    end
-
-    subgraph master["K3s Master Node"]
-        MNT["/tmp/cert-backup\n(read-only mount)"]
-    end
-
-    subgraph runner["Ansible Runner"]
-        FIND["Find *.yaml files"]
-        FETCH["Fetch to localhost"]
-        PARSE{{"Extract namespace\nfrom filename"}}
-    end
-
-    subgraph k8s["Kubernetes API"]
-        NS["Ensure target\nnamespaces exist"]
-        APPLY(["kubectl apply\neach TLS secret"])
-    end
-
-    BACKUP -.->|"NFS mount"| MNT
-    MNT ==> FIND ==> FETCH
-    FETCH ==> PARSE
-    PARSE ==> NS ==> APPLY
-
-    classDef storage fill:#326CE5,stroke:#2B5FC2,color:#fff
-    classDef gate fill:#E57000,stroke:#CC6300,color:#fff
-    class BACKUP,MNT storage
-    class PARSE gate
-```
-
-On a fresh cluster where no NFS backup exists yet, the restore step **gracefully skips** without failing — certificates will be issued fresh by cert-manager and backed up on the next CronJob run.
-
----
-
-## Additional Playbooks
-
-| Playbook | Target | Purpose |
-|----------|--------|---------|
-| `i915-sriov.yml` | Proxmox host | Install/upgrade Intel SR-IOV GPU driver |
-| `ser2net.yml` | Proxmox host | Configure TCP bridge for USB Zigbee dongle (port 3333) |
-| `proxmox-backup.yml` | Proxmox host | Host-side backup: `usbbk` import, restic and health timers, vzdump storage `usbbk-vz` and job `backup-f56bebaa-4912`, 150G quota on `local` (`rpool/var-lib-vz`), and a read-only check of the TrueNAS replication, snapshot tasks and NFS shares (`docs/backup-and-restore.md`) |
-| `proxmox-guest-startup.yml` | Proxmox host | Guest boot order: TrueNAS (VM 100) starts first and waits 180 s so `k3s-block` NFS is up before the workers (`group_vars/proxmox_hosts/guest_startup.yml`). Also reboots the host 10 s after a kernel oops or failed ZFS assertion instead of hanging, caps the ZFS ARC at 8 GiB, pins VM300's balloon at 4096 MiB, and installs intel-microcode. kdump, KFENCE, rasdaemon and KSM off were removed on 2026-11-16 |
-
----
-
-## CI/CD Automation
-
-Six workflows cover deployment, validation, and specialized hardware management:
-
-```mermaid
-flowchart TD
-    subgraph triggered["Triggered by Terraform"]
-        DISPATCH{{repository_dispatch\ninfrastructure-changed}} ==> DEPLOY[deploy.yml\nRun k3s.yml playbook]
-        DEPLOY ==> KUBECONFIG>Upload kubeconfig\nto org-wide secret]
-    end
-
-    subgraph pr["PR Phase"]
-        PR([Pull Request]) --> LINT[validate.yml\nansible-lint + syntax-check]
-        PR --> FMT[format.yml\nPrettier formatting]
-        PR --> CMP{{i915-compat.yml\nMetadata and known-bad policy}}
-    end
-
-    subgraph special["Specialized"]
-        DRV_CHANGE["i915_sriov.yml change"] --> I915[i915-sriov-upgrade.yml\nGPU driver upgrade + reboot]
-        SER_CHANGE["ser2net role change"] --> SER[ser2net.yml\nZigbee gateway deploy]
-        BAK_CHANGE["proxmox_backup role change"] --> BAK[proxmox-backup.yml\nHost backup deploy]
-    end
-
-    classDef deploy fill:#EE0000,stroke:#CC0000,color:#fff
-    classDef dispatch fill:#7B42BC,stroke:#6A35A3,color:#fff
-    classDef gatecheck fill:#E57000,stroke:#CC6300,color:#fff
-    class DEPLOY deploy
-    class DISPATCH dispatch
-    class CMP gatecheck
-```
-
-| Workflow | Trigger | Purpose |
-|----------|---------|---------|
-| **deploy** | Terraform dispatch / push to main | Full K3s deployment + kubeconfig upload |
-| **validate** | PR | `ansible-lint` (production profile) + syntax check |
-| **format** | PR | Prettier YAML/JSON formatting |
-| **i915-sriov-upgrade** | i915 config change / manual | GPU driver lifecycle on Proxmox host |
-| **i915-compat** | PR (i915 config/role changes) | Blocks merge unless upstream data proves the host ↔ guest driver combination works |
-| **ser2net** | ser2net role change / manual | Zigbee serial bridge configuration |
-| **proxmox-backup** | proxmox_backup role change / manual | Host-side backup role on the Proxmox host |
-| **proxmox-guest-startup** | guest startup role/vars change / manual | Guest boot order and delays, balloon targets, ZFS ARC cap and reboot-on-crash settings, on the Proxmox host (no restart) |
-
----
-
-## Cross-Repo Integration
-
-Ansible sits in the middle of the infrastructure pipeline, receiving triggers from Terraform and bootstrapping the Apps deployment:
-
-```mermaid
-flowchart LR
-    TF(["🏗️ Terraform\nVMs provisioned"]) ==>|"repository dispatch"| AN(["⚙️ Ansible\nK3s + Bootstrap"])
-    AN ==>|"App-of-Apps"| APPS(["☸️ Apps\n60+ services deployed"])
-    AN -.->|"Kubeconfig uploaded\nto org secret"| GH[(🔐 GitHub Org\nSecrets)]
-
-    classDef terraform fill:#7B42BC,stroke:#6A35A3,color:#fff
-    classDef ansible fill:#EE0000,stroke:#CC0000,color:#fff
-    classDef apps fill:#326CE5,stroke:#2B5FC2,color:#fff
-    class TF terraform
-    class AN ansible
-    class APPS apps
-```
-
-The handoff chain:
-1. **Terraform apply** completes → sends `infrastructure-changed` dispatch event
-2. **Ansible deploy** workflow runs the `k3s.yml` playbook
-3. **ArgoCD** is installed and pointed at the Apps repo via App-of-Apps
-4. **Kubeconfig** is uploaded to the GitHub org secrets for use by the Apps CI workflows
-
----
-
-## Prerequisites
-
-- **Python** ≥ 3.11 with `ansible`, `proxmoxer`, `kubernetes` packages
-- **Helm** (for ArgoCD deployment)
-- **Network access** to Proxmox API and K3s node SSH
-- **Ansible Vault** password file (`.vault_pass`) for encrypted secrets
-- **Proxmox API token** for dynamic inventory
-
----
-
-## Usage
-
-```bash
-# Install Python dependencies
 pip install -r requirements.txt
-
-# Deploy K3s cluster
-ansible-playbook -i inventory/ k3s.yml
-
-# Upgrade GPU driver on Proxmox host
-ansible-playbook -i inventory/ i915-sriov.yml
-
-# Configure Zigbee serial bridge
-ansible-playbook -i inventory/ ser2net.yml
+ansible-galaxy collection install -r requirements.yml
 ```
 
-> In practice, the `k3s.yml` playbook is triggered automatically by the Terraform pipeline via GitHub Actions `repository_dispatch`.
+The offline checks need no host and no secrets. `ansible-lint` only needs a `.vault_pass` file to exist;
+CI writes a dummy one.
+
+```sh
+python3 -m unittest discover -s scripts/tests -p 'test_maintenance*.py' -v
+python3 scripts/tests/test_i915_compat.py
+pip install ansible-lint && ansible-lint --offline
+```
+
+The playbooks need the `PROXMOX_*` variables for the dynamic inventory, the vault password, the SSH key
+and, for `k3s.yml`, Helm. The workflows run them like this, under the maintenance lock where it applies:
+
+```sh
+ansible-playbook -i inventory/proxmox.yml --vault-password-file .vault_pass --private-key private_key.pem k3s.yml
+ansible-playbook -i inventory/hosts.yml --vault-password-file .vault_pass proxmox-backup.yml
+```
+
+GPU acceptance, on the running stack or after a driver upgrade:
+
+```sh
+gh workflow run i915-acceptance.yml -f mode=current-stack
+gh workflow run i915-acceptance.yml -f mode=post-reboot -f installation_run_id=<upgrade run ID>
+```
+
+## Operations
+
+- [Backup and restore](docs/backup-and-restore.md): schedules, retention, every restore path and the drills.
+- [Intel i915 SR-IOV](docs/i915-sriov.md): why host and guest versions differ, host-driver recovery, acceptance modes.
+- [Maintenance coordination](docs/maintenance-coordination.md): the shared lock, drain recovery, node retirement, recovering a failed run, the Proxmox CSI bootstrap.
+- [Proxmox CSI storage](docs/proxmox-csi-storage.md): the manual storage, pool and token setup.
+- [Maintenance execution exclusion](docs/maintenance-execution.md): the per-runner execution mutex in the lock helper.
+- [Runner qualification, 2026-09-21](docs/maintenance-runner-qualification-2026-09-21.md): the record for the maintenance runner.
+- [Supervised executor](docs/maintenance-executor.md) and its [qualification](docs/maintenance-executor-qualification-2026-09-30.md): historical, the executor is retired.
+- [Operator scripts](scripts/README.md): kubeconfig fetch and the secrets backup for disaster recovery.
+- [Security policy](SECURITY.md): how to report a vulnerability.
 
 ---
 
-## License & Contributing
-
-This is a personal homelab project. Feel free to use it as inspiration for your own infrastructure. If you spot an issue or have a suggestion, [open an issue](../../issues) — contributions and feedback are welcome.
-
-## External maintenance coordination
-
-VM300 was bootstrapped and checked across real containers on September 21, 2026.
-See the [qualification record](docs/maintenance-runner-qualification-2026-09-21.md)
-for evidence and the remaining workflow/reboot test limits.
-
-Infrastructure replacement and configuration share VM300's
-`/var/lib/homelab-maintenance`, mounted as `/maintenance` in mutating job
-containers. An absent/mismatched runner marker blocks execution. The record is
-independent of K3s and NAS availability; it survives job cancellation and reboot.
-No age-based takeover or unconditional unlock exists. Prohibit concurrent manual
-Proxmox GUI start/recreate operations during a maintenance operation.
-
-VM300 has 4096 MiB. Before this role pinned it, it had a balloon floor of 2048 MiB (VM300 is
-not in Terraform; when and by whom 2048 was set is not recorded), the host's only
-ballooned VM, and with the host near full, auto-ballooning could hold it at the
-floor. At the old 1024 MiB floor that OOM-killed helm-diff during the ArgoCD 3.6
-chart upgrade: the runner still had helm-diff 3.15.7, whose diff needed about
-3.4 GB for the ArgoCD CRDs. `bootstrap_cluster` now reinstalls helm-diff whenever
-it differs from the pin. `proxmox_guest_startup` now sets VM300's balloon equal to
-its memory (`proxmox_guest_startup_balloon` in
-`group_vars/proxmox_hosts/guest_startup.yml`), so it never balloons. The
-minimum changes live; the actual size follows through pvestatd, or a one-off `qm balloon 300 4096`. The same role caps the ZFS ARC at 8 GiB
-(`proxmox_guest_startup_zfs_arc_max_bytes`) through
-`/etc/tmpfiles.d/zfs-arc-max.conf`, applied live when the running value differs.
-`/etc/modprobe.d/zfs.conf` (installer-owned, 13481541632) is left as is; it sets
-the value at module load and the tmpfiles value wins after boot.
-
-Before merging workflows, run `maintenance-runner.yml` against an explicitly
-reviewed `maintenance_runner` inventory host for **VM300**, after confirming its
-address, SSH route, service user and SMBIOS UUID. Set `maintenance_runner_user`
-to that service user. The role checks UUID
-`cc1aeeb7-4827-466c-9d4b-5dc6c881f193`; it neither guesses an IP nor creates a
-runner. Restart the runner service in an approved window if supplementary group
-membership changed. This bootstrap is manual, never part of `k3s.yml`.
-
-Deploy uses a pinned helper, acquires before configuration, verifies immediately
-before the playbook, and releases only after success. Terraform's companion PR
-holds the same lock through drain/apply and releases before dispatching Ansible.
-Ansible installs k3s before performing the requested drain recovery and bootstrap. Existing workflow concurrency alone does not serialize repositories.
-The mutation job must run on this external runner; a container-local directory
-without the matching host marker cannot acquire ownership.
-
-The optional `infrastructure-changed` payload `drained_nodes` is a JSON list of
-nodes Terraform made unschedulable. After all k3s installation plays succeed,
-Ansible waits for every current inventory node to become Ready, then uncordons
-only listed names still in the inventory, before ArgoCD bootstrap. Installation
-or recovery failure stops the playbook and retains maintenance ownership.
-Ordinary push/manual runs and older dispatches without the list do not change
-node scheduling. This receiver must merge before the paired Terraform sender.
-
-Nodes already cordoned before Terraform started are omitted from the list, so
-surviving Node objects keep those operator holds. Recreated Node objects retain
-the normal Kubernetes scheduling defaults; this mechanism does not restore
-operator cordons after object deletion. Removed inventory nodes need no recovery.
-If the sender's dispatch fails after apply/release, inspect both runs and retry
-the failed dispatch with its original payload. Do not repeat drain/apply to infer
-the original list. Integrated replacement remains subject to disposable-lab
-qualification before Proxmox CSI activation.
-
-Worker retirement is staged separately with `k3s_node_retirement_enabled: false`.
-When enabled after disposable-lab qualification, Ansible compares the current
-worker's SMBIOS UUID with its Kubernetes Node before joining the agent. A missing
-Node or unchanged generation is a no-op. A stale generation requires a matching
-replacement VM and complete current Proxmox inventory proving the old UUID is
-absent, including stopped VMs and templates. Native Kubernetes deletion uses the
-observed Node UID as a precondition; K3s removes its own node-password Secret.
-The role never stops VMs, forces storage detach, or deletes password Secrets.
-
-Verification uses the existing `PROXMOX_URL`, `PROXMOX_USER`, `PROXMOX_TOKEN_ID`
-and `PROXMOX_TOKEN_SECRET` environment settings. The read-only prerequisites are
-propagated `VM.Audit` at `/vms`, propagated `Pool.Audit` at `/pool`, and `Sys.Audit`
-at `/access`. It checks the full ACL list and effective child permissions, then
-refuses incomplete visibility, missing/locked configs, duplicate UUIDs or drift.
-A restrictive pool override without inherited `Pool.Audit` conservatively blocks
-the check. It does not grant privileges or use the CSI runtime token. API requests
-verify TLS by default. The homelab configuration sets
-`k3s_node_retirement_ca_path` to the public `files/proxmox-api-trust.pem` on the
-Ansible runner. This trusts the exact PVE API leaf certificate: the existing PVE
-CA lacks the key-usage extension required by Python's strict verifier, while
-native partial-chain validation accepts this explicitly trusted leaf. Certificate
-expiry and IP/hostname verification remain enabled; no TLS flags or upstream
-client code are changed. Other installations may override the path with their
-own valid CA bundle. Disabling verification remains an isolated-lab override only.
-
-The leaf was independently read through authenticated Proxmox SSH and matched
-to a strict TLS handshake from VM300 on 2026-10-05 (Asia/Jerusalem). Its SHA256 is
-`991939462464635f91d2a089924eab1055637e8bd48d7771a26cb2b378b41a1c`, and it expires
-2027-06-14. It covers API address `10.9.9.20`. Before renewing/replacing the API
-certificate, review and deploy its new public trust anchor through the same
-authenticated route, then verify the actual deployment client's connection.
-An unrecognized replacement certificate or expired trust anchor must block
-retirement. This file contains no private key and does not enable retirement,
-CSI, topology changes or VM replacement. Ordinary k3s rebuilds do not replace
-the Proxmox host's API certificate.
-
-The successful handshake checked stock Python3.13 TLS behavior; production
-deployment credentials, full inventory visibility and the complete Ansible
-retirement path remain activation checks. Python documents these default
-[strict and partial-chain flags](https://docs.python.org/3.13/library/ssl.html#ssl.create_default_context).
-
-Before enabling retirement, the manually dispatched **Read-only CSI activation
-preflight** workflow uses the same deployment API and Vault secrets on VM300.
-It checks strict API TLS, the existing complete-visibility filter, readable QEMU
-configurations and stable permissions/inventory. It also seals and recovers a
-synthetic Secret with native kubeseal and the external Vault key, requiring its
-certificate to match the pinned Apps public certificate. It does not use the
-live Kubernetes sealing key, delete Nodes or run a cluster deployment. A failure
-blocks activation; it never broadens API privileges. Temporary private-key files
-and the job's Vault password file are removed, and secret-bearing tasks suppress
-output. The workflow pins the public certificate to Apps commit
-`9a32641c261fb3d72ed2bfc2598f5acc57c891d6`; review that pin when the bootstrap key
-is intentionally rotated. This is a one-time activation check, not a new routine
-rebuild checkpoint.
-
-The role verifies existing maintenance ownership before evidence collection and
-immediately before deletion. The normal root is `/maintenance`; disposable labs
-may set `k3s_node_retirement_maintenance_root` to their externally coordinated lab
-root. Read failures, changed Node UID or uncertain evidence stop worker joining,
-scheduling recovery and bootstrap; workflow ownership stays held on failure.
-No concurrent manual VM/ACL mutation is allowed during that operation. Check mode
-skips retirement and cannot qualify recovery. This role does not restore cordons
-after Node recreation or replace the full-control-plane cohort safety policy.
-
-After a failed/cancelled operation: inspect `operation.json` on VM300 (protect its
-nonce from logs), identify the exact repository/run/attempt and current stage,
-ensure the owner process is gone, inspect infrastructure/workload state, and
-reconcile the failed operation explicitly. Never delete a lock just because it is
-old. An operator continuation requires the original `MAINTENANCE_OWNER` and
-`MAINTENANCE_NONCE`, the expected `HOMELAB_RUNNER_INSTANCE`, and an exact stage:
-
-```sh
-python3 scripts/maintenance_lock.py verify --stage acquired
-python3 scripts/maintenance_lock.py advance --stage acquired --next-stage held
-```
-
-Use the recorded stage, not necessarily the example above. Only after resolving
-all uncertain effects may the original owner release. Losing the runner disk or
-its identity blocks maintenance until the shared lock domain is recovered and
-all possible writers/infrastructure jobs have been reconciled. Do not provision
-a second independent runner marker to bypass a held operation.
-
-The retired iSCSI status/preflight executor, request dispatcher/installer and
-user-service template are removed. `maintenance-runner.yml` retains the VM300
-instance marker, operation directory and runner group access. Preserve installed
-immutable runtimes, manifests and operation receipts as historical evidence; do
-not modify them in place or reuse old receipts as current writer authority.
-The generic maintenance helper and native deployment locking remain in use.
-
-### Proxmox CSI bootstrap
-
-`group_vars/all/proxmox_csi.yml` enables the native topology prerequisites for the
-[accepted shared integration plan](https://github.com/Starktastic-Homelab/apps/blob/main/docs/superpowers/plans/2026-10-03-proxmox-csi-shared-integration.md).
-The homelab configuration sets `proxmox_csi_enabled: true`; an explicit false
-override keeps the generated k3s configuration free of CSI labels.
-It does not install CSI, register NFS storage, allocate images, publish credentials,
-or migrate Jellyfin.
-
-The nonempty `proxmox_csi_region` matches the stock driver's `clusters[].region`. Each VM's zone
-comes from the dynamic inventory's `proxmox_node`; no service or VM-to-zone map is
-maintained here. Both values must be valid Kubernetes label values. `k3s_common`
-validates them before configuring that node and writes native `node-label` options.
-Bootstrap also waits for and patches existing Node objects before installing ArgoCD,
-because registration flags do not update labels on already registered nodes.
-Workers additionally register and reconcile the stock driver's
-`csi.proxmox.sinextra.dev/max-volume-attachments: "29"` label. The unmodified
-v0.20.0 [attachment loop](https://github.com/sergelogvinov/proxmox-csi-plugin/blob/v0.20.0/pkg/csi/utils.go)
-uses only `scsi1` through `scsi29`; advertising 30 would allow an attachment that
-cannot succeed. The worker OS disk uses `virtio0` and cloud-init uses `ide2`,
-leaving those SCSI slots for CSI. Do not add other disks in that range without
-reducing the allowance. Control-plane labels remain topology-only.
-
-For the first rollout on existing workers, merging this change runs the normal
-deployment, updates the registration configuration and patches the live labels.
-The existing serial worker rollout can restart each k3s agent. After successful
-deployment, refresh the CSI node plugin Pods one at a time (ordinary Pod deletion,
-never a disk detach), waiting for the recreated plugin to become Ready and its
-`CSINode.spec.drivers[].allocatable.count` to report 29 before continuing.
-Existing application Pods and disks stay in place. A label change alone does not
-guarantee that kubelet has refreshed the advertised count. Fresh cluster rebuilds
-receive the label before the plugin is first registered and need no extra step.
-
-The matching Apps capacity alerts use this 29-slot budget. Activate them only
-after both live counts have been verified. Two workers provide 58 total slots;
-they cannot accommodate more than 29 volumes on one surviving worker. Alerts
-provide advance notice, not automatic worker creation. The worker count stays
-under Terraform's existing policy.
-
-Changing these labels updates the k3s configuration and can restart existing k3s services.
-Disabling the integration later does not
-uninstall CSI or remove existing Kubernetes labels; it is not a rollback procedure.
-
-The stock v0.20.0 [node image](https://github.com/sergelogvinov/proxmox-csi-plugin/blob/v0.20.0/Dockerfile)
-already carries mount, filesystem check/format/resize and device tools. No additional
-guest filesystem package installation or driver wrapper is added here. The qualified
-Debian guests supply the kernel/device support; the integrated deployment still needs
-its synthetic-volume qualification before production use.
-
-Replacement-ordering review: Terraform's locked `destroy` path completes all destroys
-before applying the new VMs. Ansible is dispatched only after a successful changed
-apply. Packer guests do not install k3s; this playbook starts it afterwards. The existing
-worker install guard only checks whether the k3s binary exists. A fresh control plane
-with surviving old workers is therefore **not qualified for CSI activation**: this
-PR adds neither fencing nor a safe partial-datastore-replacement workflow. The full
-rebuild lab does not prove that scenario safe. Retain the existing maintenance lock
-and the verified Node-retirement/full-cohort replacement safeguards.
-
-Before activation, the remaining shared scope is: a dedicated NAS export and Proxmox
-NFS registration, an external reserved image-owner ID, scoped API permissions and
-recoverable credentials, the stock Apps controller, safe replacement ordering, and
-PVC-first resize reconciliation. Apps remains the sole per-volume inventory. No
-production choices or resources are inferred from the disposable lab.
-
-Offline regression check (Ansible and PyYAML installed):
-
-```sh
-python3 scripts/tests/test_proxmox_csi_bootstrap.py
-```
-
-It renders with Ansible's own templating engine, checks exact disabled master/worker
-configuration bytes, inventory-specific new/existing Node labels, and rejects empty,
-malformed or overlong topology values, and checks bootstrap tag selection. It never connects to a host or Kubernetes API.
-
-## Shared Proxmox CSI storage setup (manual, inactive)
-
-`proxmox-csi-storage.yml` prepares shared infrastructure once, using native PVE
-commands over the existing Proxmox SSH connection. It is **not** imported by
-`k3s.yml` or dispatched automatically. NAS export allocation, controller activation
-and application migration remain separate reviewed operations. Apps remains the
-only per-volume inventory; this playbook allocates no service images.
-
-The setup registers a dedicated NFS4.2 export with `images` content, creates a
-persistent resource pool and a separated `kubernetes-csi@pve!retained` API token.
-The role has only the stock non-replication privileges, granted to that pool,
-that storage and the external image-owner ID. It has no VM power-management or
-VM-allocation rights. The pool must contain only k3s QEMU VMs, never storage or
-unrelated guests. Existing conflicting definitions are refused, not overwritten.
-This setup requests full PVE user information
-so its group-membership refusal can detect inherited privileges.
-
-Proxmox removes VM-specific grants when a VM is deleted. The companion Terraform
-`k3s_resource_pool` input gives replacement VMs native pool membership while the
-pool and its grants stay outside disposable Terraform state. Leave that input
-`null` until this setup and its access scope have been qualified. Do not destroy
-the pool or reuse the image-owner ID as a VM/container. The reservation is an
-operator convention recorded in the pool comment, not a Proxmox ID-allocation
-lock; setup verifies the ID is unused, but cannot constrain later GUI actions.
-
-Before execution, review a vars file containing these non-secret settings:
-
-```yaml
-proxmox_csi_storage_id: k3s-block
-proxmox_csi_storage_nfs_server: 10.9.9.30
-proxmox_csi_storage_nfs_export: /mnt/apps/k3s-block
-proxmox_csi_storage_nodes: [pve]
-proxmox_csi_storage_pool: k3s-csi
-proxmox_csi_storage_owner_id: 9999
-proxmox_csi_storage_api_url: https://10.9.9.20:8006/api2/json
-proxmox_csi_storage_secret_destination: /maintenance/private/proxmox-csi.json
-```
-
-These are proposed names, **not allocated resources or approved live settings**.
-The NAS export must already exist with the reviewed source restriction, quota,
-permissions and durability settings. This first profile supports one Proxmox host.
-Review its unused owner ID, existing role/user/ACLs and the exact storage identity.
-Use the external VM300 runner, the pinned maintenance helper already used by
-`deploy.yml`, and its existing ownership protocol. `/maintenance/private` must
-already be a real owner-only directory with mode `0700` or `2700` (setgid), writable by the runner service user.
-After acquiring and exporting the operation ownership, the source entry point is:
-
-```sh
-ansible-playbook -i inventory/hosts.yml --vault-password-file .vault_pass \
-  --private-key private_key.pem -e @/maintenance/private/csi-setup-vars.yml \
-  proxmox-csi-storage.yml
-```
-
-Run this only within the separately approved setup scope; never target this
-workstation. The playbook verifies the external operation before inspection and
-again before writes. It neither acquires nor releases ownership: the operation
-owner reviews results and handles release. A failure leaves partial resources and
-the existing operation owned; inspect them before retrying.
-
-The token value goes directly into the protected external JSON file (`0600`),
-with secret tasks hidden from logs. No token is committed or published to
-Kubernetes by this playbook. Losing the response or failing between token creation
-and persistence creates a mismatch that the next run refuses; it never silently
-rotates or overwrites a secret. Token rotation/recovery requires explicit operator
-reconciliation. Preserve an external recoverable copy and qualify authentication,
-access denials, rebuilds and pool enrollment before controller activation. Stored
-identity checks do not prove that a token's secret is valid after external rotation.
-
-Offline checks: `python3 scripts/tests/test_proxmox_csi_storage.py`. These render
-native Ansible conditions and verify refusal/opt-in wiring; they do not execute
-PVE commands or qualify permissions and persistence on the live runner.
-
-The read-only CSI activation preflight also accepts an optional `sealed_config_b64`
-(the base64-encoded **encrypted SealedSecret**, never a plaintext Secret) and
-`config_sha256` (SHA256 of the original `config.yaml` bytes). Supply both to prove
-that the actual `csi-proxmox/proxmox-csi-config` payload can be recovered with the
-external Vault key. The decrypted data stays inside the temporary runner process;
-only success or a generic failure is logged. Omitting both retains the synthetic
-probe and API visibility checks. This workflow does not activate CSI.
+<p align="center">
+  Part of <a href="https://github.com/Starktastic-Homelab"><b>Starktastic Homelab</b></a>:
+  <a href="https://github.com/Starktastic-Homelab/packer">packer</a> ·
+  <a href="https://github.com/Starktastic-Homelab/terraform">terraform</a> ·
+  <a href="https://github.com/Starktastic-Homelab/ansible">ansible</a> ·
+  <a href="https://github.com/Starktastic-Homelab/apps">apps</a><br>
+  <sub>Product logos in the diagrams are trademarks of their owners and are used only to label the components.</sub>
+</p>

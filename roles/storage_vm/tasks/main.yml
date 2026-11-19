@@ -16,14 +16,16 @@
       - storage_vm_bridge_iface | length > 0
     fail_msg: No interface has {{ storage_vm_bridge_address }}; the iSCSI and metrics rules bind to it.
 
-# The image holds them too; a package upgrade restarts rtslib-fb-targetctl, which drops every session.
-- name: Hold the LIO packages
+# The image holds them too. An LIO upgrade restarts rtslib-fb-targetctl, which drops every session; an lvm2 upgrade
+# runs an unscoped vgcfgbackup and may replace lvm.conf (ADR 0017 F24).
+- name: Hold the LIO and LVM packages
   ansible.builtin.dpkg_selections:
     name: "{{ item }}"
     selection: hold
   loop:
     - python3-rtslib-fb
     - targetcli-fb
+    - lvm2
 
 # As on pve: an oops reboots the VM instead of leaving a half-dead kernel serving iSCSI.
 - name: Reboot 10 s after a kernel oops

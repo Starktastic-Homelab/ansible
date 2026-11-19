@@ -31,3 +31,51 @@
       - storage_vm_pv_devices.values() | select('string') | select('match', '^/dev/') | list | length == 2
       - storage_vm_pv_devices.retained != storage_vm_pv_devices.regen
     fail_msg: storage_vm_pv_devices must map retained and regen to distinct /dev/ paths (ADR 0017 F11).
+
+# Only the role may activate retained and regen (ADR 0017 F24): the image turns every stock LVM path off. These reads
+# run in check mode too, so the dry run refuses an old image the same way.
+- name: Read the effective LVM event activation
+  ansible.builtin.command:
+    argv: [/sbin/lvmconfig, --type, full, global/event_activation]
+  register: storage_vm_lvm_event_activation
+  check_mode: false
+  changed_when: false
+
+- name: Read the stock LVM units
+  ansible.builtin.command:
+    argv: [systemctl, is-enabled, lvm2-monitor.service, blk-availability.service]
+  register: storage_vm_lvm_units
+  check_mode: false
+  changed_when: false
+  # A masked unit exits non-zero; the assert decides.
+  failed_when: false
+
+- name: Read the lvm2 package selection
+  ansible.builtin.command:
+    argv: [dpkg-query, -W, "--showformat=${Status}", lvm2]
+  register: storage_vm_lvm_selection
+  check_mode: false
+  changed_when: false
+
+# Only the udev pvscan writes these, so an entry means stock activation ran on this boot. Absent paths match nothing.
+- name: Find stock LVM activation records from this boot
+  ansible.builtin.find:
+    paths: [/run/lvm/vgs_online, /run/lvm/pvs_online]
+    file_type: any
+    hidden: true
+  register: storage_vm_lvm_online
+  check_mode: false
+  changed_when: false
+
+- name: Refuse stock LVM activation
+  ansible.builtin.assert:
+    that:
+      - storage_vm_lvm_event_activation.stdout == 'event_activation=0'
+      - storage_vm_lvm_units.stdout_lines == ['masked', 'masked']
+      - (storage_vm_lvm_selection.stdout.split() | first | default('')) == 'hold'
+      - storage_vm_lvm_online.matched == 0
+    fail_msg: >-
+      Stock LVM activation is on (event_activation, lvm2-monitor/blk-availability not masked, lvm2 not held, or
+      /run/lvm/vgs_online|pvs_online not empty on this boot). Rebuild the storage VM from the packer storage image with
+      the F24 change (scripts/storage.sh), or apply those lines and reboot; only the role may activate retained and
+      regen (ADR 0017 F24).

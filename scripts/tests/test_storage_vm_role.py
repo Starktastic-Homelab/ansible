@@ -21,14 +21,14 @@ BRIDGE = '10.77.0.10'
 # The role's targetctl drop-in, byte for byte.
 DEV_UNIT = 'dev-disk-by\\x2dpath-pci\\x2d0000:06:0b.0.device'  # systemd-escape --path of the default retained PV
 TARGETCTL_DROPIN = (
-    "# managed\n# Replaces the image's 10-lvm.conf lines: each VG activated from its own PV; regen bounded and never "
-    "killed\n# (ADR 0017 F11). Then re-applies fences, strips fenced ACLs and checks LUN 0 per ledgered LV. A failed "
+    "# managed\n# The only LVM activation at boot (the image turns stock activation off, ADR 0017 F24): retained from "
+    "its own PV,\n# no fallback, so a wrong path fails the unit and restores no targets; regen bounded and never "
+    "killed (F11).\n# Then re-applies fences, strips fenced ACLs and checks LUN 0 per ledgered LV. A failed "
     "start\n# skips ExecStop (targetctl clear), so a failing check never clears targets.\n[Unit]\n"
     "After=nftables.service\nWants=" + DEV_UNIT + "\nAfter=" + DEV_UNIT + "\n\n[Service]\n"
     "# A failed start or a stop never signals an abandoned (D-state) LVM child.\nKillMode=process\n"
     "ExecStartPre=\n"
-    "ExecStartPre=/bin/sh -c '/sbin/vgchange --devices /dev/disk/by-path/pci-0000:06:0b.0 -ay retained || "
-    "/sbin/vgchange -ay retained'\n"
+    "ExecStartPre=/sbin/vgchange --devices /dev/disk/by-path/pci-0000:06:0b.0 -ay retained\n"
     "ExecStartPre=-/usr/local/sbin/storage-reconcile activate --vg regen --config /etc/homelab-storage/config.json\n"
     "ExecStartPre=-/usr/local/sbin/storage-fencer restore-set\n"
     "ExecStartPost=/usr/local/sbin/storage-fencer restore-set\n"
@@ -237,7 +237,7 @@ class RoleTests(unittest.TestCase):
     def test_dropin_order(self):
         out = render('rtslib-fb-targetctl.service.d-50-homelab.conf.j2')
         execs = [l for l in out.splitlines() if l.startswith('ExecStart')]
-        want = ['ExecStartPre=', "ExecStartPre=/bin/sh -c '/sbin/vgchange --devices /dev/",
+        want = ['ExecStartPre=', 'ExecStartPre=/sbin/vgchange --devices /dev/',
                 'ExecStartPre=-/usr/local/sbin/storage-reconcile activate --vg regen ',
                 'ExecStartPre=-/usr/local/sbin/storage-fencer restore-set',
                 'ExecStartPost=/usr/local/sbin/storage-fencer restore-set',
@@ -246,11 +246,13 @@ class RoleTests(unittest.TestCase):
         for line, prefix in zip(execs, want):
             self.assertTrue(line.startswith(prefix) and (prefix != 'ExecStartPre=' or line == prefix), (line, prefix))
 
-    def test_dropin_retained_fallback(self):
+    def test_dropin_retained_scoped_only(self):
         out = render('rtslib-fb-targetctl.service.d-50-homelab.conf.j2',
                      storage_vm_pv_devices={'retained': '/dev/disk/by-path/test-retained', 'regen': '/dev/x'})
-        self.assertIn("ExecStartPre=/bin/sh -c '/sbin/vgchange --devices /dev/disk/by-path/test-retained -ay retained"
-                      " || /sbin/vgchange -ay retained'\n", out)
+        self.assertIn('ExecStartPre=/sbin/vgchange --devices /dev/disk/by-path/test-retained -ay retained\n', out)
+        self.assertNotIn('||', out)
+        self.assertNotIn('/bin/sh', out)
+        self.assertEqual(len(re.findall(r'vgchange', out)), 1)
 
     def test_dropin_device_ordering(self):
         for path, unit in (('/dev/disk/by-path/test-retained', r'dev-disk-by\x2dpath-test\x2dretained.device'),
@@ -290,9 +292,49 @@ class RoleTests(unittest.TestCase):
         self.assertIn('After=network-online.target nftables.service rtslib-fb-targetctl.service', out)
 
     def test_packages_held(self):
-        t = by_name(role_tasks(), 'Hold the LIO packages')
+        t = by_name(role_tasks(), 'Hold the LIO and LVM packages')
         self.assertEqual(module(t, 'dpkg_selections'), {'name': '{{ item }}', 'selection': 'hold'})
-        self.assertEqual(t['loop'], ['python3-rtslib-fb', 'targetcli-fb'])
+        self.assertEqual(t['loop'], ['python3-rtslib-fb', 'targetcli-fb', 'lvm2'])
+
+    STOCK_OK = {'storage_vm_lvm_event_activation': {'stdout': 'event_activation=0'},
+                'storage_vm_lvm_units': {'stdout_lines': ['masked', 'masked']},
+                'storage_vm_lvm_selection': {'stdout': 'hold ok installed'},
+                'storage_vm_lvm_online': {'matched': 0}}
+
+    def test_assert_stock_lvm_reads(self):
+        tasks = role_tasks('assert')
+        reads = {t['register']: t for t in tasks if t.get('register', '').startswith('storage_vm_lvm_')}
+        self.assertEqual(set(reads), set(self.STOCK_OK))
+        for t in reads.values():
+            self.assertIs(t.get('check_mode'), False, t)
+            self.assertIs(t.get('changed_when'), False, t)
+        # --type full: exits 0 and prints the effective value even when the key is unset (old image: rc 5 without it)
+        self.assertEqual(argv(reads['storage_vm_lvm_event_activation']),
+                         ['/sbin/lvmconfig', '--type', 'full', 'global/event_activation'])
+        self.assertEqual(argv(reads['storage_vm_lvm_units']),
+                         ['systemctl', 'is-enabled', 'lvm2-monitor.service', 'blk-availability.service'])
+        self.assertIs(reads['storage_vm_lvm_units'].get('failed_when'), False)  # masked exits non-zero
+        self.assertEqual(argv(reads['storage_vm_lvm_selection']),
+                         ['dpkg-query', '-W', '--showformat=${Status}', 'lvm2'])
+        find = module(reads['storage_vm_lvm_online'], 'find')
+        self.assertEqual(find['paths'], ['/run/lvm/vgs_online', '/run/lvm/pvs_online'])
+        self.assertEqual(find['file_type'], 'any')
+        self.assertIs(find.get('hidden'), True)
+        names = [t.get('name') for t in tasks]
+        self.assertGreater(names.index('Refuse stock LVM activation'),
+                           max(names.index(t['name']) for t in reads.values()))
+
+    def test_assert_stock_lvm(self):
+        that = module(by_name(role_tasks('assert'), 'Refuse stock LVM activation'), 'assert')['that']
+        self.assertTrue(holds(that, **self.STOCK_OK))
+        for key, bad in (('storage_vm_lvm_event_activation', {'stdout': 'event_activation=1'}),
+                         ('storage_vm_lvm_event_activation', {'stdout': ''}),
+                         ('storage_vm_lvm_units', {'stdout_lines': ['enabled', 'masked']}),
+                         ('storage_vm_lvm_units', {'stdout_lines': ['masked']}),
+                         ('storage_vm_lvm_selection', {'stdout': 'install ok installed'}),
+                         ('storage_vm_lvm_selection', {'stdout': ''}),
+                         ('storage_vm_lvm_online', {'matched': 1})):
+            self.assertFalse(holds(that, **{**self.STOCK_OK, key: bad}), (key, bad))
 
     def test_config_json_loads(self):
         with tempfile.TemporaryDirectory() as tmp:

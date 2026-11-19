@@ -9,12 +9,16 @@
         kind: PersistentVolume
       register: storage_vm_expiry_pvs_all
 
-    - name: Select the PVs and claims of this volume
+    # Two tasks: in one set_fact the claims would read the previous candidate's PVs (or fail on the first).
+    - name: Select the PVs of this volume
       ansible.builtin.set_fact:
         storage_vm_expiry_pvs: >-
           {{ storage_vm_expiry_pvs_all.resources | selectattr('spec.csi', 'defined')
              | selectattr('spec.csi.driver', 'equalto', storage_vm_csi_driver)
              | selectattr('spec.csi.volumeHandle', 'equalto', storage_vm_candidate.volume_handle) | list }}
+
+    - name: Select the claims of those PVs
+      ansible.builtin.set_fact:
         storage_vm_expiry_claims: >-
           {{ storage_vm_expiry_pvs | selectattr('spec.claimRef', 'defined') | map(attribute='spec.claimRef') | list }}
 

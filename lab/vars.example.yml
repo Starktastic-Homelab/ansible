@@ -25,8 +25,3 @@ storage_vm_timings:
   quarantine_seconds: 900
   blind_after_seconds: 120
   pause_after: []
-
-# Variant N legs only (plan B2 Step 3): the storage VM mounts VM 970's /srv/labn itself, and the loop device
-# carries VG regen. Uncomment both for those legs.
-# storage_vm_nfs_mounts: [{what: "192.0.2.43:/srv/labn", where: /srv/labn, options: "vers=4.2,hard"}]
-# storage_vm_loop_disks: [{file: /srv/labn/regen-n.raw, vg: regen}]

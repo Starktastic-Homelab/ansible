@@ -4,39 +4,57 @@
     argv: [iscsiadm, -m, session]
   register: storage_vm_sessions
   changed_when: false
+  # iscsiadm exits 21 with "No active sessions"; that is the not-logged-in case below, not an error.
+  failed_when: storage_vm_sessions.rc not in [0, 21]
 
 - name: Find the session of this target
   ansible.builtin.set_fact:
     storage_vm_session_lines: >-
       {{ storage_vm_sessions.stdout_lines | select('search', ' ' ~ (storage_vm_iqn | regex_escape) ~ '( |$)') | list }}
 
-- name: Require one session of this target
+- name: Refuse more than one session of this target
   ansible.builtin.assert:
     that:
-      - storage_vm_session_lines | length == 1
+      - storage_vm_session_lines | length <= 1
     fail_msg: "{{ storage_vm_volume.id }} is attached here but has {{ storage_vm_session_lines | length }} sessions."
 
-- name: Rescan the session
-  ansible.builtin.command:
-    argv: [iscsiadm, -m, session, -r, "{{ storage_vm_sid }}", -R]
-  changed_when: false
+# A VolumeAttachment outlives the login and the mount (before NodeStage, after NodeUnstage, a failed mount). Skip
+# then: the play is level-triggered, so the next run grows the volume once it is mounted.
+- name: Grow only while logged in here
+  when: storage_vm_session_lines | length == 1
+  block:
+    - name: Rescan the session
+      ansible.builtin.command:
+        argv: [iscsiadm, -m, session, -r, "{{ storage_vm_sid }}", -R]
+      changed_when: false
 
-- name: Read the device size
-  ansible.builtin.command:
-    argv: [blockdev, --getsize64, "{{ storage_vm_device }}"]
-  register: storage_vm_device_size
-  changed_when: false
+    - name: Read the device size
+      ansible.builtin.command:
+        argv: [blockdev, --getsize64, "{{ storage_vm_device }}"]
+      register: storage_vm_device_size
+      changed_when: false
 
-- name: Refuse a device smaller than the inventory size
-  ansible.builtin.assert:
-    that:
-      - storage_vm_device_size.stdout | int >= storage_vm_volume.size_bytes | int
-    fail_msg: >-
-      {{ storage_vm_device }} is {{ storage_vm_device_size.stdout }} bytes after a rescan, less than
-      {{ storage_vm_volume.size_bytes }}; not resizing.
+    - name: Refuse a device smaller than the inventory size
+      ansible.builtin.assert:
+        that:
+          - storage_vm_device_size.stdout | int >= storage_vm_volume.size_bytes | int
+        fail_msg: >-
+          {{ storage_vm_device }} is {{ storage_vm_device_size.stdout }} bytes after a rescan, less than
+          {{ storage_vm_volume.size_bytes }}; not resizing.
 
-- name: Grow the filesystem online
-  ansible.builtin.command:
-    argv: [resize2fs, "{{ storage_vm_device }}"]
-  register: storage_vm_resize
-  changed_when: "'Nothing to do' not in (storage_vm_resize.stdout ~ storage_vm_resize.stderr)"
+    # resize2fs on an unmounted fs takes the offline path: it demands e2fsck and exits 1, or races kubelet's mount.
+    - name: Find the mounted filesystem of the device
+      ansible.builtin.command:
+        argv: [findmnt, -n, -o, FSTYPE, --source, "{{ storage_vm_device }}"]
+      register: storage_vm_mount
+      changed_when: false
+      failed_when: storage_vm_mount.rc not in [0, 1]
+
+    - name: Grow the filesystem online
+      ansible.builtin.command:
+        argv: [resize2fs, "{{ storage_vm_device }}"]
+      register: storage_vm_resize
+      changed_when: "'Nothing to do' not in (storage_vm_resize.stdout ~ storage_vm_resize.stderr)"
+      when:
+        - storage_vm_mount.rc == 0
+        - storage_vm_mount.stdout_lines | unique == ['ext4']

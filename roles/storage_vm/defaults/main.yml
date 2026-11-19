@@ -13,6 +13,12 @@ storage_vm_inventory_repo: "{{ argocd_repo_url }}"
 storage_vm_inventory_branch: main
 storage_vm_inventory_path: infrastructure/base-configs/files/retained-volumes.json
 
+# Each VG's one PV, so every LVM command opens only that disk (ADR 0017 F11/F12). terraform's virtio1 (retained) and
+# virtio2 (regen) slots as by-path links: no content probe, unlike lvm-pv-uuid links. Read on 971 2026-11-18.
+storage_vm_pv_devices:
+  retained: /dev/disk/by-path/pci-0000:06:0b.0
+  regen: /dev/disk/by-path/pci-0000:06:0c.0
+
 # The removal brake; an approved larger removal is one run with -e storage_vm_max_removals=N.
 storage_vm_max_removals: 2
 # Production values. An override replaces the whole map, and config.json then must still have every key.
@@ -25,10 +31,3 @@ storage_vm_timings:
   pause_after: []
 storage_vm_maintenance_root: /maintenance
 storage_vm_csi_driver: org.democratic-csi.node-manual
-
-# Variant N (ADR 0017 D1): NFS mounts the storage VM makes itself, [{what, where, options}]; options must hold hard
-# and vers=4.2, since a soft mount can drop acknowledged writes.
-storage_vm_nfs_mounts: []
-# Data files on those mounts, attached as loop devices before the LIO restore, [{file, vg}]. vg is retained or regen
-# (one file each) and only records which VG the device carries.
-storage_vm_loop_disks: []

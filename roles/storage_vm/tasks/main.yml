@@ -25,7 +25,7 @@
     - python3-rtslib-fb
     - targetcli-fb
 
-# As on pve: an oops reboots the VM instead of leaving a half-dead kernel serving iSCSI (variant N's NFS client).
+# As on pve: an oops reboots the VM instead of leaving a half-dead kernel serving iSCSI.
 - name: Reboot 10 s after a kernel oops
   ansible.posix.sysctl:
     name: "{{ item.key }}"
@@ -104,28 +104,6 @@
     mode: "0644"
   notify: Reload systemd
 
-# Variant N only (both lists default to []): the storage VM mounts NFS itself and attaches data files as loop devices.
-- name: Write the NFS mount units
-  ansible.builtin.template:
-    src: storage-nfs.mount.j2
-    dest: /etc/systemd/system/{{ item.1 }}
-    owner: root
-    group: root
-    mode: "0644"
-  loop: "{{ storage_vm_nfs_mounts | zip(storage_vm_mount_units) | list }}"
-  notify: Reload systemd
-
-- name: Write the loop disk unit
-  ansible.builtin.template:
-    src: storage-loop@.service.j2
-    dest: /etc/systemd/system/storage-loop@.service
-    owner: root
-    group: root
-    mode: "0644"
-  when: storage_vm_loop_disks | length > 0
-  notify: Reload systemd
-
-# With loop disks it Requires= and orders After= each loop unit, so the image's vgchange lines see the devices.
 - name: Re-apply fences and check targets after the LIO restore
   ansible.builtin.template:
     src: rtslib-fb-targetctl.service.d-50-homelab.conf.j2
@@ -138,7 +116,7 @@
 # nftables.conf renders the fenced set from the VG tags, read under the lock the fencer takes to change them.
 - name: Read the fence tags under the LIO lock
   ansible.builtin.command:
-    argv: [flock, /run/lock/storage-lio, /usr/local/sbin/storage-fencer, status]
+    argv: [flock, -w, '120', /run/lock/storage-lio, /usr/local/sbin/storage-fencer, status]
   register: storage_vm_fence_status
   changed_when: false
 
@@ -170,21 +148,6 @@
     enabled: true
     state: started
     daemon_reload: true
-
-# Started, never restarted or stopped: stopping a loop unit (or its mount) stops rtslib-fb-targetctl through
-# Requires=. A changed mount option applies at the next boot.
-- name: Start the NFS mounts
-  ansible.builtin.systemd:
-    name: "{{ item }}"
-    enabled: true
-    state: started
-  loop: "{{ storage_vm_mount_units }}"
-
-- name: Attach the loop disks
-  ansible.builtin.systemd:
-    name: "{{ item }}"
-    state: started
-  loop: "{{ storage_vm_loop_units }}"
 
 # Reload systemd, then nftables (loading the fenced set), before the token copy and the reconcile.
 - name: Apply unit and ruleset changes before the reconcile

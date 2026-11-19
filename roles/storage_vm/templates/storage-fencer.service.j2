@@ -6,6 +6,8 @@ Wants=network-online.target
 
 [Service]
 ExecStart=/usr/local/sbin/storage-fencer run
+# A restart never signals an abandoned (D-state) LVM child (ADR 0017 F11).
+KillMode=process
 # A fencer that stops is a fencer that never fences; StorageFencerBlind alerts on a stale textfile.
 Restart=always
 RestartSec=5

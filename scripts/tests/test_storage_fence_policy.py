@@ -36,9 +36,9 @@ def history(data=None):
     return fence_policy.BootHistory(data or {})
 
 
-def evaluate(nodes, vas=(), tags=(), hist=None, cfg=CFG, now=NOW, opened=None):
+def evaluate(nodes, vas=(), tags=(), hist=None, cfg=CFG, now=NOW, opened=None, watch=NOW - timedelta(days=1)):
     return fence_policy.evaluate(nodes, list(vas), ledger.Cluster.from_tags(list(tags), 'retained'),
-                                 hist or history(), cfg, now, opened or {})
+                                 hist or history(), cfg, now, opened or {}, watch)
 
 
 class FencePolicyTest(unittest.TestCase):
@@ -127,6 +127,18 @@ class FencePolicyTest(unittest.TestCase):
         v = evaluate([node('w1'), node('w2', ready=False, bootid=C)], tags=[ledger.tag_fenced('w2', A)],
                      hist=history({'w2': {'seen': [A]}}), opened={'w2': True})
         self.assertEqual((v.unfence, v.continue_fence, v.reasons['w2']), ([], ['w2'], 'not-ready'))
+
+    def test_watch_start_bounds_stale_notready(self):
+        # F18: after a cold boot the API shows NotReady from before the shutdown; only watched time counts.
+        nodes = [node('w1'), node('w2', ready=False, age=10000)]
+        v = evaluate(nodes, watch=NOW - timedelta(seconds=299))
+        self.assertIsNone(v.fence)
+        self.assertEqual(v.reasons['w2'], 'watch-too-short')
+        self.assertEqual(evaluate(nodes, watch=NOW - timedelta(seconds=300)).fence, 'w2')
+
+    def test_later_transition_keeps_its_window(self):
+        v = evaluate([node('w1'), node('w2', ready=False, age=299)])
+        self.assertEqual(v.reasons['w2'], 'not-ready-too-short')
 
     def test_unconfigured_node_ignored(self):
         v = evaluate([node('w1'), node('w2'), node('m1', ready=False, age=10000)])

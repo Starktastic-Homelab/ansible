@@ -1,13 +1,19 @@
 # {{ ansible_managed }}
-# The image's 10-lvm.conf activates the VGs; this re-applies fences, strips fenced ACLs and checks LUN 0 per
-# ledgered LV. A failed start skips ExecStop (targetctl clear), so a failing check never clears targets.
+# Replaces the image's 10-lvm.conf lines: each VG activated from its own PV; regen bounded and never killed
+# (ADR 0017 F11). Then re-applies fences, strips fenced ACLs and checks LUN 0 per ledgered LV. A failed start
+# skips ExecStop (targetctl clear), so a failing check never clears targets.
+{% set dev_unit = storage_vm_pv_devices.retained[1:] | replace('-', '\\x2d') | replace('/', '-') ~ '.device' %}
 [Unit]
 After=nftables.service
-{% for unit in storage_vm_loop_units %}
-Requires={{ unit }}
-After={{ unit }}
-{% endfor %}
+Wants={{ dev_unit }}
+After={{ dev_unit }}
 
 [Service]
+# A failed start or a stop never signals an abandoned (D-state) LVM child.
+KillMode=process
+ExecStartPre=
+ExecStartPre=/bin/sh -c '/sbin/vgchange --devices {{ storage_vm_pv_devices.retained }} -ay retained || /sbin/vgchange -ay retained'
+ExecStartPre=-/usr/local/sbin/storage-reconcile activate --vg regen --config /etc/homelab-storage/config.json
+ExecStartPre=-/usr/local/sbin/storage-fencer restore-set
 ExecStartPost=/usr/local/sbin/storage-fencer restore-set
 ExecStartPost=/usr/local/sbin/storage-reconcile boot-check --config /etc/homelab-storage/config.json

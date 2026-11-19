@@ -21,6 +21,9 @@ GI = 1024 ** 3
 NOW = 1_800_000_000
 UUID_A = '11111111-2222-3333-4444-555555555555'
 W1, W2 = 'iqn.2026-11.net.starktastic:w1', 'iqn.2026-11.net.starktastic:w2'
+PV_RETAINED, PV_REGEN = '/dev/disk/by-path/test-retained', '/dev/disk/by-path/test-regen'
+PV = {'retained': PV_RETAINED, 'regen': PV_REGEN}
+LVM_TOOLS = ('vgs', 'lvs', 'pvs', 'vgchange', 'lvchange', 'lvcreate', 'lvextend', 'lvremove', 'pvscan')
 WRITES = ('vgchange', 'lvcreate', 'lvextend', 'lvchange', 'mkfs.ext4', 'mount', 'umount', 'dd', 'blkid')
 
 
@@ -30,7 +33,7 @@ def config(**kw):
          'api_url': 'https://192.0.2.99:6443', 'token_file': '/etc/storage-fencer/token',
          'ca_file': '/etc/storage-fencer/ca.crt', 'csi_driver': 'org.democratic-csi.node-manual', 'max_removals': 2,
          'not_ready_seconds': 300, 'loop_seconds': 15, 'proof_timeout_seconds': 60, 'quarantine_seconds': 259200,
-         'blind_after_seconds': 600, 'pause_after': []}
+         'blind_after_seconds': 600, 'pause_after': [], 'pv_devices': dict(PV)}
     c.update(kw)
     return c
 
@@ -83,8 +86,12 @@ class FakeLio:
 class FakeHost:
     """Stands in for lvm, dd, blkid, mkfs, mount, nft and systemctl; vgs maps name -> {tags, size, free, lvs}."""
     def __init__(self, tmp, vgs=None, dd_rc=0, blkid_rc=2, fenced_set=(), targetctl_active=True, targets=None,
-                 sessions=None):
+                 sessions=None, stalled=(), stale_hints=(), fail=None):
         self.tmp, self.calls, self.markers = tmp, [], {}
+        # raw: every argv as passed with its timeout; calls drop the --devices/--readonly scoping for short asserts.
+        self.raw = []
+        self.stalled, self.stale_hints, self.fail = set(stalled), set(stale_hints), dict(fail or {})
+        self.missing_devs = set()  # device nodes that do not exist (a VG not activated)
         self.vgs = vgs if vgs is not None else {'retained': vg(), 'regen': vg()}
         self.dd_rc, self.blkid_rc, self.fenced_set = dd_rc, blkid_rc, set(fenced_set)
         self.targetctl_active = targetctl_active
@@ -94,19 +101,38 @@ class FakeHost:
     def record(self, *call):
         self.calls.append((call, self.lock.held))
 
-    def run(self, argv, check=True):
-        self.record(*argv)
-        rc, out = 0, ''
+    def _shown(self, a, scoped):
+        """The VGs a vgs/lvs call reports: the named one only, minus F12's stale-hint VGs for an unscoped call."""
+        names = [a[-1]] if a[-1] in self.vgs else list(self.vgs)
+        return [n for n in names if scoped or n not in self.stale_hints]
+
+    def run(self, argv, check=True, timeout=None, key=None):
+        self.raw.append((list(argv), timeout, key))
         a = list(argv)
+        scoped = a[1:2] == ['--devices']
+        if scoped:
+            a = [a[0], *a[3:]]
+        a = [x for x in a if x != '--readonly']
+        self.record(*a)
+        rc, out = 0, ''
+        if a[0] in LVM_TOOLS:
+            vgn = a[-1].split('/')[0]
+            if vgn in self.stalled:
+                if timeout is None:
+                    raise AssertionError(f'unbounded call on stalled VG {vgn}: {argv}')
+                raise subprocess.TimeoutExpired(argv, timeout)
+            if (a[0], vgn) in self.fail:
+                e = self.fail[(a[0], vgn)]
+                raise e if isinstance(e, BaseException) else subprocess.CalledProcessError(e, argv, '', 'fake failure')
         if a[0] == 'vgs':
             out = json.dumps({'report': [{'vg': [
                 {'vg_name': n, 'vg_tags': ','.join(sorted(v['tags'])), 'vg_size': str(v['size']), 'vg_free': str(v['free'])}
-                for n, v in self.vgs.items()]}]})
+                for n, v in self.vgs.items() if n in self._shown(a, scoped)]}]})
         elif a[0] == 'lvs':
             out = json.dumps({'report': [{'lv': [
                 {'vg_name': n, 'lv_name': i, 'lv_size': str(lv['size']), 'lv_tags': ','.join(sorted(lv['tags']))}
-                for n, v in self.vgs.items() for i, lv in v['lvs'].items()]}]})
-        elif a[0] == 'vgchange':
+                for n, v in self.vgs.items() if n in self._shown(a, scoped) for i, lv in v['lvs'].items()]}]})
+        elif a[0] == 'vgchange' and a[1:2] != ['-ay']:
             v = self.vgs[a[-1]]
             for flag, tag in zip(a[1:-1:2], a[2:-1:2]):
                 (v['tags'].add if flag == '--addtag' else v['tags'].discard)(tag)
@@ -139,18 +165,26 @@ class FakeHost:
                 **({'elem': sorted(self.fenced_set)} if self.fenced_set else {})}}]})
         elif a[:3] == ['nft', 'add', 'element']:
             self.fenced_set.add(a[-1].strip('{} '))
+        elif a[:3] == ['nft', 'delete', 'element']:
+            self.fenced_set.remove(a[-1].strip('{} '))  # nft fails on a missing element
+        elif a[0] == 'vgchange' and a[1:2] == ['-ay']:
+            self.missing_devs = {d for d in self.missing_devs if not d.startswith(f'/dev/{a[-1]}/')}
         elif a[:2] == ['systemctl', 'is-active']:
             rc = 0 if self.targetctl_active else 3
         if check and rc:
             raise subprocess.CalledProcessError(rc, argv, out, 'fake failure')
         return subprocess.CompletedProcess(argv, rc, out, '')
 
+    def lvm_raw(self):
+        return [(argv, t) for argv, t, _ in self.raw if argv[0] in LVM_TOOLS]
+
     def install(self, test):
         for target, name, value in [
-                (host, 'run', self.run), (host, 'LIO_LOCK', self.lock),
+                (host, 'run', self.run), (host, 'LIO_LOCK', self.lock), (host, 'CONFIG', config()),
                 (host, 'checkpoint', lambda name: self.record('checkpoint', name)),
                 (lio, 'Lio', lambda: self.lio), (metrics, 'TEXTFILE_DIR', self.tmp / 'textfile'),
-                (reconcile.time, 'time', lambda: NOW), (reconcile, 'MARKER_TMP', self.tmp)]:
+                (reconcile.time, 'time', lambda: NOW), (reconcile, 'MARKER_TMP', self.tmp),
+                (reconcile, '_dev_exists', lambda p: p not in self.missing_devs)]:
             p = mock.patch.object(target, name, value)
             p.start()
             test.addCleanup(p.stop)
@@ -288,6 +322,20 @@ class FenceTest(Base):
                 self.assertEqual(f.find('lio.ensure_target')[0][3], (W1,) if 'w2' in tag else (W1, W2))
                 self.assertIn('fenced', self.err)
 
+    def test_untagged_element_fails(self):
+        # F7: an element with no tag re-cuts an unfenced worker; the reconcile reports it and leaves the set alone.
+        f = self.fake(vgs={'retained': vg(['ledger:a:created'], {'a': (GI, ())}), 'regen': vg()},
+                      fenced_set=['192.0.2.22'])
+        rc, _ = self.apply([entry()])
+        self.assertEqual(rc, 1)
+        self.assertIn('192.0.2.22 is in the nft set fenced with no fence tag', self.err)
+        self.assertEqual(f.fenced_set, {'192.0.2.22'})
+        # Unreadable tags (cluster None): no reverse check, since any element might be a needed fence.
+        f = self.fake(vgs={'retained': vg(['ledger:a:created', 'fenced:w1:notauuid'], {'a': (GI, ())}), 'regen': vg()},
+                      fenced_set=['192.0.2.22'])
+        self.apply([entry()])
+        self.assertNotIn('no fence tag', self.err)
+
 
 class BootCheckTest(Base):
     def check(self, *extra):
@@ -313,6 +361,29 @@ class BootCheckTest(Base):
         self.assertEqual(self.check(), 1)
         self.assertIn('/dev/regen/p', self.err)
 
+    def test_boot_check_regen_stall(self):
+        f = self.fake(vgs={'retained': vg(['ledger:a:created'], {'a': (GI, ())}), 'regen': vg(['ledger:p:created'])},
+                      targets={'a': {'dev': '/dev/lab/x', 'acls': set()}}, stalled={'regen'})
+        self.assertEqual(self.check(), 1)
+        self.assertIn('VG regen is missing', self.err)
+        self.assertIn('a: LUN 0 is not bound to /dev/retained/a', self.err)  # retained still checked
+
+    def test_boot_check_reads_once(self):
+        f = self.good()
+        self.assertEqual(self.check(), 0, self.err)
+        self.assertEqual([a[0] + ' ' + a[-1] for a, _ in f.lvm_raw() if a[0] in ('vgs', 'lvs')],
+                         ['vgs retained', 'lvs retained', 'vgs regen', 'lvs regen'])
+
+    def test_restore_set_regen_stall_reconcile(self):
+        f = self.fake(vgs={'retained': vg([f'fenced:w2:{UUID_A}']), 'regen': vg()}, stalled={'regen'})
+        self.assertEqual(reconcile.restore_set(config()), 0)
+        self.assertEqual(f.fenced_set, {'192.0.2.22'})
+
+    def test_cli_timeout_exit_1(self):
+        self.fake()
+        with mock.patch.object(reconcile, 'boot_check', side_effect=subprocess.TimeoutExpired(['vgs'], 30)):
+            self.assertEqual(self.check(), 1)
+
     def test_boot_check_fails_on_missing_vg(self):
         self.fake(vgs={'retained': vg(['ledger:a:created'], {'a': (GI, ())})},
                   targets={'a': {'dev': '/dev/retained/a', 'acls': set()}})
@@ -333,6 +404,33 @@ class BootCheckTest(Base):
         self.assertEqual(reconcile.restore_set(config()), 0)
         self.assertEqual(f.fenced_set, {'192.0.2.21', '192.0.2.22'})
         self.assertTrue(all(held for c, held in f.calls if c[:3] == ('nft', 'add', 'element')))
+
+    def test_restore_set_removes_untagged_elements(self):
+        # F7: a reload of an nftables.conf rendered during a fence brings back an address that has since been unfenced.
+        f = self.fake(vgs={'retained': vg([f'fenced:w2:{UUID_A}']), 'regen': vg()},
+                      fenced_set=['192.0.2.21', '192.0.2.22', '192.0.2.99'])
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(reconcile.restore_set(config()), 0)
+        self.assertEqual(f.fenced_set, {'192.0.2.22'})
+        self.assertIn('192.0.2.21 has no fence tag', err.getvalue())
+        self.assertTrue(all(held for c, held in f.calls if c[0] == 'nft'))
+        names = [' '.join(c[:2]) for c, _ in f.calls if c[0] == 'nft']
+        self.assertLess(names.index('nft add'), names.index('nft delete'))  # adds before any removal
+
+    def test_restore_set_keeps_elements_when_tags_unknown(self):
+        # Fail closed: with a tag unreadable (malformed, unknown node, VG missing) nothing leaves the set.
+        for vgs in ({'retained': vg(['fenced:w1:notauuid']), 'regen': vg()},
+                    {'retained': vg([f'fenced:ghost:{UUID_A}']), 'regen': vg()},
+                    {'retained': vg([f'fenced:w2:{UUID_A}', 'fenced:w2:unknown']), 'regen': vg()},
+                    {'retained': None, 'regen': vg()}):
+            with self.subTest(vgs=vgs):
+                if vgs['retained'] is None:
+                    vgs = {'regen': vg()}
+                f = self.fake(vgs=vgs, fenced_set=['192.0.2.21'])
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(reconcile.restore_set(config()), 1)
+                self.assertIn('192.0.2.21', f.fenced_set)  # kept; a still-valid fence (conflict: w2) is added too
+                self.assertIn('kept every element', err.getvalue())
 
     def test_restore_set_unknown_node_fails(self):
         f = self.fake(vgs={'retained': vg([f'fenced:ghost:{UUID_A}', f'fenced:w2:{UUID_A}']), 'regen': vg()})
@@ -423,6 +521,98 @@ class GrowAndReportTest(Base):
         self.assertEqual(out['refusals'], [{'id': 'a', 'reason': 'orphan'}])
 
 
+class DegradedTest(Base):
+    """ADR 0017 F11 approach A: a regen that does not answer refuses every change; nothing hangs or expires."""
+
+    def test_dry_run_missing_vg_empty_inventory(self):
+        self.fake(stalled={'regen'})
+        rc, out = self.apply([], '--dry-run')
+        self.assertEqual(rc, 1)
+        self.assertEqual(out['refusals'], [])
+
+    def test_dry_run_regen_stall(self):
+        self.fake(vgs={'retained': vg(['ledger:a:created'], {'a': (GI, ())}), 'regen': vg()}, stalled={'regen'})
+        rc, out = self.apply([entry('a'), entry('p', cls='regenerable')], '--dry-run')
+        self.assertEqual(rc, 1)
+        self.assertEqual({r['reason'] for r in out['refusals']}, {'vg-missing'})
+
+    def test_apply_regen_timeout_fails_entry(self):
+        self.fake(vgs={'retained': vg(['ledger:a:created'], {'a': (GI, ())}),
+                       'regen': vg(['ledger:p:created'], {'p': (GI, ())})},
+                  fail={('lvextend', 'regen'): subprocess.TimeoutExpired(['lvextend'], 30)})
+        rc, out = self.apply([entry('a', size='2Gi'), entry('p', cls='regenerable', size='2Gi')])
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.f.find('lvextend')[0][-1], 'retained/a')  # retained grew
+        self.assertTrue(any(e.startswith('extend p:') for e in out['errors']), out['errors'])
+
+    def test_final_read_loss_fails_run(self):
+        f = self.fake(vgs={'retained': vg(['ledger:a:created'], {'a': (GI, ())}),
+                           'regen': vg(['ledger:p:created'], {'p': (3 * GI, ())})})
+        real = reconcile._state
+        calls = []
+
+        def state(cfg):
+            calls.append(1)
+            if len(calls) == 2:
+                f.stalled.add('regen')
+            return real(cfg)
+        with mock.patch.object(reconcile, '_state', state):
+            rc, out = self.apply([entry('a'), entry('p', cls='regenerable')])
+        self.assertEqual(rc, 1)
+        self.assertIn('final read: VG regen unreadable', out['errors'])
+        self.assertIn({'id': 'p', 'size_bytes': 3 * GI}, out['exported'])
+        text = (self.tmp / 'textfile/storage-reconcile.prom').read_text()
+        self.assertIn('storage_vg_size_bytes{vg="regen"}', text)
+
+    def test_pending_empty_when_degraded(self):
+        old = f'pending-delete:{NOW - 259200 - 1}'
+        self.fake(vgs={'retained': vg(['ledger:a:created'], {'a': (GI, {old})}), 'regen': vg()}, stalled={'regen'})
+        conf = self.tmp / 'config.json'
+        conf.write_text(json.dumps(config()))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(reconcile.main(['expire-candidates', '--config', str(conf)]), 0)
+        self.assertEqual(json.loads(out.getvalue()), [])
+
+    def test_vg_present_metric(self):
+        self.fake(stalled={'regen'})
+        self.apply([])
+        text = (self.tmp / 'textfile/storage-reconcile.prom').read_text()
+        self.assertIn('storage_vg_present{vg="regen"} 0\n', text)
+        self.assertIn('storage_vg_present{vg="retained"} 1\n', text)
+
+    def test_target_activates_missing_dev(self):
+        f = self.fake(vgs={'retained': vg(), 'regen': vg(['ledger:p:created'], {'p': (GI, ())})})
+        f.missing_devs.add('/dev/regen/p')
+        rc, _ = self.apply([entry('p', cls='regenerable')])
+        self.assertEqual(rc, 0, self.err)
+        names = f.names()
+        self.assertLess(names.index('vgchange'), names.index('lio.ensure_target'))
+        self.assertEqual(f.find('vgchange')[0], ('vgchange', '-ay', 'regen'))
+
+    def test_no_activate_when_dev_exists(self):
+        f = self.fake(vgs={'retained': vg(), 'regen': vg(['ledger:p:created'], {'p': (GI, ())})})
+        self.apply([entry('p', cls='regenerable')])
+        self.assertEqual(f.find('vgchange'), [])
+
+    def test_start_targetctl_bounded(self):
+        f = self.fake(targetctl_active=False)
+        self.apply([])
+        starts = [(a, t) for a, t, _ in f.raw if a[:2] == ['systemctl', 'start']]
+        self.assertEqual([t for _, t in starts], [300])
+
+    def test_activate_cli(self):
+        f = self.fake()
+        conf = self.tmp / 'config.json'
+        conf.write_text(json.dumps(config()))
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(reconcile.main(['activate', '--vg', 'regen', '--config', str(conf)]), 0)
+        self.assertEqual(f.find('vgchange'), [('vgchange', '-ay', 'regen')])
+        f.stalled.add('regen')
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(reconcile.main(['activate', '--vg', 'regen', '--config', str(conf)]), 1)
+
+
 class LockAndTargetctlTest(Base):
     def test_whole_run_holds_lio_lock(self):
         f = self.fake(vgs={'retained': vg(['ledger:a:created', f'fenced:w2:{UUID_A}'], {'a': (GI, ())}), 'regen': vg()},
@@ -509,6 +699,22 @@ class CliTest(Base):
         p.write_text(json.dumps(config()))
         self.assertEqual(cfgmod.load(p)['max_removals'], 2)
 
+    def test_pv_devices_required(self):
+        from homelab_storage import config as cfgmod
+        p = self.tmp / 'c.json'
+        p.write_text(json.dumps({k: v for k, v in config().items() if k != 'pv_devices'}))
+        with self.assertRaisesRegex(cfgmod.ConfigError, 'pv_devices'):
+            cfgmod.load(p)
+
+    def test_pv_devices_shape(self):
+        from homelab_storage import config as cfgmod
+        p = self.tmp / 'c.json'
+        for bad in ({'retained': PV_RETAINED}, {**PV, 'other': '/dev/x'}, {**PV, 'regen': 5},
+                    {**PV, 'regen': 'disk/by-path/x'}, {'retained': PV_RETAINED, 'regen': PV_RETAINED}):
+            p.write_text(json.dumps(config(pv_devices=bad)))
+            with self.subTest(bad=bad), self.assertRaisesRegex(cfgmod.ConfigError, 'pv_devices must map'):
+                cfgmod.load(p)
+
 
 class AdapterTest(Base):
     def test_wwn_stable(self):
@@ -563,7 +769,7 @@ class AdapterTest(Base):
     def test_nft_parses_set(self):
         out = {'nftables': [{'metainfo': {}}, {'set': {'name': 'fenced', 'elem': ['192.0.2.22', {'elem': {'val': '192.0.2.23'}}]}}]}
         calls = []
-        def run(argv, check=True):
+        def run(argv, check=True, **kw):
             calls.append(argv)
             return subprocess.CompletedProcess(argv, 0, json.dumps(out), '')
         with mock.patch.object(host, 'run', run):
@@ -593,12 +799,75 @@ class AdapterTest(Base):
             host.checkpoint('create:mkfs')
             kill.assert_not_called()
 
+    def test_run_stdin_is_devnull(self):
+        # Under Ansible (become, no pipelining) stdin is a pty; blkdiscard then refuses and an LVM prompt would hang.
+        rd, wr = os.pipe()
+        saved = os.dup(0)
+        os.dup2(rd, 0)  # the caller's stdin is something other than /dev/null
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                r = host.run(['readlink', '/proc/self/fd/0'])
+        finally:
+            os.dup2(saved, 0)
+            for fd in (saved, rd, wr):
+                os.close(fd)
+        self.assertEqual(r.stdout.strip(), '/dev/null')
+
     def test_lio_lock_is_flock(self):
         with mock.patch.object(host.LIO_LOCK, 'path', self.tmp / 'storage-lio'):
             with host.LIO_LOCK:
                 r = subprocess.run(['flock', '-n', str(self.tmp / 'storage-lio'), 'true'])
                 self.assertEqual(r.returncode, 1)
             self.assertEqual(subprocess.run(['flock', '-n', str(self.tmp / 'storage-lio'), 'true']).returncode, 0)
+
+
+class LioOrderTest(Base):
+    """delete_acl removes retained ACLs before regen ones (ADR 0017 F23): a regen drain then cannot hold retained back."""
+
+    def lio_with(self, specs):
+        deleted = []
+
+        class Acl:
+            def __init__(self, tid, path):
+                self.node_wwn, self.path, self.tid = W2, path, tid
+
+            def delete(self):
+                deleted.append(self.tid)
+
+        class Lun:
+            def __init__(self, dev):
+                self.lun, self.dev = 0, dev
+
+            @property
+            def storage_object(self):
+                if self.dev is RuntimeError:
+                    raise RuntimeError('broken LUN link')
+                return types.SimpleNamespace(udev_path=self.dev)
+
+        targets = []
+        for tid, dev in specs:
+            path = self.tmp / tid
+            path.mkdir()
+            (path / 'info').write_text(f'session {tid}')
+            tpg = types.SimpleNamespace(tag=1, node_acls=[Acl(tid, path)], luns=[] if dev is None else [Lun(dev)])
+            targets.append(types.SimpleNamespace(wwn=lio.iqn(tid), tpgs=[tpg]))
+        fake = types.SimpleNamespace(RTSRoot=lambda: None,
+                                     FabricModule=lambda name: types.SimpleNamespace(targets=targets))
+        with mock.patch.dict(sys.modules, {'rtslib_fb': fake}):
+            l = lio.Lio()
+        return l, deleted
+
+    def test_retained_first(self):
+        l, deleted = self.lio_with([('b', '/dev/regen/b'), ('c', '/dev/retained/c'), ('a', '/dev/retained/a')])
+        out = l.delete_acl(W2)
+        self.assertEqual(deleted, ['a', 'c', 'b'])
+        self.assertEqual([o['target'] for o in out], [lio.iqn('a'), lio.iqn('c'), lio.iqn('b')])
+        self.assertEqual(out[0]['info'], 'session a')
+
+    def test_unreadable_lun_sorts_retained(self):
+        l, deleted = self.lio_with([('b', '/dev/regen/b'), ('d', RuntimeError), ('e', None)])
+        l.delete_acl(W2)
+        self.assertEqual(deleted, ['d', 'e', 'b'])
 
 
 if __name__ == '__main__':

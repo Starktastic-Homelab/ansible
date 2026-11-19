@@ -5,7 +5,7 @@ from pathlib import Path
 PATH = Path('/etc/homelab-storage/config.json')
 KEYS = {'workers': list, 'bridge_address': str, 'portal': str, 'vgs': list, 'api_url': str, 'token_file': str,
         'ca_file': str, 'csi_driver': str, 'max_removals': int, 'not_ready_seconds': int, 'loop_seconds': int,
-        'proof_timeout_seconds': int, 'quarantine_seconds': int, 'blind_after_seconds': int, 'pause_after': list}
+        'proof_timeout_seconds': int, 'quarantine_seconds': int, 'blind_after_seconds': int, 'pause_after': list, 'pv_devices': dict}
 
 
 class ConfigError(ValueError):
@@ -30,6 +30,10 @@ def load(path=PATH):
         raise ConfigError(f'{path}: vgs must be ["retained", "regen"]')
     if data['portal'] != f'{data["bridge_address"]}:3260':
         raise ConfigError(f'{path}: portal must be <bridge_address>:3260')
+    pv = data['pv_devices']
+    if set(pv) != {'retained', 'regen'} or not all(isinstance(v, str) and v.startswith('/dev/') for v in pv.values()) \
+            or pv['retained'] == pv['regen']:
+        raise ConfigError(f'{path}: pv_devices must map retained and regen to distinct /dev/ paths')
     if not all(isinstance(p, str) for p in data['pause_after']):
         raise ConfigError(f'{path}: pause_after must list step names')
     return data

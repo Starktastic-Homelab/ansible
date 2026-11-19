@@ -21,6 +21,10 @@ def _elements():
                     yield e['elem'].get('val')
 
 
+def elements():
+    return set(_elements())
+
+
 def is_fenced(addr):
     return _addr(addr) in set(_elements())
 

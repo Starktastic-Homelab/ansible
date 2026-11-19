@@ -4,6 +4,7 @@ import copy
 import io
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -15,12 +16,13 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_storage_reconcile import FILES, FakeHost, FakeLio, config, vg  # noqa: E402
+from test_storage_reconcile import FILES, LVM_TOOLS, FakeHost, FakeLio, config, vg  # noqa: E402
 
-from homelab_storage import fence_policy, fencer, host, kube, lio  # noqa: E402
+from homelab_storage import fence_policy, fencer, host, kube, lio, metrics  # noqa: E402
 
 SERVER_NOW = datetime(2026, 11, 9, 12, 0, 0, tzinfo=timezone.utc)
 LOCAL_NOW = 1_800_000_000
+WATCHING = SERVER_NOW - timedelta(days=1)  # a fencer that has watched long enough
 A, B, C, D = ('aaaaaaaa-0000-4000-8000-00000000000a', 'bbbbbbbb-0000-4000-8000-00000000000b',
               'cccccccc-0000-4000-8000-00000000000c', 'dddddddd-0000-4000-8000-00000000000d')
 UNSETTLED = 'fenced:w2:unknown'
@@ -61,16 +63,17 @@ class FakeClock:
 class FakeApi:
     def __init__(self, fake):
         self.fake, self.nodes, self.vas, self.error, self.patch_error = fake, {}, [], None, None
+        self.now = SERVER_NOW
 
     def get(self, path):
         self.fake.record('api.get', path)
         if self.error:
             raise self.error
         if path == fencer.NODES:
-            return {'items': copy.deepcopy(list(self.nodes.values()))}, SERVER_NOW
+            return {'items': copy.deepcopy(list(self.nodes.values()))}, self.now
         if path == fencer.VAS:
-            return {'items': copy.deepcopy(self.vas)}, SERVER_NOW
-        return copy.deepcopy(self.nodes[path.rsplit('/', 1)[1]]), SERVER_NOW
+            return {'items': copy.deepcopy(self.vas)}, self.now
+        return copy.deepcopy(self.nodes[path.rsplit('/', 1)[1]]), self.now
 
     def patch_node_taints(self, name, taints, resource_version):
         self.fake.record('api.patch', name, tuple(t['key'] for t in taints))
@@ -103,15 +106,15 @@ class FenceLio(FakeLio):
 
 
 class FenceHost(FakeHost):
-    def __init__(self, tmp, tags=(), fenced_set=(), acls=(W1, W2)):
-        super().__init__(tmp, vgs={'retained': vg(tags), 'regen': vg()}, fenced_set=fenced_set,
+    def __init__(self, tmp, tags=(), fenced_set=(), acls=(W1, W2), **kw):
+        super().__init__(tmp, vgs={'retained': vg(tags), 'regen': vg()}, fenced_set=fenced_set, **kw,
                          targets={'a': {'dev': '/dev/retained/a', 'acls': set(acls)},
                                   'p': {'dev': '/dev/regen/p', 'acls': set(acls)}})
         self.lio = FenceLio(self, self.lio.targets_)
         self.api, self.clock, self.ss, self.nft_sticks = FakeApi(self), FakeClock(), [], True
         self.ss_errors = 0  # the next N `ss` calls fail
 
-    def run(self, argv, check=True):
+    def run(self, argv, check=True, **kw):
         a = list(argv)
         if a[0] == 'ss':
             self.record(*argv)
@@ -126,7 +129,7 @@ class FenceHost(FakeHost):
         if a[:3] == ['nft', 'add', 'element'] and not self.nft_sticks:
             self.record(*argv)
             return subprocess.CompletedProcess(argv, 0, '', '')
-        return super().run(argv, check)
+        return super().run(argv, check, **kw)
 
     def install(self, test):
         super().install(test)
@@ -173,10 +176,16 @@ class Base(unittest.TestCase):
         """A Fencer past its first loop; a fresh one un-settles every tag on its first loop."""
         fz = fencer.Fencer(config(**cfg))
         fz.started = True
+        fz.watch_start = WATCHING
         return fz
 
-    def loop(self, fencer_=None, **cfg):
-        f = fencer_ or fencer.Fencer(config(**cfg))
+    def loop(self, fencer_=None, fresh=False, **cfg):
+        """`fresh`: a Fencer that has watched nothing yet; otherwise a new one has watched for a day."""
+        f = fencer_
+        if f is None:
+            f = fencer.Fencer(config(**cfg))
+            if not fresh:
+                f.watch_start = WATCHING
         with contextlib.redirect_stderr(io.StringIO()) as err:
             f.loop_once()
         self.err = err.getvalue()
@@ -667,6 +676,19 @@ class UnfenceTest(Base):
         self.assertEqual(f.writes(), ['lio.add_acl', 'nft delete', 'lio.save', 'vgchange'])  # no taint to remove
         self.assertNotIn('fenced:w2:unknown', f.tags())
 
+    def test_unfence_settled_needs_confirmation(self):
+        # F8: a settled tag may be on a hung boot that the loop keeps cut on purpose; the bare command must refuse.
+        f = self.fake(nodes=[node('w1'), node('w2', bootid=A, ready=False)], tags=[f'fenced:w2:{A}'],
+                      fenced_set=[W2_ADDR], acls=[W1], history={'w2': {'seen': [A]}})
+        rc, out = self.cli('unfence', 'w2')
+        self.assertEqual(rc, 1)
+        self.assertIn('--confirm-stopped', out)
+        self.assertEqual(f.writes(), [])
+        rc, _ = self.cli('unfence', 'w2', '--confirm-stopped')
+        self.assertEqual(rc, 0, self.err)
+        self.assertNotIn(f'fenced:w2:{A}', f.tags())
+        self.assertNotIn(W2_ADDR, f.fenced_set)
+
     def test_api_read_under_the_lock(self):
         # A worker that recovered while the fencer waited for the lock must not be fenced on the old reading.
         f = self.hung_w2()
@@ -693,6 +715,70 @@ class UnfenceTest(Base):
         self.assertEqual((rc, json.loads(out)['errors']), (1, ["malformed fence tag 'fenced:w1:bad'"]))
 
 
+class WatchStartTest(Base):
+    def loops_until(self, fz, seconds):
+        """Loop every loop_seconds of server time up to SERVER_NOW + seconds, as the running fencer would."""
+        step = timedelta(seconds=fz.cfg['loop_seconds'])
+        while self.f.api.now + step <= SERVER_NOW + timedelta(seconds=seconds):
+            self.f.api.now += step
+            self.loop(fz)
+
+    def test_cold_boot_stale_notready_not_fenced(self):
+        f = self.fake(nodes=[node('w1'), node('w2', ready=False, age=10000)])
+        fz = self.loop(fresh=True)
+        self.assertEqual(f.fence_tags(), set())
+        self.assertIn('w2: watch-too-short', self.err)
+        self.loops_until(fz, 285)
+        self.assertEqual(f.fence_tags(), set())
+        self.loops_until(fz, 300)
+        self.assertEqual(f.fence_tags(), {UNSETTLED})
+
+    def test_failed_read_resets_watch_start(self):
+        f = self.fake(nodes=[node('w1'), node('w2', ready=False, age=200)])
+        fz = self.loop()
+        self.assertEqual(f.fence_tags(), set())
+        f.api.error = kube.ApiUnreachable('down')
+        self.loop(fz)
+        f.api.error = None
+        f.api.now = SERVER_NOW + timedelta(seconds=15)
+        self.loop(fz)
+        self.loops_until(fz, 150)
+        self.assertEqual(f.fence_tags(), set())
+        self.assertIn('w2: watch-too-short', self.err)
+        self.loops_until(fz, 300)  # the watch restarted at +15 s
+        self.assertEqual(f.fence_tags(), set())
+        self.loops_until(fz, 315)
+        self.assertEqual(f.fence_tags(), {UNSETTLED})
+
+    def test_read_gap_resets_watch_start(self):
+        # A loop stuck on the LIO lock, or failing before the read, is a gap with no failed read.
+        f = self.fake(nodes=[node('w1'), node('w2', ready=False, age=200)])
+        fz = self.loop()
+        gap = 3 * fz.cfg['loop_seconds'] + 1
+        f.api.now = SERVER_NOW + timedelta(seconds=gap)
+        self.loop(fz)
+        self.assertEqual(f.fence_tags(), set())
+        self.assertIn('w2: watch-too-short', self.err)
+        self.loops_until(fz, gap + 299)
+        self.assertEqual(f.fence_tags(), set())
+        self.loops_until(fz, gap + 300)
+        self.assertEqual(f.fence_tags(), {UNSETTLED})
+
+    def test_decision_error_keeps_watch_start(self):
+        f = self.fake(nodes=[node('w1'), node('w2', ready=False, age=200)])
+        fz = self.loop()
+        with mock.patch.object(fence_policy, 'evaluate', side_effect=RuntimeError('boom')):
+            self.loop(fz)
+        self.assertEqual(fz.watch_start, WATCHING)
+
+    def test_restart_keeps_existing_fence(self):
+        f = self.fake(nodes=[node('w1', bootid=B), node('w2', ready=False, bootid=A, taints=[OOS])],
+                      tags=[f'fenced:w2:{A}'], fenced_set=[W2_ADDR], acls=[W1], history={'w2': {'seen': [A]}})
+        self.loop(fresh=True)
+        self.assertEqual(f.fence_tags(), {UNSETTLED})
+        self.assertFencedLive(f)
+
+
 class LoopTest(Base):
     def test_api_error_does_nothing(self):
         for err, code in ((kube.ApiUnreachable('down'), 'unreachable'), (kube.ApiAuthError('401'), 'auth')):
@@ -703,7 +789,7 @@ class LoopTest(Base):
                 f.api.error = err
                 fz = self.loop()
                 self.loop(fz)
-                self.assertEqual([c[0] for c, _ in f.calls], ['vgs', 'lvs', 'api.get'] * 2)  # tags read, no proof yet
+                self.assertEqual([c[0] for c, _ in f.calls], ['vgs', 'api.get'] * 2)  # retained tags read (vgs only), no proof yet
                 self.assertIn(f'storage_fencer_api_errors_total{{code="{code}"}} 2\n', self.prom())
                 self.assertIn('storage_fencer_last_api_success_timestamp_seconds 0\n', self.prom())
 
@@ -810,6 +896,166 @@ class CliTest(Base):
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('restore-set', r.stdout)
+
+
+
+class StallTest(Base):
+    """ADR 0017 F11: a regen-only fault never reaches the fencer; a retained one fails the loop closed."""
+
+    def regen_calls(self, f):
+        return [a for a, _, _ in f.raw if a and a[-1].split('/')[0] == 'regen' and a[0] in LVM_TOOLS]
+
+    def test_loop_fences_during_regen_stall(self):
+        f = self.hung_w2(stalled={'regen'})
+        self.loop()
+        self.assertFencedLive(f)
+        self.assertEqual(self.regen_calls(f), [])
+
+    def test_retained_timeout_is_loop_failure(self):
+        f = self.hung_w2(stalled={'retained'})
+        self.loop()
+        self.assertEqual(f.writes(), [])
+        self.assertEqual(f.find('lio.delete_acl') + f.find('api.patch'), [])
+        self.assertIn('storage_fence_failures_total 1\n', self.prom())
+
+    def test_lock_timeout_is_loop_failure(self):
+        f = self.hung_w2()
+
+        class Busy:
+            def __enter__(self):
+                raise TimeoutError('/run/lock/storage-lio: held for over 120 s')
+
+            def __exit__(self, *exc):
+                return False
+        fz = self.running()
+        with mock.patch.object(host, 'LIO_LOCK', Busy()):
+            self.loop(fz)
+        self.assertEqual(f.writes(), [])
+        self.assertIn('storage_fence_failures_total 1\n', self.prom())
+        self.loop(fz)
+        self.assertFencedLive(f)
+
+    def test_cluster_raises_when_retained_unreadable(self):
+        self.fake(stalled={'retained'})
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(RuntimeError):
+            fencer.Fencer(config()).cluster()
+
+    def test_cluster_reads_retained_vgs_only(self):
+        f = self.fake(tags=[f'fenced:w2:{A}'])
+        self.assertEqual(fencer.Fencer(config()).cluster().fenced(), {'w2': A})
+        self.assertEqual([a[0] + ' ' + a[-1] for a, _ in f.lvm_raw()], ['vgs retained'])
+
+    def test_restore_set_regen_stall(self):
+        f = self.fake(tags=[f'fenced:w2:{A}'], stalled={'regen'})
+        rc, _ = self.cli('restore-set')
+        self.assertEqual(rc, 0, self.err)
+        self.assertEqual(f.fenced_set, {W2_ADDR})
+
+    def test_cli_timeout_exit_1(self):
+        self.fake(stalled={'retained'})
+        with mock.patch.object(fencer.Fencer, 'cluster', side_effect=subprocess.TimeoutExpired(['vgs'], 30)):
+            self.assertEqual(self.cli('status')[0], 1)
+
+class DrainGaugeTest(Base):
+    """storage_fence_acl_delete_started_timestamp_seconds: set while a loop fence deletes ACLs (ADR 0017 F23)."""
+    GAUGE = 'storage_fence_acl_delete_started_timestamp_seconds'
+
+    def gauge(self, text, node):
+        m = re.search(rf'^{self.GAUGE}{{node="{node}"}} (\S+)$', text, re.M)
+        return float(m[1]) if m else None
+
+    def snap_during_delete(self, f, exc=None):
+        """Record the textfile as the fencer's ACL delete starts; optionally make the delete raise."""
+        snaps, orig = [], f.lio.delete_acl
+
+        def wrapped(acl_iqn):
+            p = self.tmp / 'textfile/storage-fencer.prom'
+            snaps.append((p.read_text() if p.exists() else '', f.clock.time()))
+            if exc:
+                f.record('lio.delete_acl', acl_iqn)
+                raise exc
+            return orig(acl_iqn)
+        f.lio.delete_acl = wrapped
+        return snaps
+
+    def test_gauge_set_during_delete(self):
+        f = self.hung_w2()
+        snaps = self.snap_during_delete(f)
+        self.loop()
+        (text, now), = snaps
+        self.assertAlmostEqual(self.gauge(text, 'w2'), now, delta=5)
+        self.assertGreater(self.gauge(text, 'w2'), 0)
+        self.assertEqual(self.gauge(text, 'w1'), 0)
+        self.assertEqual(self.gauge(self.prom(), 'w2'), 0)
+        self.assertEqual(self.gauge(self.prom(), 'w1'), 0)
+        self.assertFencedLive(f)
+
+    def test_gauge_reset_when_delete_raises(self):
+        f = self.hung_w2()
+        self.snap_during_delete(f, exc=OSError('rmdir'))
+        self.loop()
+        self.assertEqual(self.gauge(self.prom(), 'w2'), 0)
+        self.assertIn('storage_fence_failures_total 1\n', self.prom())
+        self.assertIn('rmdir', self.err)
+        self.assertEqual(f.find('api.patch'), [])
+
+    def test_metrics_failure_never_stops_fence(self):
+        f = self.hung_w2()
+        real = metrics.write
+
+        def flaky(name, samples):
+            if not f.find('lio.delete_acl'):
+                raise OSError('ro')
+            return real(name, samples)
+        with mock.patch.object(metrics, 'write', flaky):
+            self.loop()
+        self.assertEqual(f.find('lio.delete_acl'), [('lio.delete_acl', W2)])
+        self.assertIn('error: metrics: ro', self.err)
+        self.assertFencedLive(f)
+        self.assertEqual(self.gauge(self.prom(), 'w2'), 0)
+
+    def test_mid_fence_write_keeps_active(self):
+        f = self.fake(nodes=[node('w1'), node('w2', ready=False)], tags=[f'fenced:w2:{A}'], fenced_set=[W2_ADDR],
+                      acls=[W1])
+        snaps = self.snap_during_delete(f)
+        self.loop(self.running())
+        (text, _), = snaps
+        self.assertIn('storage_fence_active{node="w2"} 1\n', text)
+
+    def test_mid_fence_write_keeps_other_fenced_active(self):
+        f = self.fake(nodes=[node('w1', ready=False), node('w2', ready=False)],
+                      tags=[f'fenced:w1:{B}', f'fenced:w2:{A}'], fenced_set=['192.0.2.21', W2_ADDR], acls=[])
+        snaps = self.snap_during_delete(f)
+        self.loop(self.running())
+        self.assertEqual(len(snaps), 2)
+        for text, _ in snaps:  # whichever fence runs first, the other fenced worker already shows 1
+            self.assertIn('storage_fence_active{node="w1"} 1\n', text)
+            self.assertIn('storage_fence_active{node="w2"} 1\n', text)
+
+    def test_new_fence_active_during_delete(self):
+        f = self.hung_w2()
+        snaps = self.snap_during_delete(f)
+        self.loop()
+        (text, _), = snaps
+        self.assertIn('storage_fence_active{node="w2"} 1\n', text)
+
+    def test_gauge_resets_each_loop(self):
+        f = self.fake(nodes=[node('w1'), node('w2', ready=False)], tags=[f'fenced:w2:{A}'], fenced_set=[W2_ADDR],
+                      acls=[W1])
+        snaps = self.snap_during_delete(f)
+        fz = self.running()
+        self.loop(fz)
+        self.assertEqual(self.gauge(self.prom(), 'w2'), 0)
+        f.clock.t += 15
+        self.loop(fz)
+        self.assertEqual(self.gauge(self.prom(), 'w2'), 0)
+        self.assertEqual(len(snaps), 2)
+        self.assertNotEqual(self.gauge(snaps[0][0], 'w2'), self.gauge(snaps[1][0], 'w2'))
+
+    def test_manual_fence_writes_no_textfile(self):
+        self.fake(nodes=[node('w1'), node('w2', ready=False)])
+        self.cli('fence', 'w2')
+        self.assertFalse((self.tmp / 'textfile/storage-fencer.prom').exists())
 
 
 if __name__ == '__main__':

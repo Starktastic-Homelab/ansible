@@ -86,6 +86,8 @@
             oidc.authentik.clientSecret: "{{ argocd_oidc_client_secret }}"
         cm:
           url: "{{ argocd_url }}"
+          # apps democratic-csi renders its chart through kustomize helmCharts (ADR 0017, F14).
+          kustomize.buildOptions: --enable-helm
           accounts.homepage: apiKey
           oidc.config: |
             name: Authentik

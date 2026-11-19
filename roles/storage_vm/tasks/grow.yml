@@ -20,13 +20,17 @@
   run_once: true
   register: storage_vm_vas
 
-- name: Find the volumes attached to this node
+# Two tasks: set_fact templates every argument before setting any, so one task cannot read a key it sets.
+- name: Find the PersistentVolumes attached to this node
   ansible.builtin.set_fact:
     storage_vm_attached_pvs: >-
       {{ storage_vm_vas.resources | selectattr('spec.attacher', 'equalto', storage_vm_csi_driver)
          | selectattr('spec.nodeName', 'equalto', inventory_hostname)
          | selectattr('spec.source.persistentVolumeName', 'defined')
          | map(attribute='spec.source.persistentVolumeName') | list }}
+
+- name: Find the volume IDs attached to this node
+  ansible.builtin.set_fact:
     storage_vm_attached_ids: >-
       {{ storage_vm_pvs.resources | selectattr('metadata.name', 'in', storage_vm_attached_pvs)
          | selectattr('spec.csi', 'defined') | selectattr('spec.csi.driver', 'equalto', storage_vm_csi_driver)

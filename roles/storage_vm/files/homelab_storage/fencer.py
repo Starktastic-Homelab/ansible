@@ -3,9 +3,9 @@
 run                                     the loop, every loop_seconds; SIGTERM is honoured between loops
 fence NODE                              manual fence: steps 1-5 with bootID unknown, no taint of its own; prints the proof.
                                         A running fencer then finishes it (taint too, even under a hold) and settles the tag
-unfence NODE [--confirm-stopped]        manual unfence; a bootID-unknown tag needs --confirm-stopped
+unfence NODE --confirm-stopped          manual unfence; refused without --confirm-stopped (the VM must be stopped)
 prove NODE                              read-only proof as JSON; exit 1 if any leg fails
-restore-set                             re-add every tagged worker's address to the nft set
+restore-set                             make the nft set match the fence tags (no removals if a tag is unreadable)
 status                                  fence tags, holds and bootID history as JSON
 
 Every step is idempotent and the VG tag is the durable record, so a crash in a fence is finished by the next loop.
@@ -52,8 +52,11 @@ class Fencer:
         self.api_errors = {'auth': 0, 'unreachable': 0}
         self.last_api_success = 0  # 0 until the first success, so StorageFencerBlind sees a series from the start
         self.active = set()
+        self.acl_delete_started = {}  # worker -> time its ACL delete began; the delete waits out a stalled backend (F23)
         self.started = False  # until a loop reaches its decision: a restart is a gap this process did not watch
         self.unsettle_failed = set()  # a fell-off signal kept until the retag to unknown lands
+        self.watch_start = None  # server time from which NotReady counts; reset by a failed read or a read gap (F18)
+        self.last_read = None  # server time of the last successful read
 
     def worker(self, name):
         if name not in self.addrs:
@@ -61,7 +64,7 @@ class Fencer:
         return self.addrs[name]
 
     def cluster(self):
-        retained = lvm.vgs(tuple(self.cfg['vgs']))['retained']
+        retained = lvm.vg_tags_only('retained')  # retained alone: a regen fault never reaches the fencer (F11)
         if not retained.present:
             raise RuntimeError('VG retained is missing: cannot read the fence tags')
         return Cluster.parse(retained.tags, 'retained')  # bad fence tags land in .errors; the valid ones still count
@@ -80,8 +83,11 @@ class Fencer:
 
     # The step functions run with host.LIO_LOCK held by the caller.
 
-    def fence_steps(self, lio_, name, tagged, taint):
-        """Fence steps 1-6 (6 only if `taint`); returns the proof. Steps 5 and 6 run only after a passing proof."""
+    def fence_steps(self, lio_, name, tagged, taint, report=False):
+        """Fence steps 1-6 (6 only if `taint`); returns the proof. Steps 5 and 6 run only after a passing proof.
+
+        `report` (the loop only): publish when the ACL delete started, since it cannot return before LIO has finished
+        the worker's queued commands, which a stalled backend holds (StorageFenceDraining)."""
         addr = self.worker(name)
         if not tagged:
             lvm.vg_tags('retained', add=[tag_fenced(name, fence_policy.UNKNOWN)])
@@ -89,7 +95,17 @@ class Fencer:
         host.checkpoint('fence:1')
         nft.ensure_fenced(addr)
         host.checkpoint('fence:2')
-        for s in lio_.delete_acl(lio.worker_iqn(name)):
+        if report:
+            self.active.add(name)  # tagged above or before this loop
+            self.acl_delete_started[name] = int(time.time())
+            self._report()
+        try:
+            deleted = lio_.delete_acl(lio.worker_iqn(name))
+        finally:
+            if report:
+                self.acl_delete_started.pop(name, None)
+                self._report()
+        for s in deleted:
             host.log(f'fence {name}: deleted ACL {s["target"]}: {s["info"]}')
         host.checkpoint('fence:3')
         deadline = time.monotonic() + self.cfg['proof_timeout_seconds']
@@ -106,6 +122,13 @@ class Fencer:
             self.set_taint(name, True)
             host.checkpoint('fence:6')
         return p
+
+    def _report(self):
+        """A metrics fault never stops a fence."""
+        try:
+            self.write_metrics()
+        except Exception as e:
+            host.log(f'error: metrics: {e}')
 
     def unfence_steps(self, lio_, name, bootid):
         """Taint first (an API error reopens nothing), then ACLs, address, save, and the tag last."""
@@ -141,21 +164,32 @@ class Fencer:
         try:
             # The API is read after the lock wait (a reconcile or a proof poll can hold it for minutes), so the
             # decision never acts on a reading older than the lock wait.
-            with host.LIO_LOCK:  # one-at-a-time and the tags hold for the whole decision
-                try:
-                    # Proved before the read: any boot that could have mounted had posted its bootID by then.
-                    opened = self._opening_proofs(lio.Lio())
+            try:
+                with host.LIO_LOCK:  # one-at-a-time and the tags hold for the whole decision
                     try:
-                        nodes, server_time = self.api.get(NODES)
-                        vas = self.api.get(VAS)[0]['items']
-                    except kube.ApiError as e:
-                        self._api_error(e)  # blind: no lio write, nft write or taint call
-                        return
-                    self.last_api_success = int(time.time())
-                    self._decide_and_act(nodes['items'], vas, server_time, opened)
-                except Exception as e:
-                    host.log(f'error: loop: {e}')
-                    self.failures += 1
+                        # Proved before the read: any boot that could have mounted had posted its bootID by then.
+                        opened = self._opening_proofs(lio.Lio())
+                        try:
+                            nodes, server_time = self.api.get(NODES)
+                            vas = self.api.get(VAS)[0]['items']
+                        except kube.ApiError as e:
+                            self._api_error(e)  # blind: no lio write, nft write or taint call
+                            self.watch_start = None  # what the API shows after a gap may be stale
+                            return
+                        self.last_api_success = int(time.time())
+                        # A gap of more than 3 loops (lock wait, error before the read, API restart) restarts the watch.
+                        gap = self.last_read is not None and \
+                            (server_time - self.last_read).total_seconds() > 3 * self.cfg['loop_seconds']
+                        if self.watch_start is None or gap:
+                            self.watch_start = server_time
+                        self.last_read = server_time
+                        self._decide_and_act(nodes['items'], vas, server_time, opened)
+                    except Exception as e:
+                        host.log(f'error: loop: {e}')
+                        self.failures += 1
+            except TimeoutError as e:  # only the lock wait: the body catches its own errors. A failed loop, never a hang
+                host.log(f'error: loop: {e}')
+                self.failures += 1
         finally:
             self.write_metrics()
 
@@ -208,8 +242,9 @@ class Fencer:
         cluster = self._settle(self.cluster(), by_name, opened)
         self.started = True
         fenced = cluster.fenced()
+        self.active = set(fenced)  # a mid-loop metrics write must not show a fenced worker as 0
         history = fence_policy.BootHistory.load(fence_policy.HISTORY_PATH)
-        v = fence_policy.evaluate(nodes, vas, cluster, history, self.cfg, server_time, opened)
+        v = fence_policy.evaluate(nodes, vas, cluster, history, self.cfg, server_time, opened, self.watch_start)
         if cluster.errors:
             # Re-apply the valid fences only: a bad tag may stand for a fenced worker, so nothing is relaxed or added.
             for e in cluster.errors:
@@ -221,10 +256,10 @@ class Fencer:
             # Steps 2-6 again, holds or not (a hold only blocks new fences); a foreign VA still blocks the taint, which
             # would force-detach a disk this fence proves nothing about (ADR 0017 "It is level-triggered").
             taint = not _foreign_va(vas, name, self.cfg['csi_driver'])
-            self._attempt(f'fence {name}', lambda: proven(self.fence_steps(lio_, name, True, taint)))
+            self._attempt(f'fence {name}', lambda: proven(self.fence_steps(lio_, name, True, taint, report=True)))
         if v.fence:
             host.log(f'fence {v.fence}: NotReady past {self.cfg["not_ready_seconds"]} s')
-            self._attempt(f'fence {v.fence}', lambda: proven(self.fence_steps(lio_, v.fence, False, True)))
+            self._attempt(f'fence {v.fence}', lambda: proven(self.fence_steps(lio_, v.fence, False, True, report=True)))
         for name in v.unfence:
             self._attempt(f'unfence {name}', lambda: self.unfence_steps(lio_, name, fenced[name]))
         for name, reason in sorted(v.reasons.items()):
@@ -239,6 +274,8 @@ class Fencer:
         samples = [('storage_fence_active', {'node': w}, int(w in self.active)) for w in sorted(self.addrs)]
         samples += [('storage_fence_failures_total', {}, self.failures),
                     ('storage_fencer_last_api_success_timestamp_seconds', {}, self.last_api_success)]
+        samples += [('storage_fence_acl_delete_started_timestamp_seconds', {'node': w},
+                     self.acl_delete_started.get(w, 0)) for w in sorted(self.addrs)]
         samples += [('storage_fencer_api_errors_total', {'code': c}, n) for c, n in sorted(self.api_errors.items())]
         metrics.write(METRICS, samples)
 
@@ -273,10 +310,12 @@ class Fencer:
             if name not in fenced:
                 print(f'{name} is not fenced')
                 return 0
-            if fenced[name] == fence_policy.UNKNOWN and not confirm_stopped:
-                print(f'{name} was fenced with bootID unknown. On the Proxmox host run `qm status <vmid> --verbose` '
-                      'and check it says stopped (a paused VM shows running with qmpstatus: paused), then rerun with '
-                      '--confirm-stopped.')
+            # Even a settled tag: its boot may be hung, and the loop keeps it cut on purpose (F8).
+            if not confirm_stopped:
+                print(f'{name} is fenced with bootID {fenced[name]}; an unfence reopens storage to whatever runs '
+                      'there. On the Proxmox host run `qm status <vmid> --verbose` and check it says stopped (a paused '
+                      'VM shows running with qmpstatus: paused), then rerun with --confirm-stopped. A worker that '
+                      'rebooted and is Ready needs nothing: the running fencer unfences it.')
                 return 1
             self.unfence_steps(lio.Lio(), name, fenced[name])
         return 0
@@ -322,6 +361,6 @@ def main(argv=None):
         if args.cmd == 'prove':
             return fz.prove(args.node)
         return fz.status()
-    except (config.ConfigError, kube.ApiError, OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as e:
+    except (config.ConfigError, kube.ApiError, OSError, ValueError, RuntimeError, subprocess.SubprocessError) as e:
         host.log(f'error: {e}')
         return 1

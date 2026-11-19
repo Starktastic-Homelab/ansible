@@ -31,8 +31,8 @@ class ExpHost(FakeHost):
         super().__init__(*a, **kw)
         self.lio = ExpLio(self, kw.get('targets'), kw.get('sessions'))
 
-    def run(self, argv, check=True):
-        r = super().run(argv, check)
+    def run(self, argv, check=True, **kw):
+        r = super().run(argv, check, **kw)
         if argv[0] == 'lvremove':
             vgn, i = argv[-1].split('/')
             del self.vgs[vgn]['lvs'][i]
@@ -89,6 +89,7 @@ class ExpiryTest(Base):
         self.assertEqual(rc, 0, self.err)
         self.assertEqual([n for n in f.names() if n not in ('vgs', 'lvs')],
                          ['lio.delete_target', 'lio.save', 'blkdiscard', 'lvremove', 'vgchange'])
+        # No -f, so the exclusive open still refuses a busy LV (the tty refusal is covered by test_run_stdin_is_devnull).
         self.assertEqual(f.find('blkdiscard')[0], ('blkdiscard', '/dev/retained/a'))
         self.assertEqual(f.find('lvremove')[0], ('lvremove', '-y', 'retained/a'))
         self.assertTrue(all(held for call, held in f.calls if call[0] in ('lio.delete_target', 'blkdiscard', 'lvremove')))
@@ -110,10 +111,10 @@ class ExpiryTest(Base):
         f = self.fake()
         orig = f.run
 
-        def run(a, check=True):
+        def run(a, check=True, **kw):
             if a[0] == 'blkdiscard':
                 raise RuntimeError('boom')
-            return orig(a, check)
+            return orig(a, check, **kw)
         p = mock.patch.object(reconcile.host, 'run', run)
         p.start()
         self.addCleanup(p.stop)

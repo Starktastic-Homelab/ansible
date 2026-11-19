@@ -1,6 +1,7 @@
 """Pure fencer decisions: nodes + VolumeAttachments + cluster tags + bootID history -> who to fence or unfence.
 
-Every age is measured against the API server's clock (its Date header), never the storage VM's.
+Every age is measured against the API server's clock (its Date header), never the storage VM's. A NotReady age starts
+no earlier than the fencer's watch start, so a status from before a cold boot or an API outage never counts (F18).
 """
 import json
 import os
@@ -68,8 +69,12 @@ def _out_of_service(node):
     return any(t.get('key') == OUT_OF_SERVICE['key'] for t in node.get('spec', {}).get('taints') or [])
 
 
-def evaluate(nodes, vas, cluster, history, cfg, server_time, opened):
-    """`opened` is this loop's opening proof per tagged worker: True (still cut), False (not cut) or None (no proof)."""
+def evaluate(nodes, vas, cluster, history, cfg, server_time, opened, watch_start):
+    """`opened` is this loop's opening proof per tagged worker: True (still cut), False (not cut) or None (no proof).
+
+    `watch_start` is the server time of the fencer's first successful read since it started, since a failed read, or
+    after more than 3 loops without a successful read.
+    """
     workers = {w['name'] for w in cfg['workers']}
     by_name = {n['metadata']['name']: n for n in nodes if n['metadata']['name'] in workers}
     fenced = cluster.fenced()
@@ -106,8 +111,8 @@ def evaluate(nodes, vas, cluster, history, cfg, server_time, opened):
         if since is None:
             v.reasons[name] = 'no-ready-condition'
             continue
-        if (server_time - since).total_seconds() < cfg['not_ready_seconds']:
-            v.reasons[name] = 'not-ready-too-short'
+        if (server_time - max(since, watch_start)).total_seconds() < cfg['not_ready_seconds']:
+            v.reasons[name] = 'watch-too-short' if watch_start > since else 'not-ready-too-short'
         elif fenced or v.fence:
             v.reasons[name] = 'one-at-a-time'
         elif not any(_ready(p)[0] and not _out_of_service(p) for p_name, p in by_name.items() if p_name != name):

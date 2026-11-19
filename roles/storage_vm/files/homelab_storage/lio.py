@@ -26,6 +26,16 @@ def wwn(id):
     return str(uuid.uuid5(uuid.NAMESPACE_URL, iqn(id)))  # T10 serial: a rebuilt VM presents the same identity
 
 
+def _is_regen(target):
+    """True only when LUN 0 is backed by a regen LV; any read error counts as retained, so the sort never stops a delete."""
+    try:
+        tpg = next(g for g in target.tpgs if g.tag == 1)
+        lun = next(l for l in tpg.luns if l.lun == 0)
+        return lun.storage_object.udev_path.startswith('/dev/regen/')
+    except Exception:
+        return False
+
+
 class Lio:
     def __init__(self):
         import rtslib_fb
@@ -86,9 +96,12 @@ class Lio:
                 so.delete()
 
     def delete_acl(self, acl_iqn):
-        """Delete `acl_iqn` from every target; returns each ACL's session info, read before the delete."""
+        """Delete `acl_iqn` from every target; returns each ACL's session info, read before the delete.
+
+        Retained targets go first: an ACL rmdir waits for the initiator's queued commands to finish, so a stalled regen
+        backend must not hold up the retained cut (ADR 0017 F23)."""
         out = []
-        for t in self._targets():
+        for t in sorted(self._targets(), key=lambda t: (_is_regen(t), t.wwn)):
             for tpg in t.tpgs:
                 for acl in list(tpg.node_acls):
                     if acl.node_wwn == acl_iqn:

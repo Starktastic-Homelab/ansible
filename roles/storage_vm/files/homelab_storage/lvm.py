@@ -1,13 +1,18 @@
 """LVM reads (vgs/lvs JSON reports) and the few LVM writes the reconcile makes."""
 import json
+import subprocess
+import time
 from dataclasses import dataclass
 
 from . import host
 from .ledger import Ledger
 from .plan import LvState, VgState
 
-VGS = ['vgs', '--reportformat', 'json', '--units', 'b', '--nosuffix', '-o', 'vg_name,vg_tags,vg_size,vg_free']
-LVS = ['lvs', '--reportformat', 'json', '--units', 'b', '--nosuffix', '-o', 'vg_name,lv_name,lv_size,lv_tags']
+VG_COLS = ['--reportformat', 'json', '--units', 'b', '--nosuffix', '-o', 'vg_name,vg_tags,vg_size,vg_free']
+LV_COLS = ['--reportformat', 'json', '--units', 'b', '--nosuffix', '-o', 'vg_name,lv_name,lv_size,lv_tags']
+# Per VG read (vgs and lvs share it) and per write. A command past it is left running, never killed (host.run), and
+# later commands for that VG fail at once until it ends (ADR 0017 F11).
+LVM_TIMEOUT = 30
 
 
 @dataclass(frozen=True)
@@ -17,37 +22,67 @@ class Vg(VgState):
     free_bytes: int = 0
 
 
-def _rows(argv, key):
-    return json.loads(host.run(argv).stdout)['report'][0][key]
+def _lvm(cmd, vg, *args, timeout=LVM_TIMEOUT, read=False):
+    """Opens only `vg`'s PV (--devices also turns hints off: F12); `args` ends with the VG or vg/lv it names."""
+    argv = [cmd, '--devices', host.CONFIG['pv_devices'][vg], *(['--readonly'] if read else []), *args]
+    return host.run(argv, timeout=timeout, key=vg)
+
+
+def _rows(cmd, vg, cols, key, timeout):
+    return json.loads(_lvm(cmd, vg, *cols, vg, timeout=timeout, read=True).stdout)['report'][0][key]
 
 
 def _tags(s):
     return tuple(t for t in s.split(',') if t)
 
 
+def _absent():
+    return Vg(Ledger.from_tags(()), {}, False)
+
+
+def _read(name, with_lvs):
+    deadline = time.monotonic() + LVM_TIMEOUT
+    try:
+        r = next((r for r in _rows('vgs', name, VG_COLS, 'vg', LVM_TIMEOUT) if r['vg_name'] == name), None)
+        if r is None:
+            return _absent()
+        lvs = {}
+        if with_lvs:
+            for lr in _rows('lvs', name, LV_COLS, 'lv', max(0.1, deadline - time.monotonic())):
+                if lr['vg_name'] == name:
+                    lvs[lr['lv_name']] = LvState(int(lr['lv_size']), _tags(lr['lv_tags']))
+    except (subprocess.SubprocessError, ValueError, KeyError, IndexError) as e:
+        host.log(f'error: VG {name} unreadable on {host.CONFIG["pv_devices"][name]}: {e}')
+        return _absent()
+    tags = _tags(r['vg_tags'])
+    return Vg(Ledger.from_tags(tags), lvs, True, tags, int(r['vg_size']), int(r['vg_free']))
+
+
 def vgs(names=('retained', 'regen')):
-    """Only the named VGs; a missing one is present=False. Other VGs on the host are never looked at."""
-    rows = {r['vg_name']: r for r in _rows(VGS, 'vg') if r['vg_name'] in names}
-    lvs = {n: {} for n in rows}
-    for r in _rows(LVS, 'lv'):
-        if r['vg_name'] in rows:
-            lvs[r['vg_name']][r['lv_name']] = LvState(int(r['lv_size']), _tags(r['lv_tags']))
-    out = {}
-    for n in names:
-        if (r := rows.get(n)) is None:
-            out[n] = Vg(Ledger.from_tags(()), {}, False)
-        else:
-            tags = _tags(r['vg_tags'])
-            out[n] = Vg(Ledger.from_tags(tags), lvs[n], True, tags, int(r['vg_size']), int(r['vg_free']))
-    return out
+    """Only the named VGs, each read from its own PV alone; one that cannot be read (stall, I/O error, absent PV) is
+    present=False and never raises."""
+    return {n: _read(n, True) for n in names}
+
+
+def vg_tags_only(name):
+    """The VG's tags and sizes without its LVs: one vgs, for the fencer and restore-set."""
+    return _read(name, False)
 
 
 def create(vg, id, size_bytes):
-    host.run(['lvcreate', '-n', id, '-L', f'{size_bytes}b', '-W', 'y', '--yes', '-Z', 'y', vg])
+    _lvm('lvcreate', vg, '-n', id, '-L', f'{size_bytes}b', '-W', 'y', '--yes', '-Z', 'y', vg)
 
 
 def extend(vg, id, size_bytes):
-    host.run(['lvextend', '-L', f'{size_bytes}b', f'{vg}/{id}'])
+    _lvm('lvextend', vg, '-L', f'{size_bytes}b', f'{vg}/{id}')
+
+
+def remove(vg, id):
+    _lvm('lvremove', vg, '-y', f'{vg}/{id}')
+
+
+def activate(vg):
+    _lvm('vgchange', vg, '-ay', vg)
 
 
 def _flags(add, delete):
@@ -56,8 +91,8 @@ def _flags(add, delete):
 
 def vg_tags(vg, add=(), delete=()):
     """One vgchange, so a delete+add is a single metadata commit."""
-    host.run(['vgchange', *_flags(add, delete), vg])
+    _lvm('vgchange', vg, *_flags(add, delete), vg)
 
 
 def lv_tags(vg, id, add=(), delete=()):
-    host.run(['lvchange', *_flags(add, delete), f'{vg}/{id}'])
+    _lvm('lvchange', vg, *_flags(add, delete), f'{vg}/{id}')

@@ -47,8 +47,6 @@ proxmox_backup_excludes:
   - /srv/backup-src/k3s-block/images/9999/vm-9999-karakeep-meilisearch.raw
   - /srv/backup-src/immich/thumbs
   - /srv/backup-src/immich/encoded-video
-  # Temporary (ADR 0017 lab, 2026-11-16): lab VMID 9970's disks stay local; remove in lab Task B11.
-  - /srv/backup-src/k3s-block/images/9970
 
 # Weekly VM300 dump (Garage Terraform state); vzdump runs with --compress 0, so the archive is a plain .vma.
 proxmox_backup_vzdump_glob: /usbbk/vz/dump/vzdump-qemu-300-*.vma

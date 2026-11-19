@@ -330,8 +330,7 @@ class ResticTests(unittest.TestCase):
         lines = [l for l in render('excludes.txt.j2').splitlines() if l.strip() and not l.startswith('#')]
         images = sorted(f'/srv/backup-src/k3s-block/images/9999/vm-9999-{n}.raw'
                         for n in ('prometheus', 'loki', 'tempo', 'alertmanager', 'karakeep-meilisearch'))
-        lab = '/srv/backup-src/k3s-block/images/9970'  # temporary, ADR 0017 lab
-        self.assertEqual(sorted(lines), sorted(images + [lab, '/srv/backup-src/immich/thumbs',
+        self.assertEqual(sorted(lines), sorted(images + ['/srv/backup-src/immich/thumbs',
                                                          '/srv/backup-src/immich/encoded-video']))
 
 class HostSafetyTests(unittest.TestCase):

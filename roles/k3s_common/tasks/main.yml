@@ -120,6 +120,30 @@
   when: "'masters' in group_names"
   notify: Restart k3s
 
+# Graceful node shutdown as a kubelet config drop-in: it is a KubeletConfiguration
+# field, not a kubelet-arg, so it cannot go in config.yaml.
+- name: Ensure the kubelet config drop-in directory exists
+  ansible.builtin.file:
+    path: /var/lib/rancher/k3s/agent/etc/kubelet.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# The critical tier covers the CSI node plugin's unstage wait (ADR 0017, F14).
+- name: Configure kubelet graceful node shutdown
+  ansible.builtin.copy:
+    content: |
+      apiVersion: kubelet.config.k8s.io/v1beta1
+      kind: KubeletConfiguration
+      shutdownGracePeriod: 90s
+      shutdownGracePeriodCriticalPods: 40s
+    dest: /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/50-graceful-shutdown.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart k3s
+
 - name: Check if K3s is already installed
   ansible.builtin.stat:
     path: /usr/local/bin/k3s

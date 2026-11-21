@@ -42,6 +42,9 @@ jobs:
       - name: Test Proxmox CSI bootstrap rendering
         run: python3 scripts/tests/test_proxmox_csi_bootstrap.py
 
+      - name: Test K3s storage settings
+        run: python3 scripts/tests/test_k3s_storage_settings.py
+
       - name: Test verified worker Node retirement
         run: python3 scripts/tests/test_node_retirement.py
 

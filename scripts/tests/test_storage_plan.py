@@ -93,6 +93,12 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(refused(d), {('b', 'hold-create')})
         self.assertTrue(d.fail)
 
+    def test_hold_create_fails_without_creates(self):
+        d = run([vol('a', size=2 * GI)], vg([ledger.tag_created('a')], {'a': GI}), tags=[ledger.HOLD_CREATE])
+        self.assertEqual(kinds(d), [('export', 'a')])  # the extend is held back
+        self.assertEqual(refused(d), set())
+        self.assertTrue(d.fail)
+
     def test_removed_marks_pending(self):
         d = run([], vg([ledger.tag_created('a')], {'a': GI}))
         self.assertEqual(kinds(d), [('export', 'a'), ('mark_pending', 'a')])

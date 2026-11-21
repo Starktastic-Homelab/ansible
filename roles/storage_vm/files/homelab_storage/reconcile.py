@@ -20,7 +20,8 @@ from . import config, host, inventory, lio, lvm, metrics, nft, plan
 from .ledger import HOLD_CREATE, Cluster, tag_created, tag_creating, tag_tombstone
 
 MARKER_TMP = None  # parent of the private marker mount dir; None = the system temp dir
-# A dry run (before the maintenance lock) exits 1 only for these; hold_create and per-entry refusals do not block it.
+# A dry run (before the maintenance lock) exits 1 only for these. hold_create and per-entry refusals do not block it
+# (R6, D6); it logs the hold line instead.
 BLOCKING = {'vg-missing', 'removal-brake', 'lv-missing'}
 METRICS = 'storage-reconcile'
 _dev_exists = os.path.exists  # tests patch it
@@ -196,11 +197,18 @@ def _report(sha, d, exported, errors):
             'exported': exported, 'errors': errors}
 
 
+def _hold_line(d, cluster):
+    if cluster is not None and HOLD_CREATE in cluster.holds():
+        return f"hold_create set, {sum(r.reason == 'hold-create' for r in d.refusals)} creates refused"
+
+
 def apply(volumes, cfg, sha, dry_run):
     if dry_run:  # reads only: vgs and lvs, no lock, no checkpoint, no metrics, no save
         vgs, cluster = _state(cfg)
         d = plan.decide(volumes, vgs, cluster, cfg['max_removals'])
         print(json.dumps(_report(sha, d, _exported(d, vgs, set(), True), [])))
+        if line := _hold_line(d, cluster):
+            host.log(line)
         # A VG that cannot be read blocks even with nothing to plan (an empty inventory makes no vg-missing).
         return 1 if BLOCKING & {r.reason for r in d.refusals} or not all(v.present for v in vgs.values()) else 0
     errors, failed = [], set()
@@ -232,6 +240,8 @@ def apply(volumes, cfg, sha, dry_run):
             final[n] = v
     ok = not (d.fail or d.refusals or errors)
     _write_metrics(d, final, cluster, lio_, ok)
+    if line := _hold_line(d, cluster):
+        host.log(line)
     for r in d.refusals:
         host.log(f'refused: {r.id}: {r.reason}')
     print(json.dumps(_report(sha, d, _exported(d, final, failed, False), errors)))

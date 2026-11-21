@@ -509,10 +509,20 @@ class GrowAndReportTest(Base):
         rc, out = self.apply([entry('a'), entry('b')])
         self.assertEqual(rc, 1)
         self.assertEqual(out['refusals'], [{'id': 'b', 'reason': 'hold-create'}])
+        self.assertIn('hold_create set, 1 creates refused', self.err)
         self.assertEqual(len(self.f.find('lio.ensure_target')), 1)  # hold_create still exports what exists
         text = (self.tmp / 'textfile/storage-reconcile.prom').read_text()
         self.assertIn('storage_last_reconcile_success_timestamp_seconds 42\n', text)
         self.assertIn('storage_hold_create 1\n', text)
+
+    def test_hold_create_logs_reason_without_creates(self):
+        self.fake(vgs={'retained': vg(['ledger:a:created', 'hold_create'], {'a': (GI, ())}), 'regen': vg()})
+        rc, out = self.apply([entry('a')])
+        self.assertEqual((rc, out['refusals']), (1, []))
+        self.assertIn('hold_create set, 0 creates refused', self.err)
+        self.fake(vgs={'retained': vg(['ledger:a:created'], {'a': (GI, ())}), 'regen': vg()})
+        self.apply([entry('a')])
+        self.assertNotIn('hold_create set', self.err)
 
     def test_refusal_exits_nonzero(self):
         self.fake(vgs={'retained': vg([], {'a': (GI, ())}), 'regen': vg()})
@@ -650,6 +660,7 @@ class LockAndTargetctlTest(Base):
         f = self.fake(vgs=state())
         rc, dry = self.apply([entry('a', size='2Gi'), entry('b')], '--dry-run')
         self.assertEqual(rc, 0, self.err)  # hold_create alone does not block the dry run
+        self.assertIn('hold_create set, 1 creates refused', self.err)
         self.assertEqual(sorted({c[0] for c, _ in f.calls}), ['lvs', 'vgs'])
         self.assertEqual(list((self.tmp / 'textfile').iterdir()), [])
         f2 = self.fake(vgs=state())

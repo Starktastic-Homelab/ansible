@@ -174,3 +174,7 @@ class FencerScopeTest(test_storage_fencer.Base, Scoped):
         self.loop()
         self.assertTrue(f.fence_tags())
         self.assertScoped(f)
+
+
+if __name__ == '__main__':
+    unittest.main()

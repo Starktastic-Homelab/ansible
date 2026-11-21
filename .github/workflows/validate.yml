@@ -96,6 +96,15 @@ jobs:
       - name: Test storage VM role and playbooks
         run: python3 scripts/tests/test_storage_vm_role.py
 
+      - name: Test storage host adapters
+        run: python3 scripts/tests/test_storage_host.py
+
+      - name: Test storage LVM adapter
+        run: python3 scripts/tests/test_storage_lvm.py
+
+      - name: Test Argo CD bootstrap values
+        run: python3 scripts/tests/test_argocd_bootstrap.py
+
       - name: Run ansible-lint
         run: |
           set +e

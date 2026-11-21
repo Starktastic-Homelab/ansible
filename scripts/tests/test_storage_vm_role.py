@@ -688,6 +688,15 @@ class WorkflowTests(unittest.TestCase):
         syntax = next(line for line in text.splitlines() if '--syntax-check k3s.yml' in line)
         self.assertTrue(syntax.rstrip().endswith('storage.yml storage-expiry.yml 2>&1)'), syntax)
 
+    def test_validate_runs_every_storage_test(self):
+        text = (ROOT / '.github/workflows/validate.yml').read_text()
+        lint = text.index('Install ansible-lint')
+        tests = sorted((ROOT / 'scripts/tests').glob('test_storage_*.py'))
+        for path in tests + [ROOT / 'scripts/tests/test_argocd_bootstrap.py']:
+            step = f'run: python3 scripts/tests/{path.name}'
+            self.assertIn(step, text, path.name)
+            self.assertGreater(text.index(step), lint, path.name)  # test_argocd_bootstrap imports ansible
+
 
 class LabExampleTests(unittest.TestCase):
     def test_examples_hosts_and_groups_only(self):

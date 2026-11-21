@@ -9,3 +9,8 @@
     state: restarted
   throttle: 1
   when: k3s_common_k3s_binary.stat.exists | default(false)
+
+- name: Flush the journal to disk
+  ansible.builtin.command:
+    argv: [journalctl, --flush]
+  changed_when: true

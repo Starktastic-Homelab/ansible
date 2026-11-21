@@ -14,3 +14,8 @@
   ansible.builtin.systemd:
     name: storage-fencer
     state: restarted
+
+- name: Flush the journal to disk
+  ansible.builtin.command:
+    argv: [journalctl, --flush]
+  changed_when: true

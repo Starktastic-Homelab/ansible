@@ -196,7 +196,7 @@
     enabled: true
     state: started
 
-# Persistent journal: lab check 11 reads the previous boot's log.
+# Persistent journal, workers only: Check 11 reads a worker's previous-boot log (D22).
 - name: Ensure the persistent journal directory exists
   ansible.builtin.file:
     path: /var/log/journal
@@ -204,6 +204,8 @@
     owner: root
     group: systemd-journal
     mode: "2755"
+  when: "'workers' in group_names"
+  notify: Flush the journal to disk
 
 - name: Check if K3s is already installed
   ansible.builtin.stat:

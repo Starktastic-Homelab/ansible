@@ -78,9 +78,16 @@ class StorageSettingsTests(unittest.TestCase):
         for path in ("roles/k3s_common/tasks/main.yml", "roles/k3s_workers/tasks/main.yml"):
             self.assertNotIn("multipath", (ROOT / path).read_text().lower())
 
-    def test_persistent_journal(self):
+    def test_persistent_journal_on_workers_only(self):
         _, task = find(common_tasks(), "ansible.builtin.file", path="/var/log/journal")
-        self.assertEqual(task["ansible.builtin.file"]["state"], "directory")
+        body = task["ansible.builtin.file"]
+        self.assertEqual((body["state"], body["owner"], body["group"], body["mode"]),
+                         ("directory", "root", "systemd-journal", "2755"))
+        self.assertEqual(task["when"], "'workers' in group_names")
+        self.assertEqual(task["notify"], "Flush the journal to disk")
+        handler = next(h for h in read("roles/k3s_common/handlers/main.yml") if h["name"] == "Flush the journal to disk")
+        self.assertEqual(handler["ansible.builtin.command"], {"argv": ["journalctl", "--flush"]})
+        self.assertIs(handler["changed_when"], True)
 
 
 if __name__ == "__main__":

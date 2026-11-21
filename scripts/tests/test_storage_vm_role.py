@@ -165,7 +165,8 @@ class RoleTests(unittest.TestCase):
             text = ' '.join(argv(t)) + str(module(t, 'shell') or '')
             self.assertNotRegex(text, r'systemctl (restart|stop|try-restart)|nft -f|targetctl (clear|restore)', t.get('name'))
         handlers = load(ROLE / 'handlers/main.yml')
-        self.assertEqual([h['name'] for h in handlers], ['Reload systemd', 'Reload nftables', 'Restart storage-fencer'])
+        self.assertEqual([h['name'] for h in handlers], ['Reload systemd', 'Reload nftables', 'Restart storage-fencer',
+                                                       'Flush the journal to disk'])
         self.assertEqual(module(handlers[1], 'systemd'), {'name': 'nftables', 'state': 'reloaded'})
         self.assertEqual(module(handlers[2], 'systemd'), {'name': 'storage-fencer', 'state': 'restarted'})
         restarts = [t for t in all_tasks() if 'restarted' in str(t)]
@@ -181,6 +182,15 @@ class RoleTests(unittest.TestCase):
         self.assertFalse(holds(that, inventory_file=prod, storage_vm_timings=paused))
         self.assertFalse(holds(that, storage_vm_timings=paused))  # no inventory_file is not the lab
         self.assertTrue(holds(that, inventory_file=lab, storage_vm_timings=paused))
+
+    def test_persistent_journal_on_storage_vm(self):
+        t = by_name(role_tasks(), 'Ensure the persistent journal directory exists')
+        self.assertEqual(module(t, 'file'), {'path': '/var/log/journal', 'state': 'directory', 'owner': 'root',
+                                             'group': 'systemd-journal', 'mode': '2755'})
+        self.assertEqual(t['notify'], 'Flush the journal to disk')
+        h = by_name(load(ROLE / 'handlers/main.yml'), 'Flush the journal to disk')
+        self.assertEqual(module(h, 'command'), {'argv': ['journalctl', '--flush']})
+        self.assertIs(h['changed_when'], True)
 
     def test_role_never_sets_targetctl_state(self):
         hits = [t for t in all_tasks() if 'rtslib-fb-targetctl' in str(module(t, 'systemd') or '')]

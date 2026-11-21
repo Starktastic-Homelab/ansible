@@ -717,6 +717,8 @@ class WorkflowTests(unittest.TestCase):
             step = f'run: python3 scripts/tests/{path.name}'
             self.assertIn(step, text, path.name)
             self.assertGreater(text.index(step), lint, path.name)  # test_argocd_bootstrap imports ansible
+            # a file without a live __main__ guard runs 0 tests under python3 <file> and passes
+            self.assertRegex(path.read_text(), r'(?m)^if __name__ == [\'"]__main__[\'"]:', path.name)
 
 
 class LabExampleTests(unittest.TestCase):

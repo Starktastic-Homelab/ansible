@@ -171,6 +171,17 @@ class RoleTests(unittest.TestCase):
         restarts = [t for t in all_tasks() if 'restarted' in str(t)]
         self.assertEqual([t['name'] for t in restarts], ['Restart storage-fencer'])
 
+    def test_pause_after_refused_outside_lab(self):
+        t = next(t for t in role_tasks('assert') if 'pause_after' in json.dumps(t))
+        self.assertNotIn('when', t)
+        that = module(t, 'assert')['that']
+        prod, lab = '/work/ansible/inventory/proxmox.yml', '/maintenance/lab-storage/inventory.yml'
+        paused = dict(defaults()['storage_vm_timings'], pause_after=['reconcile:after-create'])
+        self.assertTrue(holds(that, inventory_file=prod))
+        self.assertFalse(holds(that, inventory_file=prod, storage_vm_timings=paused))
+        self.assertFalse(holds(that, storage_vm_timings=paused))  # no inventory_file is not the lab
+        self.assertTrue(holds(that, inventory_file=lab, storage_vm_timings=paused))
+
     def test_role_never_sets_targetctl_state(self):
         hits = [t for t in all_tasks() if 'rtslib-fb-targetctl' in str(module(t, 'systemd') or '')]
         self.assertEqual([module(t, 'systemd') for t in hits], [{'name': 'rtslib-fb-targetctl', 'enabled': True}])

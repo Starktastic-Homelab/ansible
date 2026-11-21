@@ -79,3 +79,12 @@
       /run/lvm/vgs_online|pvs_online not empty on this boot). Rebuild the storage VM from the packer storage image with
       the F24 change (scripts/storage.sh), or apply those lines and reboot; only the role may activate retained and
       regen (ADR 0017 F24).
+
+# pause_after SIGSTOPs reconcile or the fencer at a checkpoint (lab only); a stopped fencer fences nothing.
+- name: Refuse lab checkpoints outside the lab
+  ansible.builtin.assert:
+    that:
+      - >-
+        (storage_vm_timings.pause_after | default([]) | length == 0)
+        or ('/lab-storage/' in (inventory_file | default('')))
+    fail_msg: storage_vm_timings.pause_after is lab-only (ADR 0017); production never sets it.

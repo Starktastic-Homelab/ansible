@@ -44,7 +44,7 @@ These are proposed names, **not allocated resources or approved live settings**.
 The NAS export must already exist with the reviewed source restriction, quota,
 permissions and durability settings. This first profile supports one Proxmox host.
 Review its unused owner ID, existing role/user/ACLs and the exact storage identity.
-Use the external VM300 runner, the pinned maintenance helper already used by
+Use the external VM300 runner, the maintenance helper from ansible `main` already used by
 `deploy.yml`, and its existing ownership protocol. `/maintenance/private` must
 already be a real owner-only directory with mode `0700` or `2700` (setgid), writable by the runner service user.
 After acquiring and exporting the operation ownership, the source entry point is:

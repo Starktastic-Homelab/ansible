@@ -15,12 +15,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
-      # The pinned lock helper the storage workflows acquire and release with (test_storage_workflows.py).
+      # Main's lock helper, which the storage workflows acquire and release with (test_storage_workflows.py).
       - name: Checkout reviewed maintenance helper
         uses: actions/checkout@v7
         with:
           repository: Starktastic-Homelab/ansible
-          ref: 887269798650e88fed791bb4f22a47bf50ad17be
+          ref: main
           path: maintenance-helper
           persist-credentials: false
 

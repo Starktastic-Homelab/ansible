@@ -76,7 +76,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: Starktastic-Homelab/ansible
-          ref: 887269798650e88fed791bb4f22a47bf50ad17be
+          ref: main
           path: maintenance-helper
           persist-credentials: false
 

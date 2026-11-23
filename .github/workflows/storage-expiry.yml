@@ -38,7 +38,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: Starktastic-Homelab/ansible
-          ref: 887269798650e88fed791bb4f22a47bf50ad17be
+          ref: main
           path: maintenance-helper
           persist-credentials: false
 
@@ -88,7 +88,7 @@ jobs:
             echo '::warning::k3s does not answer on the first master (a rebuild before its deploy?); skipping without the lock, the next run retries'
           fi
 
-      # The pinned helper's acquire fails on a held lock, so check first: a lock taken in between fails the run.
+      # Main's helper's acquire fails on a held lock, so check first: a lock taken in between fails the run.
       - name: Try the maintenance lock once
         id: lock
         if: steps.ready.outputs.ready == 'true' && steps.preflight.outputs.k3s == 'true'

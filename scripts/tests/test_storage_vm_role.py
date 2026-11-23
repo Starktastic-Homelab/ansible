@@ -722,6 +722,35 @@ class StoragePlaybookTests(unittest.TestCase):
             self.assertIs(holds([fail['when']], **fail['vars'], groups={'storage': ['s']},
                                 hostvars={'s': {'storage_vm_apply': {'rc': rc, 'stderr': ''}}}), failed)
 
+    def test_first_boot_check_on_a_fresh_root(self):
+        # A fresh root whose stock rtslib-fb-targetctl was already active never ran the drop-in's ExecStartPost: no
+        # storage_boot_check_ok until the first reboot, so StorageBootCheckFailed's absent() leg fires (finding n=15).
+        # After the reconcile, so a rebuilt root's targets exist when it checks them.
+        tasks = plays('storage.yml')[4]['tasks']
+        names = [t['name'] for t in tasks]
+        find = by_name(tasks, 'Find the boot check result')
+        unit = by_name(tasks, 'Read the LIO restore unit state')
+        check = by_name(tasks, 'Run the boot check once on a root that never ran it')
+        self.assertLess(names.index('Reconcile volumes and targets'), names.index(find['name']))
+        self.assertLess(names.index(find['name']), names.index(unit['name']))
+        self.assertLess(names.index(unit['name']), names.index(check['name']))
+        self.assertEqual(module(find, 'stat')['path'], str(metrics.TEXTFILE_DIR / 'storage-boot-check.prom'))
+        self.assertIn("metrics.write('storage-boot-check',", (ROLE / 'files/homelab_storage/reconcile.py').read_text())
+        self.assertEqual(argv(unit), ['systemctl', 'is-active', 'rtslib-fb-targetctl'])
+        self.assertIs(unit['failed_when'], False)
+        self.assertEqual(argv(check), ['/usr/local/sbin/storage-reconcile', 'boot-check'])
+        self.assertIs(check['failed_when'], False)  # grow and cleanup still run; the last play fails the run
+        for exists, active, runs in ((False, 'active', True), (True, 'active', False), (False, 'inactive', False),
+                                     (False, 'failed', False)):
+            with self.subTest(exists=exists, active=active):
+                state = {'storage_vm_boot_check_file': {'stat': {'exists': exists}},
+                         'storage_vm_targetctl_active': {'stdout': active} if not exists else {'skipped': True}}
+                self.assertIs(holds(check['when'], **state), runs)
+        fail = by_name(plays('storage.yml')[-1]['tasks'], 'Fail if the first boot check failed')
+        for result, failed in (({'skipped': True}, False), ({'rc': 0}, False), ({'rc': 1, 'stderr': 'x'}, True)):
+            self.assertIs(holds([fail['when']], **fail['vars'], groups={'storage': ['s']},
+                                hostvars={'s': {'storage_vm_first_boot_check': result}}), failed)
+
     def test_growth_play_is_level_triggered(self):
         play = plays('storage.yml')[5]
         self.assertIn('grow.yml', str(play))

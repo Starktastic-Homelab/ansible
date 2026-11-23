@@ -895,6 +895,46 @@ class StoragePlaybookTests(unittest.TestCase):
 
 
 class SharedPlayTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('ansible-playbook', path=str(Path(sys.executable).parent)) or
+                         shutil.which('ansible-playbook'), 'ansible-playbook is not installed')
+    def test_missing_inventory_file_fails_never_reads_as_empty(self):
+        # Before the apps inventory file lands (or after a path rename), the fetch must fail before the lock, never
+        # hand the reconcile or the expiry an empty inventory, which reads as "every volume removed" (finding n=17).
+        # The real storage-play-fetch-inventory.yml runs against a local apps repo.
+        exe = shutil.which('ansible-playbook', path=str(Path(sys.executable).parent)) or shutil.which('ansible-playbook')
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        (d / 'roles').symlink_to(ROOT / 'roles')  # the validate step runs {{ playbook_dir }}/roles/.../storage-reconcile
+        shutil.copy(ROOT / 'storage-play-fetch-inventory.yml', d)
+        repo = d / 'apps'
+        path = load(ROLE / 'defaults/main.yml')['storage_vm_inventory_path']
+        git = lambda *a: subprocess.run(['git', '-C', str(repo), '-c', 'user.name=t', '-c', 'user.email=t@t', *a],
+                                        check=True, capture_output=True)
+        repo.mkdir()
+        git('init', '-q', '-b', 'main')
+        (repo / 'README.md').write_text('x\n')
+        git('add', '-A')
+        git('commit', '-qm', 'no inventory yet')
+        (d / 'inventory.json').write_text(json.dumps({'all': {
+            'hosts': {'localhost': {'ansible_connection': 'local', 'ansible_python_interpreter': sys.executable}},
+            'children': {'storage': {'hosts': {'storage-01': {}}}}}}))
+
+        def run():
+            return subprocess.run([exe, '-i', str(d / 'inventory.json'), '-e', f'storage_vm_inventory_repo={repo}',
+                                   str(d / 'storage-play-fetch-inventory.yml')], capture_output=True, text=True,
+                                  env=dict(os.environ, ANSIBLE_CONFIG=str(d / 'none.cfg')), timeout=120, cwd=d)
+
+        got = run()
+        self.assertNotEqual(got.returncode, 0, got.stdout[-3000:])
+        self.assertIn('Check out only the inventory file', got.stdout)
+        self.assertNotIn('Validate the inventory with the controller copy of the role] *\nok', got.stdout)
+        (repo / path).parent.mkdir(parents=True)
+        (repo / path).write_text('[]\n')
+        git('add', '-A')
+        git('commit', '-qm', 'empty inventory')
+        got = run()
+        self.assertEqual(got.returncode, 0, got.stdout[-3000:] + got.stderr[-2000:])
+
     def test_dry_run_playbook_takes_no_lock(self):
         ps = plays('storage-dry-run.yml')
         self.assertEqual([p['hosts'] for p in ps], ['all', 'localhost', 'storage', 'localhost'])

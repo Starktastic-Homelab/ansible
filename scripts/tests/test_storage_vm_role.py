@@ -909,7 +909,12 @@ class SharedPlayTests(unittest.TestCase):
 
     def test_preflight_checks_k3s_without_the_lock(self):
         ps = plays('storage-preflight.yml')
-        self.assertEqual([p['hosts'] for p in ps], ['all', 'masters[0]', 'localhost'])
+        # The expiry has no dry run, so this fetch and validate is its only pre-lock check of the inventory: a fetch
+        # failure (a GitHub outage, a missing file) ends the run before acquire, not under a kept lock (finding n=17).
+        self.assertEqual([p['hosts'] for p in ps], ['all', 'localhost', 'masters[0]', 'localhost', 'localhost'])
+        self.assertEqual(ps[1]['name'], 'Fetch and validate the inventory at the branch tip')
+        self.assertEqual(ps[4]['tasks'], plays('storage-dry-run.yml')[-1]['tasks'])  # checkout only: no kubeconfig ran
+        ps = ps[:1] + ps[2:4]
         self.assertTrue(all(p['any_errors_fatal'] is True for p in ps))
         text = (ROOT / 'storage-preflight.yml').read_text()
         self.assertNotIn('lock-verify', text)
@@ -1024,7 +1029,7 @@ class SharedPlayTests(unittest.TestCase):
         # storage-host-metrics.yml reconciles nothing, so it fetches no inventory (test_host_metrics_playbook_takes_no_lock).
         self.assertEqual(TOP_PLAYBOOKS, ['storage-dry-run.yml', 'storage-expiry.yml', 'storage-host-metrics.yml',
                                          'storage-preflight.yml', 'storage.yml'])
-        for name in (n for n in TOP_PLAYBOOKS if n not in ('storage-host-metrics.yml', 'storage-preflight.yml')):
+        for name in (n for n in TOP_PLAYBOOKS if n != 'storage-host-metrics.yml'):
             raw = load(ROOT / name)
             self.assertEqual(imported(raw[0]), 'storage-play-lab-guard.yml', name)
             self.assertIn('storage-play-fetch-inventory.yml', [imported(p) for p in raw], name)

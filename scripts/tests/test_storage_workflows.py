@@ -270,6 +270,11 @@ class WorkflowTests(unittest.TestCase):
                         self.assertEqual(got.returncode != 0, bool(rc), got.stderr)
                         self.assertEqual(bool(re.search(r'(?m)^::warning::.*k3s', got.stdout)), warned)
                         self.assertFalse((f.lock / 'operation.json').exists())
+        # The expiry's only pre-lock run: it fetches and validates the inventory there (finding n=17).
+        expiry = steps('storage-expiry.yml')
+        self.assertLess(expiry.index(step('storage-expiry.yml', id='preflight')),
+                        expiry.index(step('storage-expiry.yml', id='lock')))
+        self.assertIn('storage-play-fetch-inventory.yml', (ROOT / 'storage-preflight.yml').read_text())
         dry = playbook_step('storage.yml', 'storage-dry-run.yml')
         ready = {('ready', 'ready'): 'true', ('held', 'held'): 'false'}
         self.assertFalse(evaluate(dry['if'], {**ready, ('preflight', 'k3s'): 'false'}))

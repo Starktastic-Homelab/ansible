@@ -152,6 +152,33 @@ class ReadyTests(unittest.TestCase):
             with mock.patch.object(storage_ready, 'INVENTORY', inv):
                 self.assertEqual(storage_ready.storage_hosts(), ['storage-01'])
 
+    def test_collection_inventory_plugin_loads(self):
+        # inventory/proxmox.yml names a collection plugin (community.proxmox.proxmox); the Python API finds it only
+        # after the plugin loader is initialised, as the ansible-* CLIs do. A fresh interpreter, as in CI.
+        plugin = (
+            'from ansible.plugins.inventory import BaseInventoryPlugin\n'
+            'class InventoryModule(BaseInventoryPlugin):\n'
+            "    NAME = 'homelab.fake.hosts'\n"
+            '    def verify_file(self, path):\n'
+            "        return path.endswith('.yml')\n"
+            '    def parse(self, inventory, loader, path, cache=True):\n'
+            '        super().parse(inventory, loader, path, cache)\n'
+            "        inventory.add_group('storage')\n"
+            "        inventory.add_host('storage-01', group='storage')\n"
+            "        inventory.add_host('k3s-master-01')\n")
+        with tempfile.TemporaryDirectory() as d:
+            pdir = Path(d) / 'ansible_collections/homelab/fake/plugins/inventory'
+            pdir.mkdir(parents=True)
+            (pdir / 'hosts.py').write_text(plugin)
+            inv = Path(d) / 'proxmox.yml'
+            inv.write_text('plugin: homelab.fake.hosts\n')
+            code = ('import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); import storage_ready; '
+                    'storage_ready.INVENTORY = Path(sys.argv[2]); print(storage_ready.storage_hosts())')
+            env = dict(os.environ, ANSIBLE_COLLECTIONS_PATH=d, ANSIBLE_INVENTORY_ENABLED='auto')
+            r = subprocess.run([sys.executable, '-c', code, str(ROOT / 'scripts'), str(inv)], env=env,
+                               capture_output=True, text=True, cwd=d)
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, "['storage-01']"), r.stderr)
+
     def test_schedule_skips_inside_windows(self):
         def at(*utc):
             return datetime(*utc, tzinfo=timezone.utc)

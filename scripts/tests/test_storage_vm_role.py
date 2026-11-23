@@ -796,6 +796,8 @@ class SharedPlayTests(unittest.TestCase):
         self.assertTrue(failed(0, '/ zfs 90000000000'))  # not mounted: rpool
         self.assertTrue(failed(0, '/mnt/pve/k3s-block zfs 90000000000'))
         self.assertTrue(failed(1, ''))
+        # The task timeout registers no rc or stdout_lines: fail cleanly, not with a templating error.
+        self.assertTrue(holds([df['failed_when']], storage_vm_df={'failed': True, 'msg': 'timed out'}))
 
     def test_host_metrics_playbook_takes_no_lock(self):
         ps = plays('storage-host-metrics.yml')

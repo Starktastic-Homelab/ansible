@@ -773,7 +773,7 @@ class SharedPlayTests(unittest.TestCase):
             text = (Path(d) / 'storage-host.prom').read_text()
         self.assertRegex(text, r'^storage_dataset_size_bytes\{dataset="apps/k3s-block"\} 100\n'
                                r'storage_dataset_avail_bytes\{dataset="apps/k3s-block"\} 15\n'
-                               r'storage_dataset_timestamp_seconds \d+\.\d+\n'
+                               r'storage_dataset_timestamp_seconds \d+(\.\d+)?\n'  # test_proxmox_backup pins time.time to an int
                                r'storage_maintenance_lock_created_timestamp_seconds\{operation=""\} 0\.0\n$')
 
     def test_host_metrics_playbook_takes_no_lock(self):

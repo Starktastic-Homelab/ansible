@@ -77,7 +77,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: Starktastic-Homelab/ansible
-          ref: 887269798650e88fed791bb4f22a47bf50ad17be
+          ref: main
           path: maintenance-helper
           persist-credentials: false
 
@@ -225,7 +225,7 @@ jobs:
             -e @storage-approvals.json \
             storage-dry-run.yml
 
-      # The pinned helper's acquire fails on a held lock, so check first: a lock taken in between fails the run.
+      # Main's helper's acquire fails on a held lock, so check first: a lock taken in between fails the run.
       - name: Try the maintenance lock once
         id: lock
         if: >-

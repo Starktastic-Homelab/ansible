@@ -38,7 +38,7 @@ to that service user. The role checks UUID
 runner. Restart the runner service in an approved window if supplementary group
 membership changed. This bootstrap is manual, never part of `k3s.yml`.
 
-Deploy uses a pinned helper, acquires before configuration, verifies immediately
+Deploy uses the helper from ansible `main` (a separate checkout), acquires before configuration, verifies immediately
 before the playbook, and releases only after success. Terraform's companion PR
 holds the same lock through drain/apply and releases before dispatching Ansible.
 Ansible installs k3s before performing the requested drain recovery and bootstrap. Existing workflow concurrency alone does not serialize repositories.

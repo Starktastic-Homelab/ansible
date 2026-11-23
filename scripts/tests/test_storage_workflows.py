@@ -581,7 +581,7 @@ class WorkflowTests(unittest.TestCase):
                         if s.get('with', {}).get('path') == 'maintenance-helper')
         deploy = workflow('deploy.yml')
         want = ref(deploy, 'provision')
-        self.assertRegex(want, r'^[0-9a-f]{40}$')
+        self.assertEqual(want, 'main')  # never a feature branch's helper under the lock
         for name in NAMES:
             self.assertEqual(ref(workflow(name), 'reconcile'), want, name)
             job = workflow(name)['jobs']['reconcile']

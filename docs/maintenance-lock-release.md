@@ -1,7 +1,7 @@
 # Releasing a maintenance lock after a failed run
 
 Also linked from `maintenance-coordination.md` (failed operations). Revised 2026-11-23 after three reviews (correctness, safety, operability). Written offline; nothing live was touched. Refs:
-- **PIN** = ansible `887269798650e88fed791bb4f22a47bf50ad17be` (short `8872697`). CI checks the lock helper out at this commit (terraform `apply.yml@main:130-136`, ansible `deploy.yml@main:56-62`). Only `origin/codex/storage-maintenance` contains it.
+- **PIN** = ansible `887269798650e88fed791bb4f22a47bf50ad17be` (short `8872697`), the commit CI checked the lock helper out at until 2026-11-23. It is on `origin/codex/storage-maintenance` only. CI now checks the helper out from ansible `main` (terraform `apply.yml`, `validate-and-plan.yml`; ansible `deploy.yml`, `storage.yml`, `storage-expiry.yml`, `validate.yml`). Records either helper wrote read the same.
 - The release uses `scripts/maintenance_lock_op.sh` and its sibling `scripts/maintenance_lock.py`, both from one ansible `main` commit (4.1). Line cites `maintenance_lock.py:N` are that file on main. Main's helper is PIN's plus `execution.guard`; lines 1-82 are the same in both.
 - ansible `origin/main` = `1eab126`, terraform `origin/main` = `a8aff78` when this was written.
 
@@ -95,7 +95,7 @@ Only `deploy.yml@main:93-105` and `apply.yml@main:181-188` use the lock. These j
 
 ### 2.3 Check that no process of the owner is left
 
-A completed run in GitHub does not prove its container is gone. The PIN helper CI runs has no execution mutex. Its `guard` flock is held only for the length of one helper call (`maintenance_lock.py:42-45`), so a dead job holds no flock. Main's helper, which this release uses (4.1), also takes `execution.guard` for advance and release (`maintenance_lock.py:87-112`); if another process holds it, the release fails at once with `Maintenance execution is busy`. No CI path holds `execution.guard` today. Node retirement does call main's helper from the deploy checkout (`roles/k3s_node_retirement/tasks/main.yml@main:64-72,139-147`; enabled by `group_vars/all/proxmox_csi.yml@main:20`, though the role default `defaults/main.yml:3` and `maintenance-coordination.md:65` still say `false`), but only `verify`, which takes only `guard` (`maintenance_lock.py:141-143`).
+A completed run in GitHub does not prove its container is gone. Main's helper, which CI and this release (4.1) both use, holds its `guard` flock only for the length of one helper call (`maintenance_lock.py:42-45`), so a dead job holds no flock. It also takes `execution.guard` for acquire, advance and release, again only for one call (`maintenance_lock.py:87-112`); if another process holds it, the call fails at once with `Maintenance execution is busy`. No CI path holds `execution.guard` across steps (nothing calls `execution()`). The PIN helper, used before 2026-11-23, had no execution mutex. Node retirement does call main's helper from the deploy checkout (`roles/k3s_node_retirement/tasks/main.yml@main:64-72,139-147`; enabled by `group_vars/all/proxmox_csi.yml@main:20`, though the role default `defaults/main.yml:3` and `maintenance-coordination.md:65` still say `false`), but only `verify`, which takes only `guard` (`maintenance_lock.py:141-143`).
 
 Live-helper rows (read-only):
 

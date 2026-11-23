@@ -83,8 +83,8 @@ Changing a contract means changing both sides together; see `../CLAUDE.md`.
 
 - ← terraform dispatch: `deploy.yml` (`repository_dispatch`, `K3S_DRAIN_RECOVERY_NODES`) and the drain
   recovery play in `k3s.yml`. ← terraform VM tags: groups in `inventory/proxmox.yml`.
-- Maintenance lock ↔ terraform: `scripts/maintenance_lock.py`. `deploy.yml` checks out a pinned SHA that
-  exists only on branch `codex/storage-maintenance`, while `roles/k3s_node_retirement` uses this copy.
+- Maintenance lock ↔ terraform: `scripts/maintenance_lock.py`. `deploy.yml`, `storage*.yml` and terraform check it out
+  from `main` (not the run's branch), while `roles/k3s_node_retirement` uses this copy.
 - → terraform, apps: org secret `KUBECONFIG_RAW` (`handoff` job in `deploy.yml`).
 - ↔ packer: `group_vars/proxmox_hosts/i915_sriov.yml`, `roles/i915_sriov/defaults/main.yml`,
   `.github/workflows/i915-compat.yml`; `scripts/i915_compat.py` and its test match packer's byte for byte.

@@ -18,7 +18,7 @@
         name: storage_vm
         tasks_from: kubeconfig.yml
 
-# A refusal (schema, brake, missing VG or ledgered LV) ends the run before it touches the maintenance lock.
+# A refusal (schema, brake, missing VG or ledgered LV, a boot restore still running) ends the run before the lock.
 - name: Dry-run the reconcile before the lock
   hosts: storage
   become: true

@@ -143,6 +143,24 @@ def _fence_set_errors(cfg, fenced, tags_read=True):
     return errors
 
 
+def _boot_restore_unsettled():
+    """None once the boot unit is settled (loaded; active, failed or inactive; no job queued), else the refusal. Its
+    targetctl restore clears the live config first, so a reconcile racing it (a run queued while the storage VM
+    rebooted) is undone. A failed unit or boot check does not refuse: the restore runbook's fix is a storage.yml run."""
+    try:
+        out = host.run(['systemctl', 'show', '-p', 'LoadState,ActiveState,Job', 'rtslib-fb-targetctl'],
+                       timeout=60).stdout
+    except subprocess.SubprocessError:  # no answer or an error: unknown is unsettled
+        out = ''
+    p = dict(line.split('=', 1) for line in out.splitlines() if '=' in line)
+    if p.get('LoadState') == 'loaded' and p.get('Job') == '' and \
+            p.get('ActiveState') in ('active', 'failed', 'inactive'):
+        return None
+    return (f'storage VM still booting: rtslib-fb-targetctl is not settled ({p or "no answer"}) and its targetctl '
+            'restore would clear what a reconcile does; nothing reconciled, the next run retries. If it stays, see '
+            'apps docs/runbooks/storage-vm-restore.md "Boot check failed"')
+
+
 def _start_targetctl(lio_):
     """An inactive unit would never run its ExecStop/boot check; start it only when that drops no session."""
     if host.run(['systemctl', 'is-active', 'rtslib-fb-targetctl'], check=False).returncode == 0:
@@ -205,7 +223,10 @@ def _hold_line(d, cluster):
 
 
 def apply(volumes, cfg, sha, dry_run):
-    if dry_run:  # reads only: vgs and lvs, no lock, no checkpoint, no metrics, no save
+    if dry_run:  # reads only: the unit state, vgs and lvs, no lock, no checkpoint, no metrics, no save
+        if refusal := _boot_restore_unsettled():
+            host.log(f'error: {refusal}')
+            return 1
         vgs, cluster = _state(cfg)
         d = plan.decide(volumes, vgs, cluster, cfg['max_removals'])
         print(json.dumps(_report(sha, d, _exported(d, vgs, set(), True), [])))
@@ -215,6 +236,9 @@ def apply(volumes, cfg, sha, dry_run):
         return 1 if BLOCKING & {r.reason for r in d.refusals} or not all(v.present for v in vgs.values()) else 0
     errors, failed = [], set()
     with host.LIO_LOCK:  # every LVM, LIO and nft mutation and the save; released before systemctl start
+        if refusal := _boot_restore_unsettled():  # again: the storage VM may have rebooted since the dry run
+            host.log(f'error: {refusal}')
+            return 1
         vgs, cluster = _state(cfg)
         d = plan.decide(volumes, vgs, cluster, cfg['max_removals'])
         fenced = cluster.fenced() if cluster else {}

@@ -87,7 +87,7 @@ class FakeLio:
 class FakeHost:
     """Stands in for lvm, dd, blkid, mkfs, mount, nft and systemctl; vgs maps name -> {tags, size, free, lvs}."""
     def __init__(self, tmp, vgs=None, dd_rc=0, blkid_rc=2, fenced_set=(), targetctl_active=True, targets=None,
-                 sessions=None, stalled=(), stale_hints=(), fail=None):
+                 sessions=None, stalled=(), stale_hints=(), fail=None, targetctl_show=None):
         self.tmp, self.calls, self.markers = tmp, [], {}
         # raw: every argv as passed with its timeout; calls drop the --devices/--readonly scoping for short asserts.
         self.raw = []
@@ -96,6 +96,9 @@ class FakeHost:
         self.vgs = vgs if vgs is not None else {'retained': vg(), 'regen': vg()}
         self.dd_rc, self.blkid_rc, self.fenced_set = dd_rc, blkid_rc, set(fenced_set)
         self.targetctl_active = targetctl_active
+        # `systemctl show` of the unit: a settled boot restore unless a test says otherwise (str: raw stdout).
+        self.targetctl_show = targetctl_show if targetctl_show is not None else {
+            'LoadState': 'loaded', 'ActiveState': 'active' if targetctl_active else 'inactive', 'Job': ''}
         self.lock = FakeLock()
         self.lio = FakeLio(self, targets, sessions)
 
@@ -172,6 +175,9 @@ class FakeHost:
             self.missing_devs = {d for d in self.missing_devs if not d.startswith(f'/dev/{a[-1]}/')}
         elif a[:2] == ['systemctl', 'is-active']:
             rc = 0 if self.targetctl_active else 3
+        elif a[:2] == ['systemctl', 'show']:
+            show = self.targetctl_show
+            out = show if isinstance(show, str) else ''.join(f'{k}={v}\n' for k, v in show.items())
         if check and rc:
             raise subprocess.CalledProcessError(rc, argv, out, 'fake failure')
         return subprocess.CompletedProcess(argv, rc, out, '')
@@ -557,7 +563,8 @@ class FreeSpaceTest(Base):
         rc, out = self.apply([entry('a', size='2Gi')], '--dry-run')
         self.assertEqual(rc, 1)
         self.assertEqual(out['refusals'], [{'id': 'a', 'reason': 'no-space'}])
-        self.assertEqual(sorted({c[0] for c, _ in f.calls}), ['lvs', 'vgs'])
+        self.assertEqual(sorted({c[0] for c, _ in f.calls}), ['lvs', 'systemctl', 'vgs'])
+        self.assertEqual({c[:2] for c, _ in f.calls if c[0] == 'systemctl'}, {('systemctl', 'show')})
         self.assertFalse(any(held for _, held in f.calls))
         self.assertEqual(list((self.tmp / 'textfile').iterdir()), [])
 
@@ -688,7 +695,8 @@ class LockAndTargetctlTest(Base):
         starts = [(c, held) for c, held in f.calls if c[:2] == ('systemctl', 'start')]
         self.assertEqual(starts, [(('systemctl', 'start', 'rtslib-fb-targetctl'), False)])
         names = f.names()
-        self.assertLess(len(names) - 1 - names[::-1].index('lio.save'), names.index('systemctl'))
+        start = next(i for i, (c, _) in enumerate(f.calls) if c[:2] == ('systemctl', 'start'))
+        self.assertLess(len(names) - 1 - names[::-1].index('lio.save'), start)
 
         f = self.fake(targetctl_active=False, vgs={'retained': vg(['ledger:a:created'], {'a': (GI, ())}), 'regen': vg()},
                       sessions={'a': [W1]})
@@ -708,7 +716,8 @@ class LockAndTargetctlTest(Base):
         rc, dry = self.apply([entry('a', size='2Gi'), entry('b')], '--dry-run')
         self.assertEqual(rc, 0, self.err)  # hold_create alone does not block the dry run
         self.assertIn('hold_create set, 1 creates refused', self.err)
-        self.assertEqual(sorted({c[0] for c, _ in f.calls}), ['lvs', 'vgs'])
+        self.assertEqual(sorted({c[0] for c, _ in f.calls}), ['lvs', 'systemctl', 'vgs'])
+        self.assertEqual({c[:2] for c, _ in f.calls if c[0] == 'systemctl'}, {('systemctl', 'show')})
         self.assertEqual(list((self.tmp / 'textfile').iterdir()), [])
         f2 = self.fake(vgs=state())
         rc2, real = self.apply([entry('a', size='2Gi'), entry('b')])
@@ -722,6 +731,72 @@ class LockAndTargetctlTest(Base):
         self.assertEqual(self.apply([entry('a')], '--dry-run')[0], 1)  # VG regen missing
         self.fake(vgs={'retained': vg([], {'x': (GI, ())}), 'regen': vg()})
         self.assertEqual(self.apply([entry('a')], '--dry-run')[0], 0)  # an orphan refusal is not blocking
+
+
+class BootRestoreGateTest(Base):
+    """No reconcile while the boot unit's targetctl restore may still run: it clears the live config first."""
+    BUSY = {'start running': {'LoadState': 'loaded', 'ActiveState': 'activating', 'Job': '41'},
+            'start queued': {'LoadState': 'loaded', 'ActiveState': 'inactive', 'Job': '41'},
+            'stopping': {'LoadState': 'loaded', 'ActiveState': 'deactivating', 'Job': '41'},
+            'not loaded': {'LoadState': 'not-found', 'ActiveState': 'inactive', 'Job': ''},
+            'unreadable': '',
+            'no job field': {'LoadState': 'loaded', 'ActiveState': 'active'}}
+
+    def state(self):
+        return {'retained': vg(['ledger:a:created'], {'a': (GI, ())}), 'regen': vg()}
+
+    def test_refuses_while_the_boot_restore_may_run(self):
+        for case, show in self.BUSY.items():
+            for extra in (('--dry-run',), ()):
+                with self.subTest(case=case, dry_run=bool(extra)):
+                    f = self.fake(vgs=self.state(), targetctl_show=show, targetctl_active=False)
+                    rc, out = self.apply([entry('a', size='2Gi'), entry('b')], *extra)
+                    self.assertEqual(rc, 1)
+                    self.assertIsNone(out)
+                    self.assertIn('storage VM still booting', self.err)
+                    self.assertIn('storage-vm-restore.md', self.err)
+                    # Nothing past the gate: no LVM or LIO read or write, no save, no start, no metrics.
+                    self.assertEqual([c for c, _ in f.calls], [('systemctl', 'show', '-p', 'LoadState,ActiveState,Job',
+                                                                'rtslib-fb-targetctl')])
+                    self.assertEqual(list((self.tmp / 'textfile').iterdir()), [])
+
+    def test_unanswered_show_refuses(self):
+        f = self.fake(vgs=self.state())
+        real = f.run
+        def run(argv, check=True, timeout=None, key=None):
+            if argv[:2] == ['systemctl', 'show']:
+                raise subprocess.TimeoutExpired(argv, timeout)
+            return real(argv, check, timeout, key)
+        with mock.patch.object(host, 'run', run):
+            self.assertEqual(self.apply([entry('a')], '--dry-run')[0], 1)
+        self.assertIn('storage VM still booting', self.err)
+
+    def test_apply_gate_runs_under_the_lio_lock(self):
+        f = self.fake(vgs=self.state())
+        self.assertEqual(self.apply([entry('a')])[0], 0, self.err)
+        self.assertEqual([held for c, held in f.calls if c[:2] == ('systemctl', 'show')], [True])
+        self.assertEqual(f.names()[0], 'systemctl')
+
+    def test_proceeds_once_the_boot_restore_is_over(self):
+        for state in ('active', 'failed', 'inactive'):
+            with self.subTest(state=state):
+                f = self.fake(vgs=self.state(), targetctl_active=state == 'active',
+                              targetctl_show={'LoadState': 'loaded', 'ActiveState': state, 'Job': ''})
+                self.assertEqual(self.apply([entry('a')], '--dry-run')[0], 0, self.err)
+                self.assertEqual(self.apply([entry('a')])[0], 0, self.err)
+                self.assertIn('lio.save', f.names())
+
+    def test_failed_boot_check_still_reconciles(self):
+        # apps docs/runbooks/storage-vm-restore.md "Boot check failed" step 4 fixes the cause, then runs storage.yml
+        # with the unit failed and storage_boot_check_ok 0 for this boot; a fresh or rebuilt VM has no check at all.
+        f = self.fake(vgs=self.state(), targetctl_active=False,
+                      targetctl_show={'LoadState': 'loaded', 'ActiveState': 'failed', 'Job': ''})
+        metrics.write('storage-boot-check', [('storage_boot_check_ok', {}, 0),
+                                             ('storage_boot_check_timestamp_seconds', {}, NOW)])
+        rc, out = self.apply([entry('a')])
+        self.assertEqual(rc, 0, self.err)
+        self.assertEqual(out['exported'][0]['id'], 'a')
+        self.assertEqual(f.find('systemctl', 'start'), [('systemctl', 'start', 'rtslib-fb-targetctl')])
 
 
 class CliTest(Base):

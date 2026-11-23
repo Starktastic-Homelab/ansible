@@ -193,12 +193,12 @@ def _exported(d, vgs, failed, planned):
     return out
 
 
-def _write_metrics(d, vgs, cluster, lio_, ok):
+def _write_metrics(d, vgs, cluster, lio_, ok, kinds=('export', 'create_new', 'create_raw')):
     samples = [('storage_vg_present', {'vg': n}, int(v.present)) for n, v in vgs.items()]
     for n, v in vgs.items():
         if v.present:
             samples += [('storage_vg_size_bytes', {'vg': n}, v.size_bytes), ('storage_vg_free_bytes', {'vg': n}, v.free_bytes)]
-    want = {a.id: a.vg for a in d.actions if a.kind in ('export', 'create_new', 'create_raw')}
+    want = {a.id: a.vg for a in d.actions if a.kind in kinds}
     want.update({r.id: n for r in d.refusals if r.reason == 'lv-missing' for n, v in vgs.items() if v.ledger.state(r.id)})
     for id, vg in sorted(want.items()):
         samples.append(('storage_target_missing', {'id': id}, int(lio_.lun0_device(id) != f'/dev/{vg}/{id}')))
@@ -233,7 +233,7 @@ def apply(volumes, cfg, sha, dry_run):
         # A blocking refusal stops every run before the apply, so the gauges must come from here too, or
         # StorageTargetMissing never fires. ok=False keeps the last success time; a failed write changes nothing.
         try:
-            _write_metrics(d, vgs, cluster, lio.Lio(), False)
+            _write_metrics(d, vgs, cluster, lio.Lio(), False, kinds=('export',))  # it creates nothing
         except Exception as e:
             host.log(f'warning: dry run wrote no metrics: {e}')
         print(json.dumps(_report(sha, d, _exported(d, vgs, set(), True), [])))

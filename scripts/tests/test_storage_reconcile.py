@@ -762,6 +762,18 @@ class LockAndTargetctlTest(Base):
             self.assertEqual(self.apply([entry('a')], '--dry-run')[0], 0, self.err)
         self.assertIn('warning: dry run wrote no metrics', self.err)
 
+    def test_dry_run_gauges_skip_volumes_not_created_yet(self):
+        # The dry run creates nothing, so a new inventory entry has no target yet: marking it missing would fire the
+        # critical StorageTargetMissing (for: 5m) whenever the apply comes late or not at all (a held lock, D31).
+        prom = self.tmp / 'textfile/storage-reconcile.prom'
+        self.fake(vgs={'retained': vg(['ledger:a:created'], {'a': (GI, ())}), 'regen': vg()},
+                  targets={'a': {'dev': '/dev/retained/a', 'acls': set()}})
+        rc, out = self.apply([entry('a'), entry('new')], '--dry-run')
+        self.assertEqual(rc, 0, self.err)
+        self.assertIn('create_new', {a['kind'] for a in out['actions']})
+        self.assertIn('storage_target_missing{id="a"} 0\n', prom.read_text())
+        self.assertNotIn('id="new"', prom.read_text())
+
     def test_dry_run_blocks_on_blocking_failures(self):
         self.fake(vgs={'retained': vg(['ledger:a:created']), 'regen': vg()})
         self.assertEqual(self.apply([entry('a')], '--dry-run')[0], 1)  # ledgered LV missing

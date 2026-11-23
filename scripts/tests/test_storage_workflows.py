@@ -1,6 +1,7 @@
 """Offline checks for the storage workflows: skip until configured, a dry run before one lock try, D29 and D31."""
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
+import fnmatch
 import importlib.util
 import io
 import os
@@ -408,7 +409,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(on['schedule'], [{'cron': '5 * * * *'}])
         self.assertEqual(on['push']['branches'], ['main'])
         self.assertEqual(on['push']['paths'], ['group_vars/storage/**', 'roles/storage_vm/**', 'storage-dry-run.yml',
-                                               'storage-play-*.yml', 'storage.yml'])
+                                               'storage-host-metrics.yml', 'storage-play-*.yml', 'storage.yml'])
         on = workflow('storage-expiry.yml')[True]
         self.assertEqual(set(on), {'schedule', 'workflow_dispatch'})
         self.assertEqual(on['schedule'], [{'cron': '5 10 * * *'}])
@@ -422,6 +423,23 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn('/var/lib/homelab-maintenance:/maintenance', job['container']['volumes'], name)
             groups.add(group)
         self.assertEqual(len(groups), 2)
+
+    def test_push_paths_cover_every_playbook_run(self):
+        """A change to any playbook the workflow runs, or one it imports, reconciles at merge."""
+        paths = workflow('storage.yml')[True]['push']['paths']
+        todo = [w for s in steps('storage.yml') for line in s.get('run', '').replace('\\\n', ' ').splitlines()
+                if 'ansible-playbook' in line for w in line.split() if re.fullmatch(r'[\w-]+\.yml', w)]
+        self.assertTrue(todo)
+        seen = set()
+        while todo:
+            name = todo.pop()
+            if name in seen:
+                continue
+            seen.add(name)
+            self.assertTrue(any(fnmatch.fnmatchcase(name, p) for p in paths), name)
+            todo += [p['ansible.builtin.import_playbook'] for p in yaml.safe_load((ROOT / name).read_text())
+                     if 'ansible.builtin.import_playbook' in p]
+        self.assertIn('storage-host-metrics.yml', seen)
 
     def test_lock_helper_pinned_like_deploy(self):
         def ref(doc, job):

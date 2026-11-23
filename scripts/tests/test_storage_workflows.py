@@ -262,7 +262,9 @@ class WorkflowTests(unittest.TestCase):
                     self.assertFalse(evaluate(lock['if'], {**ready, ('preflight', 'k3s'): k3s}), k3s)
                 self.assertTrue(evaluate(lock['if'], {**ready, ('preflight', 'k3s'): 'true'}))
                 for k3s, exit, rc, warned in (('k3s=false', '0', 0, True), ('k3s=true', '0', 0, False),
-                                              ('', '2', 1, False)):  # an unreachable master or any error: red
+                                              ('', '2', 1, False),  # an unreachable master or any error: red
+                                              ('', '0', 1, False),  # no answer written: red, never a silent skip
+                                              ('k3s=maybe', '0', 1, False)):
                     with tempfile.TemporaryDirectory() as d:
                         f = Fixture(d)
                         f.env.update(FIXTURE_OUTPUT=k3s, FIXTURE_EXIT=exit)

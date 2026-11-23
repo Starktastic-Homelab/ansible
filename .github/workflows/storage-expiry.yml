@@ -79,6 +79,11 @@ jobs:
             --vault-password-file .vault_pass \
             --private-key private_key.pem \
             storage-preflight.yml
+          # No answer written would skip every later step green, every hour: fail instead.
+          if ! grep -qxE 'k3s=(true|false)' "$GITHUB_OUTPUT"; then
+            echo '::error::storage-preflight.yml wrote no k3s answer to the step outputs'
+            exit 1
+          fi
           if grep -qx 'k3s=false' "$GITHUB_OUTPUT"; then
             echo '::warning::k3s does not answer on the first master (a rebuild before its deploy?); skipping without the lock, the next run retries'
           fi

@@ -8,6 +8,7 @@ Operator scripts for cluster access and disaster recovery.
 | `i915_compat.py`          | Gate upstream kernel/IOV metadata and local known-bad policy; never claim live hardware acceptance. Fails closed. Shared verbatim with the packer repo; tests in `tests/`. |
 | `i915_acceptance.py`      | Validate nonsecret runtime/boot/probe evidence. Distinguishes current-stack diagnostics from post-reboot acceptance; never installs or reboots. |
 | `i915_gpu_probe.sh`       | Run bounded synthetic H.264, HEVC, HDR VA-API and OpenCL tone-mapping paths as a nonroot diagnostic workload, requiring real encoded frames. |
+| `maintenance_lock_op.sh`  | Verify, hold or release a lock a failed CI run left on VM300, without printing its nonce. Run as root from a staged copy; see `docs/maintenance-lock-release.md`. Tests in `tests/`. |
 | `backup-secrets.sh`       | Bundle the git-ignored crown-jewel secrets, encrypt with an age passphrase, write a timestamped archive to the NAS, prune to the newest N. |
 | `restore-secrets.sh`      | Decrypt and extract a secrets archive into a staging dir (never in-place).                                                                 |
 | `backup-secrets.manifest` | Paths (never contents) that `backup-secrets.sh` backs up.                                                                                  |

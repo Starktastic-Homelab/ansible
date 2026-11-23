@@ -43,7 +43,8 @@ Playbook runs need the real vault, SSH key and `PROXMOX_*` env; the inventory qu
 - Safe: the tests, `ansible-lint --offline`, `yamllint`, `pre-commit run --files <changed files>`.
 - Ask first (settings prompt for these): any `ansible-playbook`, including `--check` and `--syntax-check`,
   which change nothing but connect to live hosts with the vault and SSH key; `ansible-vault`; `gh workflow
-  run`; merging PRs; `kubectl`/`helm` against the cluster; `scripts/maintenance_lock.py` acquire/release.
+  run`; merging PRs; `kubectl`/`helm` against the cluster; `scripts/maintenance_lock.py` acquire/release;
+  `scripts/maintenance_lock_op.sh` hold/release.
 - `proxmox-csi-storage.yml` runs only from the maintenance runner under an existing lock, never from here.
 
 ## Before calling a change done
@@ -65,6 +66,7 @@ A new guest image (replaced VMs) uses `current-stack` mode instead, plus the Ope
   (`group_vars/all/proxmox_csi.yml`, `docs/maintenance-coordination.md` "Proxmox CSI bootstrap"). Changing the budget means changing
   apps' capacity alert too. The TLS anchor `files/proxmox-api-trust.pem` expires 2027-06-14.
 - Maintenance lock (`docs/maintenance-coordination.md` "External maintenance coordination"): failed runs keep it; never remove one for being old.
+  Releasing a failed run's lock: `docs/maintenance-lock-release.md`.
 - apps owns ArgoCD's notifications ConfigMap/Secret (`create: false`, `bootstrap_cluster/tasks/argocd.yml`).
 - Keep host i915 pins as double-quoted YAML (`key: "value"`): packer regex-reads them.
 - Guest CCS: packer boots the K3s VMs with `i915.xelp_enable_ccs=1`, which needs the host PF to run CCS.

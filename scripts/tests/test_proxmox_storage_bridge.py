@@ -86,5 +86,20 @@ class StorageBridgeTests(unittest.TestCase):
                          [('proxmox_hosts', ['proxmox_storage_bridge'])])
         self.assertNotIn('proxmox_storage_bridge', (ROOT / 'k3s.yml').read_text())
 
+    def test_workflow_and_deploy_ignore(self):
+        deploy_ignored = yaml.safe_load((ROOT / '.github/workflows/deploy.yml').read_text())[True]['push']['paths-ignore']
+        for p in ('roles/proxmox_storage_bridge/**', 'proxmox-storage-bridge.yml',
+                  '.github/workflows/storage-bridge.yml', 'scripts/tests/test_proxmox_storage_bridge.py'):
+            self.assertIn(p, deploy_ignored)
+        own = yaml.safe_load((ROOT / '.github/workflows/storage-bridge.yml').read_text())
+        self.assertEqual(own[True]['push']['branches'], ['main'])
+        self.assertIn('workflow_dispatch', own[True])
+        self.assertEqual(sorted(own[True]['push']['paths']),
+                         ['proxmox-storage-bridge.yml', 'roles/proxmox_storage_bridge/**'])
+        run = ' '.join(s.get('run', '') for job in own['jobs'].values() for s in job['steps'])
+        self.assertIn('-i inventory/hosts.yml', run)
+        self.assertIn('proxmox-storage-bridge.yml', run)
+        self.assertNotIn('proxmox_storage_bridge_state', run)  # a merge can only add the bridge
+
 if __name__ == '__main__':
     unittest.main()

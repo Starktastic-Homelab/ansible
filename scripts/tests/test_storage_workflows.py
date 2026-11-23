@@ -23,6 +23,8 @@ NAMES = ('storage.yml', 'storage-expiry.yml')
 PV = {'retained': '/dev/disk/by-path/a', 'regen': '/dev/disk/by-path/b'}
 HELPER = 'python3 maintenance-helper/scripts/maintenance_lock.py'
 OUTPUT = re.compile(r'steps\.([\w-]+)\.outputs\.(\w+)')
+CONTEXT = re.compile(r'\b(github\.event_name|inputs\.\w+)\b')
+RESTORE_OWNER = 'claude-code/storage-restore/2026-11-23T10:00:00Z'
 
 
 def workflow(name):
@@ -42,10 +44,11 @@ def playbook_step(name, playbook):
     return next(s for s in steps(name) if 'ansible-playbook' in s.get('run', '') and playbook in s['run'].split())
 
 
-def evaluate(condition, outputs):
-    """A step `if` with only output comparisons and &&: an unset output is ''."""
-    expr = OUTPUT.sub(lambda m: repr(outputs.get(m.groups(), '')), condition).replace('&&', ' and ')
-    return eval(expr, {'__builtins__': {}}, {})
+def evaluate(condition, outputs, context=None):
+    """A step `if` with output, event-name and input comparisons, && and ||: an unset value is ''."""
+    expr = OUTPUT.sub(lambda m: repr(outputs.get(m.groups(), '')), condition)
+    expr = CONTEXT.sub(lambda m: repr((context or {}).get(m.group(1), '')), expr)
+    return eval(expr.replace('&&', ' and ').replace('||', ' or '), {'__builtins__': {}}, {})
 
 
 def load_helper(path, name):
@@ -88,7 +91,8 @@ class Fixture:
         return dict(line.split('=', 1) for line in path.read_text().splitlines()) if path.exists() else {}
 
     def take_nonce(self):
-        self.env['MAINTENANCE_NONCE'] = (self.d / 'env').read_text().strip().split('=', 1)[1]
+        # As GITHUB_ENV does for later steps: every line, so an adopted MAINTENANCE_OWNER replaces the job's.
+        self.env.update(line.split('=', 1) for line in (self.d / 'env').read_text().splitlines())
 
 
 class ReadyTests(unittest.TestCase):
@@ -294,6 +298,86 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(f.run(reconcile).returncode, 0)
                 self.assertEqual(f.run(release).returncode, 0)
                 self.assertFalse((f.lock / 'operation.json').exists())
+
+    def test_held_lock_input(self):
+        inputs = workflow('storage.yml')[True]['workflow_dispatch']['inputs']
+        self.assertEqual(set(inputs), {'held_lock_owner'})
+        self.assertIs(inputs['held_lock_owner']['required'], False)
+        self.assertEqual(inputs['held_lock_owner']['default'], '')
+
+    def test_held_lock_adopt_step(self):
+        adopt = step('storage.yml', id='adopt')
+        ss = steps('storage.yml')
+        self.assertLess(ss.index(step('storage.yml', id='held')), ss.index(adopt))
+        self.assertLess(ss.index(adopt), ss.index(step('storage.yml', id='lock')))
+        self.assertNotIn('${{', adopt['run'])  # the input reaches the script through env only
+        self.assertIn('python3 -I', adopt['run'])
+        self.assertNotIn('set -x', adopt['run'])
+        dispatch = {'github.event_name': 'workflow_dispatch', 'inputs.held_lock_owner': RESTORE_OWNER}
+        ready = {('ready', 'ready'): 'true', ('held', 'held'): 'true'}
+        self.assertTrue(evaluate(adopt['if'], ready, dispatch))
+        self.assertFalse(evaluate(adopt['if'], ready, {**dispatch, 'inputs.held_lock_owner': ''}))
+        self.assertFalse(evaluate(adopt['if'], {('ready', 'ready'): 'false'}, dispatch))
+        pinned = load_helper(pinned_helper(), 'pinned_lock_adopt')
+
+        def attempt(input_owner, holder=None):
+            d = tempfile.TemporaryDirectory()
+            self.addCleanup(d.cleanup)
+            f = Fixture(d.name)
+            nonce = None
+            if holder:
+                with mock.patch.dict(os.environ, HOMELAB_RUNNER_INSTANCE='fixture'):
+                    nonce = pinned.acquire(f.lock, 'storage-restore', holder)
+            f.env['HELD_LOCK_OWNER'] = input_owner
+            return f, nonce, f.run(adopt)
+
+        for input_owner, holder in ((RESTORE_OWNER, None),  # no lock held
+                                    (RESTORE_OWNER, RESTORE_OWNER + '0'),  # another owner holds it
+                                    ('ansible/x/1/1', 'ansible/x/1/1'),  # a CI owner, even when it holds the lock
+                                    (RESTORE_OWNER + '\nX=1', RESTORE_OWNER + '\nX=1'),
+                                    ('claude-code/storage-restore/', 'claude-code/storage-restore/'),
+                                    ('x' + RESTORE_OWNER, None)):
+            with self.subTest(input=input_owner, holder=holder):
+                f, nonce, got = attempt(input_owner, holder if holder and '\n' not in holder else None)
+                self.assertNotEqual(got.returncode, 0)
+                self.assertFalse((f.d / 'env').exists())
+                self.assertEqual(f.outputs(), {})
+        f, nonce, got = attempt(RESTORE_OWNER, RESTORE_OWNER)
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertEqual(f.outputs(), {'adopted': 'true'})
+        self.assertEqual(got.stdout.splitlines()[0], '::add-mask::' + nonce)
+        self.assertNotIn(nonce, '\n'.join(got.stdout.splitlines()[1:]) + got.stderr)
+        self.assertEqual((f.d / 'env').read_text(),
+                         f'MAINTENANCE_OWNER={RESTORE_OWNER}\nMAINTENANCE_NONCE={nonce}\n')
+        # The next steps see the adopted pair, so verify passes and the record stays the runbook's.
+        f.take_nonce()
+        self.assertEqual(f.run(playbook_step('storage.yml', 'storage.yml')).returncode, 0)
+        self.assertIn(RESTORE_OWNER, (f.lock / 'operation.json').read_text())
+
+    def test_held_lock_skips_acquire_and_release(self):
+        dispatch = {'github.event_name': 'workflow_dispatch', 'inputs.held_lock_owner': RESTORE_OWNER}
+        adopted = {('ready', 'ready'): 'true', ('held', 'held'): 'true', ('adopt', 'adopted'): 'true'}
+        lock = step('storage.yml', id='lock')
+        release = step('storage.yml', name='Release the lock after success')
+        reconcile = playbook_step('storage.yml', 'storage.yml')
+        self.assertFalse(evaluate(lock['if'], {**adopted, ('held', 'held'): 'false'}, dispatch))
+        self.assertFalse(evaluate(release['if'], adopted, dispatch))
+        self.assertFalse(evaluate(playbook_step('storage.yml', 'storage-dry-run.yml')['if'], adopted, dispatch))
+        self.assertTrue(evaluate(reconcile['if'], adopted, dispatch))
+        self.assertEqual(reconcile['run'].splitlines()[0], HELPER + ' verify')
+        # Input empty: no adoption, so acquire, reconcile and release run as before.
+        acquired = {('ready', 'ready'): 'true', ('held', 'held'): 'false', ('lock', 'acquired'): 'true'}
+        for s in (lock, reconcile, release):
+            self.assertTrue(evaluate(s['if'], acquired, {'github.event_name': 'workflow_dispatch'}), s['name'])
+        self.assertFalse(evaluate(reconcile['if'], {('ready', 'ready'): 'true', ('held', 'held'): 'true'}))
+
+    def test_held_lock_not_on_other_triggers(self):
+        adopt = step('storage.yml', id='adopt')
+        self.assertIn("github.event_name == 'workflow_dispatch'", adopt['if'])
+        ready = {('ready', 'ready'): 'true', ('held', 'held'): 'true'}
+        for event in ('repository_dispatch', 'schedule', 'push'):
+            self.assertFalse(evaluate(adopt['if'], ready, {'github.event_name': event,
+                                                           'inputs.held_lock_owner': RESTORE_OWNER}), event)
 
     def test_no_sha_from_payload(self):
         for name in NAMES:

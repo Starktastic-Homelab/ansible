@@ -3,7 +3,15 @@ name: Reconcile retained storage
 # ADR 0017 "How a run works": skip until configured (and, on schedule, inside a backup window), dry-run without the
 # lock, try the lock once, reconcile under it, release only after success. A failed run keeps the lock (D31).
 on:
+  # held_lock_owner: the restore runbook (apps docs/runbooks/storage-vm-restore.md) holds the lock and reconciles under
+  # it (D51). Empty takes the lock as every other trigger does.
   workflow_dispatch:
+    inputs:
+      held_lock_owner:
+        description: Owner of the held storage-restore lock to reconcile under; empty takes the lock
+        required: false
+        default: ''
+        type: string
 
   # Sent by apps on an inventory change. The run always reconciles the branch tip, never a payload SHA.
   repository_dispatch:
@@ -108,6 +116,38 @@ jobs:
             echo 'held=false' >> "$GITHUB_OUTPUT"
           fi
 
+      # D51: adopt the runbook's held lock, never take or release it. The record is root-only on the runner; the nonce
+      # is masked before it reaches GITHUB_ENV and never printed. A refusal ends the run before the reconcile.
+      - name: Adopt the runbook's held lock
+        id: adopt
+        if: >-
+          steps.ready.outputs.ready == 'true' && github.event_name == 'workflow_dispatch'
+          && inputs.held_lock_owner != ''
+        env:
+          HELD_LOCK_OWNER: ${{ inputs.held_lock_owner }}
+        run: |
+          python3 -I - <<'PY'
+          import json, os, re, sys
+          owner = os.environ['HELD_LOCK_OWNER']
+          if not re.fullmatch(r'claude-code/storage-restore/[0-9TZ:-]+', owner):
+              sys.exit('held_lock_owner is not a claude-code/storage-restore/<UTC ts> owner')
+          try:
+              with open('/maintenance/operation.json') as stream:
+                  record = json.load(stream)
+          except FileNotFoundError:
+              sys.exit('No maintenance lock is held')
+          if record.get('owner') != owner:
+              sys.exit('The maintenance lock is held by another owner')
+          nonce = record.get('nonce')
+          if not isinstance(nonce, str) or not re.fullmatch(r'[0-9a-f]{64}', nonce):
+              sys.exit('The maintenance record has no valid nonce')
+          print('::add-mask::' + nonce)
+          with open(os.environ['GITHUB_ENV'], 'a') as stream:
+              stream.write('MAINTENANCE_OWNER=' + owner + '\nMAINTENANCE_NONCE=' + nonce + '\n')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+              stream.write('adopted=true\n')
+          PY
+
       # A refusal here ends the run before it touches the lock.
       - name: Dry-run before the lock
         if: steps.ready.outputs.ready == 'true' && steps.held.outputs.held != 'true'
@@ -120,7 +160,9 @@ jobs:
       # The pinned helper's acquire fails on a held lock, so check first: a lock taken in between fails the run.
       - name: Try the maintenance lock once
         id: lock
-        if: steps.ready.outputs.ready == 'true' && steps.held.outputs.held != 'true'
+        if: >-
+          steps.ready.outputs.ready == 'true' && steps.held.outputs.held != 'true'
+          && steps.adopt.outputs.adopted != 'true'
         run: |
           if test -e /maintenance/operation.json; then
             echo '::warning::Maintenance lock is held; skipping, the next hourly run retries'
@@ -131,7 +173,7 @@ jobs:
           fi
 
       - name: Reconcile under the lock
-        if: steps.lock.outputs.acquired == 'true'
+        if: steps.lock.outputs.acquired == 'true' || steps.adopt.outputs.adopted == 'true'
         run: |
           python3 maintenance-helper/scripts/maintenance_lock.py verify
           ansible-playbook -i inventory/proxmox.yml \

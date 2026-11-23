@@ -765,7 +765,7 @@ class SharedPlayTests(unittest.TestCase):
         install = by_name(role_tasks(), 'Install the storage programs')
         self.assertIn(f"sys.path.insert(0, '{module(install, 'copy')['dest'].rstrip('/')}')", args[2])
         self.assertEqual(by_name(role_tasks('host-metrics'), 'Read the k3s-block size and free space on pve')['timeout'], 60)
-        df = {'stdout_lines': ['     1B-blocks         Avail', '161170000000 104903946240']}
+        df = {'stdout_lines': ['Mounted on Type 1B-blocks Avail', '/mnt/pve/k3s-block nfs4 161170000000 104903946240']}
         lock = {'stdout': '{"operation": "ansible-deploy", "created": 1795428000.5}'}
         templar = Templar(variables=defaults(storage_vm_df=df, storage_vm_lock=lock))
         self.assertEqual([str(templar.template(trust_as_template(a))) for a in args[3:]],  # argv items become strings
@@ -778,6 +778,18 @@ class SharedPlayTests(unittest.TestCase):
                                r'storage_dataset_avail_bytes\{dataset="apps/k3s-block"\} 15\n'
                                r'storage_dataset_timestamp_seconds \d+(\.\d+)?\n'  # test_proxmox_backup pins time.time to an int
                                r'storage_maintenance_lock_created_timestamp_seconds\{operation=""\} 0\.0\n$')
+
+    def test_host_metrics_df_must_be_the_nfs_mount(self):
+        # An unmounted path reports pve's root filesystem with a fresh timestamp; fail so the staleness leg fires.
+        df = by_name(role_tasks('host-metrics'), 'Read the k3s-block size and free space on pve')
+        self.assertEqual(argv(df)[:3], ['df', '-B1', '--output=target,fstype,size,avail'])
+        failed = lambda rc, line: holds([df['failed_when']], storage_vm_df={
+            'rc': rc, 'stdout_lines': ['Mounted on Type 1B-blocks Avail', line] if line else []})
+        self.assertFalse(failed(0, '/mnt/pve/k3s-block nfs4 161170000000 104903946240'))
+        self.assertFalse(failed(0, '/mnt/pve/k3s-block nfs 161170000000 104903946240'))
+        self.assertTrue(failed(0, '/ zfs 100000000000 90000000000'))  # not mounted: rpool
+        self.assertTrue(failed(0, '/mnt/pve/k3s-block zfs 100000000000 90000000000'))
+        self.assertTrue(failed(1, ''))
 
     def test_host_metrics_playbook_takes_no_lock(self):
         ps = plays('storage-host-metrics.yml')

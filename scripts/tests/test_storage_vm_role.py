@@ -463,7 +463,7 @@ class RoleTests(unittest.TestCase):
         self.assertNotIn('vgs', cfg)
         self.assertEqual(cfg['initiator_prefix'], 'iqn.2026-11.net.starktastic:')
         self.assertEqual((cfg['portal'], cfg['api_url'], cfg['csi_driver'], cfg['max_removals'], cfg['pause_after']),
-                         (f'{BRIDGE}:3260', 'https://10.9.9.99:6443', 'org.democratic-csi.node-manual', 2, []))
+                         (f'{BRIDGE}:3260', f"https://{GROUP_ALL['production_vip_address']}:6443", 'org.democratic-csi.node-manual', 2, []))
         self.assertEqual((cfg['not_ready_seconds'], cfg['loop_seconds'], cfg['proof_timeout_seconds'],
                           cfg['quarantine_seconds'], cfg['blind_after_seconds']), (300, 15, 60, 259200, 600))
         with tempfile.TemporaryDirectory() as tmp:  # a one-off -e storage_vm_max_removals=3 arrives as a string

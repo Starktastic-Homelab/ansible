@@ -33,6 +33,7 @@ on:
       - 'storage-expiry.yml'
       - 'storage-dry-run.yml'
       - 'storage-play-*.yml'
+      - 'storage-preflight.yml'
       - 'group_vars/storage/**'
       - '.github/workflows/storage.yml'
       - '.github/workflows/storage-expiry.yml'

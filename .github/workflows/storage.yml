@@ -37,6 +37,7 @@ on:
       - 'storage-dry-run.yml'
       - 'storage-host-metrics.yml'
       - 'storage-play-*.yml'
+      - 'storage-preflight.yml'
       - 'storage.yml'
 
 concurrency:
@@ -180,9 +181,25 @@ jobs:
               stream.write('adopted=true\n')
           PY
 
+      # D31 keeps the lock on a failed run, so a master without k3s (a run between a rebuild apply and its deploy)
+      # must skip before the lock, green, or the kept lock blocks that deploy. Any other failure goes red, unlocked.
+      - name: Check that k3s answers before the lock
+        id: preflight
+        if: steps.ready.outputs.ready == 'true' && steps.held.outputs.held != 'true'
+        run: |
+          ansible-playbook -i inventory/proxmox.yml \
+            --vault-password-file .vault_pass \
+            --private-key private_key.pem \
+            storage-preflight.yml
+          if grep -qx 'k3s=false' "$GITHUB_OUTPUT"; then
+            echo '::warning::k3s does not answer on the first master (a rebuild before its deploy?); skipping without the lock, the next run retries'
+          fi
+
       # A refusal here ends the run before it touches the lock.
       - name: Dry-run before the lock
-        if: steps.ready.outputs.ready == 'true' && steps.held.outputs.held != 'true'
+        if: >-
+          steps.ready.outputs.ready == 'true' && steps.held.outputs.held != 'true'
+          && steps.preflight.outputs.k3s == 'true'
         run: |
           ansible-playbook -i inventory/proxmox.yml \
             --vault-password-file .vault_pass \
@@ -196,6 +213,7 @@ jobs:
         if: >-
           steps.ready.outputs.ready == 'true' && steps.held.outputs.held != 'true'
           && steps.adopt.outputs.adopted != 'true'
+          && steps.preflight.outputs.k3s == 'true'
         run: |
           if test -e /maintenance/operation.json; then
             echo '::warning::Maintenance lock is held; skipping, the next hourly run retries'

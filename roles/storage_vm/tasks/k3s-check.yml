@@ -1,0 +1,17 @@
+---
+# masters[0], before the maintenance lock. Between a k3s rebuild apply and its deploy the fresh master has no k3s, so
+# the kubeconfig play under the lock would fail and D31 would keep the lock, blocking that deploy. The same kubeconfig
+# and API URL as kubeconfig.yml and k8s_info; any answer but ok records false, and the workflow skips green.
+- name: Ask the API at storage_vm_api_url for readiness
+  ansible.builtin.command:
+    argv: [k3s, kubectl, --kubeconfig, /etc/rancher/k3s/k3s.yaml, --server, "{{ storage_vm_api_url }}",
+           --request-timeout=20s, get, --raw, /readyz]
+  become: true
+  register: storage_vm_k3s_readyz
+  changed_when: false
+  # No k3s binary, no k3s.yaml or no answer all read as false; an unreachable master still fails the play.
+  failed_when: false
+
+- name: Record whether k3s answers
+  ansible.builtin.set_fact:
+    storage_vm_k3s_ready: "{{ storage_vm_k3s_readyz.rc | default(1) == 0 and storage_vm_k3s_readyz.stdout | default('') | trim == 'ok' }}"

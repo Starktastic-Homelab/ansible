@@ -75,7 +75,9 @@ class Fixture:
         self.lock.mkdir()
         (self.lock / 'runner-instance').write_text('fixture')
         fake = self.d / 'ansible-playbook'
-        fake.write_text('#!/bin/sh\nexit "${FIXTURE_EXIT:-0}"\n')
+        # FIXTURE_OUTPUT: a line the playbook writes to the step outputs (storage-preflight.yml's k3s=).
+        fake.write_text('#!/bin/sh\nif [ -n "${FIXTURE_OUTPUT:-}" ]; then printf "%s\\n" "$FIXTURE_OUTPUT" >> "$GITHUB_OUTPUT"; fi\n'
+                        'exit "${FIXTURE_EXIT:-0}"\n')
         fake.chmod(0o700)
         self.env = dict(os.environ, HOMELAB_RUNNER_INSTANCE='fixture', MAINTENANCE_OWNER='ansible/test/1',
                         GITHUB_ENV=str(self.d / 'env'), GITHUB_OUTPUT=str(self.d / 'output'),
@@ -242,6 +244,40 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(playbook_step('storage-expiry.yml', 'storage-expiry.yml')['run'].splitlines()[0],
                          HELPER + ' verify')
 
+    def test_k3s_check_precedes_the_lock(self):
+        # A run between a k3s rebuild apply and its deploy finds no k3s.yaml on masters[0]: it must skip green before
+        # 'Try the maintenance lock once', or D31 keeps the lock and the deploy's acquire fails (finding n=11).
+        for name in NAMES:
+            with self.subTest(workflow=name):
+                ss = steps(name)
+                check = step(name, id='preflight')
+                lock = step(name, name='Try the maintenance lock once')
+                self.assertLess(ss.index(check), ss.index(lock))
+                self.assertEqual(check['name'], 'Check that k3s answers before the lock')
+                self.assertEqual(playbook_step(name, 'storage-preflight.yml'), check)
+                self.assertNotIn('maintenance_lock.py', check['run'])
+                ready = {('ready', 'ready'): 'true', ('held', 'held'): 'false'}
+                self.assertTrue(evaluate(check['if'], ready))
+                for k3s in ('false', ''):  # false: no k3s; unset: the check did not run or failed
+                    self.assertFalse(evaluate(lock['if'], {**ready, ('preflight', 'k3s'): k3s}), k3s)
+                self.assertTrue(evaluate(lock['if'], {**ready, ('preflight', 'k3s'): 'true'}))
+                for k3s, exit, rc, warned in (('k3s=false', '0', 0, True), ('k3s=true', '0', 0, False),
+                                              ('', '2', 1, False)):  # an unreachable master or any error: red
+                    with tempfile.TemporaryDirectory() as d:
+                        f = Fixture(d)
+                        f.env.update(FIXTURE_OUTPUT=k3s, FIXTURE_EXIT=exit)
+                        got = f.run(check)
+                        self.assertEqual(got.returncode != 0, bool(rc), got.stderr)
+                        self.assertEqual(bool(re.search(r'(?m)^::warning::.*k3s', got.stdout)), warned)
+                        self.assertFalse((f.lock / 'operation.json').exists())
+        dry = playbook_step('storage.yml', 'storage-dry-run.yml')
+        ready = {('ready', 'ready'): 'true', ('held', 'held'): 'false'}
+        self.assertFalse(evaluate(dry['if'], {**ready, ('preflight', 'k3s'): 'false'}))
+        self.assertTrue(evaluate(dry['if'], {**ready, ('preflight', 'k3s'): 'true'}))
+        # D51's adopted reconcile does not depend on it: the runbook holds the lock and reads its own log.
+        self.assertFalse(evaluate(step('storage.yml', id='preflight')['if'],
+                                  {('ready', 'ready'): 'true', ('held', 'held'): 'true'}))
+
     def test_lock_held_exits_zero(self):
         for name in NAMES:
             with self.subTest(workflow=name), tempfile.TemporaryDirectory() as d:
@@ -277,8 +313,8 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual((got.returncode, f.outputs()), (0, {'held': 'true'}), got.stderr)
             self.assertRegex(got.stdout, r'(?m)^::warning::')
         ready = {('ready', 'ready'): 'true'}
-        self.assertTrue(evaluate(dry['if'], {**ready, ('held', 'held'): 'false'}))
-        self.assertFalse(evaluate(dry['if'], {**ready, ('held', 'held'): 'true'}))
+        self.assertTrue(evaluate(dry['if'], {**ready, ('held', 'held'): 'false', ('preflight', 'k3s'): 'true'}))
+        self.assertFalse(evaluate(dry['if'], {**ready, ('held', 'held'): 'true', ('preflight', 'k3s'): 'true'}))
         self.assertFalse(evaluate(step('storage.yml', id='lock')['if'], {**ready, ('held', 'held'): 'true'}))
 
     def test_release_only_after_success(self):
@@ -423,7 +459,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(evaluate(reconcile['if'], adopted, dispatch))
         self.assertEqual(reconcile['run'].splitlines()[0], HELPER + ' verify')
         # Input empty: no adoption, so acquire, reconcile and release run as before.
-        acquired = {('ready', 'ready'): 'true', ('held', 'held'): 'false', ('lock', 'acquired'): 'true'}
+        acquired = {('ready', 'ready'): 'true', ('held', 'held'): 'false', ('preflight', 'k3s'): 'true',
+                    ('lock', 'acquired'): 'true'}
         for s in (lock, reconcile, release):
             self.assertTrue(evaluate(s['if'], acquired, {'github.event_name': 'workflow_dispatch'}), s['name'])
         self.assertFalse(evaluate(reconcile['if'], {('ready', 'ready'): 'true', ('held', 'held'): 'true'}))
@@ -455,7 +492,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(on['schedule'], [{'cron': '5 * * * *'}])
         self.assertEqual(on['push']['branches'], ['main'])
         self.assertEqual(on['push']['paths'], ['group_vars/storage/**', 'roles/storage_vm/**', 'storage-dry-run.yml',
-                                               'storage-host-metrics.yml', 'storage-play-*.yml', 'storage.yml'])
+                                               'storage-host-metrics.yml', 'storage-play-*.yml', 'storage-preflight.yml',
+                                               'storage.yml'])
         on = workflow('storage-expiry.yml')[True]
         self.assertEqual(set(on), {'schedule', 'workflow_dispatch'})
         self.assertEqual(on['schedule'], [{'cron': '5 10 * * *'}])
@@ -520,7 +558,7 @@ class WorkflowTests(unittest.TestCase):
         for path in ('roles/storage_vm/**', 'storage.yml', 'storage-expiry.yml', 'storage-dry-run.yml',
                      'storage-play-*.yml', 'group_vars/storage/**', '.github/workflows/storage.yml',
                      '.github/workflows/storage-expiry.yml', 'scripts/storage_ready.py',
-                     'scripts/tests/test_storage_workflows.py', 'storage-host-metrics.yml',
+                     'scripts/tests/test_storage_workflows.py', 'storage-host-metrics.yml', 'storage-preflight.yml',
                      'scripts/tests/test_storage_vm_role.py', 'scripts/tests/test_storage_reconcile.py'):
             self.assertIn(path, ignored)
         for path in ('roles/k3s_common/**', 'k3s.yml', 'tasks/lab-guard.yml', 'scripts/tests/test_storage_fencer.py'):

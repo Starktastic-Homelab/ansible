@@ -146,7 +146,8 @@ class LabGuardTests(unittest.TestCase):
         return all(templar.evaluate_expression(e) for e in module(t, 'assert')['that'])
 
     def test_lab_guard(self):
-        for name in ('k3s.yml', 'storage.yml', 'storage-expiry.yml', 'storage-dry-run.yml', 'storage-host-metrics.yml'):
+        for name in ('k3s.yml', 'storage.yml', 'storage-expiry.yml', 'storage-dry-run.yml', 'storage-host-metrics.yml',
+                     'storage-preflight.yml'):
             first = plays(name)[0]
             self.assertEqual(first['name'], 'Lab guard', name)
             self.assertEqual((first['hosts'], first['gather_facts'], first['any_errors_fatal'], first['tags']),
@@ -784,6 +785,45 @@ class SharedPlayTests(unittest.TestCase):
         self.assertNotIn('lock-verify', text)
         self.assertNotIn('maintenance_lock', text)
 
+    def test_preflight_checks_k3s_without_the_lock(self):
+        ps = plays('storage-preflight.yml')
+        self.assertEqual([p['hosts'] for p in ps], ['all', 'masters[0]', 'localhost'])
+        self.assertTrue(all(p['any_errors_fatal'] is True for p in ps))
+        text = (ROOT / 'storage-preflight.yml').read_text()
+        self.assertNotIn('lock-verify', text)
+        self.assertNotIn('maintenance_lock', text)
+        self.assertEqual([module(t, 'import_role') for t in ps[1]['tasks']],
+                         [{'name': 'storage_vm', 'tasks_from': 'k3s-check.yml'}])
+        tasks = role_tasks('k3s-check')
+        ask = by_name(tasks, 'Ask the API at storage_vm_api_url for readiness')
+        slurp = module(by_name(role_tasks('kubeconfig'), 'Read the control-plane kubeconfig without logging credentials'),
+                       'slurp')['src']
+        args = argv(ask)
+        # The kubeconfig and the URL the run's kubeconfig play and k8s_info use, so a skip-free pass means they work.
+        self.assertEqual(args[:3], ['k3s', 'kubectl', '--kubeconfig'])
+        self.assertEqual(args[3], slurp)
+        self.assertEqual(args[args.index('--server') + 1], '{{ storage_vm_api_url }}')
+        self.assertEqual(args[-3:], ['get', '--raw', '/readyz'])
+        self.assertTrue(any(a.startswith('--request-timeout=') for a in args))
+        self.assertIs(ask['failed_when'], False)
+        self.assertNotIn('ignore_unreachable', ask)  # an unreachable master goes red, never a green skip
+        ready = module(by_name(tasks, 'Record whether k3s answers'), 'set_fact')['storage_vm_k3s_ready']
+        for result, want in (({'rc': 0, 'stdout': 'ok'}, True), ({'rc': 0, 'stdout': 'ok\n'}, True),
+                             ({'rc': 1, 'stdout': ''}, False), ({'rc': 0, 'stdout': 'not ok'}, False),
+                             ({'failed': True, 'msg': 'No such file or directory: k3s'}, False)):
+            with self.subTest(result=result):
+                got = Templar(variables={'storage_vm_k3s_readyz': result}).template(ready)
+                self.assertIs(got, want)
+        record = ps[2]['tasks']
+        write = by_name(record, 'Write the k3s answer to the step outputs')
+        line = module(write, 'lineinfile')['line']
+        for answer, want in ((True, 'k3s=true'), (False, 'k3s=false')):
+            hv = {'groups': {'masters': ['m']}, 'hostvars': {'m': {'storage_vm_k3s_ready': answer}}}
+            self.assertEqual(Templar(variables=hv).template(trust_as_template(line)), want)
+        need = module(by_name(record, 'Require the answer of masters[0]'), 'assert')['that']
+        self.assertFalse(holds(need, groups={'masters': ['m']}, hostvars={'m': {}}))
+        self.assertTrue(holds(need, groups={'masters': ['m']}, hostvars={'m': {'storage_vm_k3s_ready': False}}))
+
     def test_host_metrics_reads_only_on_pve(self):
         tasks = role_tasks('host-metrics')
         on_pve = [t for t in tasks if t.get('delegate_to') == "{{ groups['proxmox_hosts'][0] }}"]
@@ -860,8 +900,9 @@ class SharedPlayTests(unittest.TestCase):
 
     def test_storage_playbooks_share_plays(self):
         # storage-host-metrics.yml reconciles nothing, so it fetches no inventory (test_host_metrics_playbook_takes_no_lock).
-        self.assertEqual(TOP_PLAYBOOKS, ['storage-dry-run.yml', 'storage-expiry.yml', 'storage-host-metrics.yml', 'storage.yml'])
-        for name in (n for n in TOP_PLAYBOOKS if n != 'storage-host-metrics.yml'):
+        self.assertEqual(TOP_PLAYBOOKS, ['storage-dry-run.yml', 'storage-expiry.yml', 'storage-host-metrics.yml',
+                                         'storage-preflight.yml', 'storage.yml'])
+        for name in (n for n in TOP_PLAYBOOKS if n not in ('storage-host-metrics.yml', 'storage-preflight.yml')):
             raw = load(ROOT / name)
             self.assertEqual(imported(raw[0]), 'storage-play-lab-guard.yml', name)
             self.assertIn('storage-play-fetch-inventory.yml', [imported(p) for p in raw], name)

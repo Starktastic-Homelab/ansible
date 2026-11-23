@@ -68,10 +68,24 @@ jobs:
         id: ready
         run: python3 scripts/storage_ready.py
 
+      # D31 keeps the lock on a failed run, so a master without k3s (a run between a rebuild apply and its deploy)
+      # must skip before the lock, green, or the kept lock blocks that deploy. Any other failure goes red, unlocked.
+      - name: Check that k3s answers before the lock
+        id: preflight
+        if: steps.ready.outputs.ready == 'true'
+        run: |
+          ansible-playbook -i inventory/proxmox.yml \
+            --vault-password-file .vault_pass \
+            --private-key private_key.pem \
+            storage-preflight.yml
+          if grep -qx 'k3s=false' "$GITHUB_OUTPUT"; then
+            echo '::warning::k3s does not answer on the first master (a rebuild before its deploy?); skipping without the lock, the next run retries'
+          fi
+
       # The pinned helper's acquire fails on a held lock, so check first: a lock taken in between fails the run.
       - name: Try the maintenance lock once
         id: lock
-        if: steps.ready.outputs.ready == 'true'
+        if: steps.ready.outputs.ready == 'true' && steps.preflight.outputs.k3s == 'true'
         run: |
           if test -e /maintenance/operation.json; then
             echo '::warning::Maintenance lock is held; skipping, the next daily run retries'

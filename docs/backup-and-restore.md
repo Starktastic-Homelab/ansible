@@ -367,8 +367,14 @@ deleted on 2026-11-16, Ben's decision). This section applies when the live image
 (**Hold the backup lock**) and run `ls /srv/restore-src/images/9999/` on each snapshot mounted as in **One image
 from the replica**.
 
-The storage VM's regen disk (`images/9998/vm-9998-disk-1.raw`, ADR 0017) is excluded too. It is re-created through
-the storage VM runbooks (apps `docs/runbooks/storage-vm-rebuild.md`), not by the `vm-9999` steps in this section.
+The storage VM's regen disk (`images/9998/vm-9998-disk-1.raw`, ADR 0017) is excluded too, and not by the `vm-9999`
+steps in this section. Its only copy is the replica: restore it as in apps `docs/runbooks/storage-vm-restore.md`
+"Whole-disk restore", with the file from **One image from the replica** (its step 2) and the regen VG handled as in
+step 3 ("If `regen` was restored too"). `storage-vm-rebuild.md` does not cover it: that runbook keeps both data disks.
+With no replica copy, a blank re-creation has no runbook yet and needs Ben: a new volume on `k3s-block`, a regen-only
+VG bootstrap (`storage-vm-bootstrap.md` refuses a VM that already has LVs), and `storage-vm-crashed-create.md`
+"lost (ledgered, LV missing)" for each regen id. Until one of these is done, every `storage.yml` dry run fails on the
+missing VG, so retained creates and grows wait too (ADR 0017, migration plan D42).
 
 **Pre-approved.** Ben decided on 2026-11-16 that these five images may be re-initialised blank, accepting the loss
 of their history, once the checks above show no replica copy. No further approval is needed. This is the only

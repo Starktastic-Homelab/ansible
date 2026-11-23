@@ -3,6 +3,7 @@
 
 A run skips, green, while the storage group is empty or storage_vm_pv_devices is still the placeholder, and a
 scheduled run skips inside the backup windows (D29). Dispatch, manual and push runs are never window-skipped.
+gauges=true|false is ready without the window skip: the host gauges (a read and a textfile) are written every hour.
 """
 from datetime import datetime, time, timezone
 import os
@@ -61,15 +62,16 @@ def storage_hosts():
 def main(hosts=None, event=None, now=None):
     event = os.environ.get('GITHUB_EVENT_NAME', '') if event is None else event
     window = backup_window(now or datetime.now(timezone.utc)) if event == 'schedule' else None
+    group_vars = (yaml.safe_load(GROUP_VARS.read_text()) or {}) if GROUP_VARS.exists() else {}
+    unconfigured = skip_reason(storage_hosts() if hosts is None else hosts, group_vars)
     if window:
         reason = f'inside backup window {window}; the next hourly run retries'
     else:
-        group_vars = (yaml.safe_load(GROUP_VARS.read_text()) or {}) if GROUP_VARS.exists() else {}
-        reason = skip_reason(storage_hosts() if hosts is None else hosts, group_vars)
-        reason = reason and reason + '; nothing touched'
+        reason = unconfigured and unconfigured + '; nothing touched'
     print(f'Skipping: {reason}' if reason else 'Ready: the storage VM is configured')
     with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
         stream.write(f'ready={"false" if reason else "true"}\n')
+        stream.write(f'gauges={"false" if unconfigured else "true"}\n')
 
 
 if __name__ == '__main__':

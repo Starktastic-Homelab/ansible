@@ -7,13 +7,14 @@ import sys
 import tempfile
 from pathlib import Path
 import unittest
+from unittest import mock
 from ansible.parsing.dataloader import DataLoader
 from ansible.template import Templar, trust_as_template
 
 ROOT = Path(__file__).resolve().parents[2]
 ROLE = ROOT / 'roles/storage_vm'
 sys.path.insert(0, str(ROLE / 'files'))
-from homelab_storage import config, lio  # noqa: E402
+from homelab_storage import config, lio, metrics  # noqa: E402
 
 WORKERS = [{'name': 'k3s-worker-01', 'bridge_address': '10.77.0.21'},
            {'name': 'k3s-worker-02', 'bridge_address': '10.77.0.22'}]
@@ -144,7 +145,7 @@ class LabGuardTests(unittest.TestCase):
         return all(templar.evaluate_expression(e) for e in module(t, 'assert')['that'])
 
     def test_lab_guard(self):
-        for name in ('k3s.yml', 'storage.yml', 'storage-expiry.yml', 'storage-dry-run.yml'):
+        for name in ('k3s.yml', 'storage.yml', 'storage-expiry.yml', 'storage-dry-run.yml', 'storage-host-metrics.yml'):
             first = plays(name)[0]
             self.assertEqual(first['name'], 'Lab guard', name)
             self.assertEqual((first['hosts'], first['gather_facts'], first['any_errors_fatal'], first['tags']),
@@ -730,9 +731,67 @@ class SharedPlayTests(unittest.TestCase):
         self.assertNotIn('lock-verify', text)
         self.assertNotIn('maintenance_lock', text)
 
+    def test_host_metrics_reads_only_on_pve(self):
+        tasks = role_tasks('host-metrics')
+        on_pve = [t for t in tasks if t.get('delegate_to') == "{{ groups['proxmox_hosts'][0] }}"]
+        self.assertEqual(len(on_pve), 1)
+        for t in on_pve:
+            self.assertEqual(argv(t)[0], 'df', t['name'])
+            self.assertIs(t['changed_when'], False, t['name'])
+        self.assertTrue(all(t.get('delegate_to') in (None, 'localhost') for t in tasks if t not in on_pve))
+
+    def test_host_metrics_never_reads_nonce(self):
+        self.assertNotIn('nonce', (ROLE / 'tasks/host-metrics.yml').read_text())
+        lock = by_name(role_tasks('host-metrics'), 'Read the maintenance lock holder and start time')
+        script = argv(lock)[2]
+        self.assertEqual(set(re.findall(r"record\['(\w+)'\]", script)), {'operation', 'created_at'})
+        with tempfile.TemporaryDirectory() as d:
+            record = Path(d) / 'operation.json'
+            run = lambda: json.loads(subprocess.run([sys.executable, '-c', script, str(record)], check=True,
+                                                    capture_output=True, text=True).stdout)
+            self.assertEqual(run(), {'operation': '', 'created': 0})  # the lock is free
+            record.write_text(json.dumps({'schema': 1, 'owner': 'o', 'nonce': 'secret', 'operation': 'ansible-deploy',
+                                          'stage': 'acquired', 'created_at': '2026-11-23T10:00:00.123456+00:00'}))
+            self.assertEqual(run(), {'operation': 'ansible-deploy', 'created': 1795428000.123456})
+        self.assertEqual(argv(lock)[3], '{{ storage_vm_maintenance_root }}/operation.json')
+
+    def test_host_metrics_writes_the_alert_series(self):
+        write = by_name(role_tasks('host-metrics'), 'Write storage-host.prom')
+        args = argv(write)
+        for metric in ('storage_dataset_size_bytes', 'storage_dataset_avail_bytes', 'storage_dataset_timestamp_seconds',
+                       'storage_maintenance_lock_created_timestamp_seconds'):
+            self.assertIn(f"('{metric}',", args[2])
+        self.assertIn("metrics.write('storage-host',", args[2])
+        df = {'stdout_lines': ['     1B-blocks         Avail', '161170000000 104903946240']}
+        lock = {'stdout': '{"operation": "ansible-deploy", "created": 1795428000.5}'}
+        templar = Templar(variables=defaults(storage_vm_df=df, storage_vm_lock=lock))
+        self.assertEqual([str(templar.template(trust_as_template(a))) for a in args[3:]],  # argv items become strings
+                         ['apps/k3s-block', '161170000000', '104903946240', 'ansible-deploy', '1795428000.5'])
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(metrics, 'TEXTFILE_DIR', Path(d)), \
+                mock.patch.object(sys, 'argv', ['-c', 'apps/k3s-block', '100', '15', '', '0']):
+            exec(args[2], {})  # the role's own metrics module: the path insert finds nothing here
+            text = (Path(d) / 'storage-host.prom').read_text()
+        self.assertRegex(text, r'^storage_dataset_size_bytes\{dataset="apps/k3s-block"\} 100\n'
+                               r'storage_dataset_avail_bytes\{dataset="apps/k3s-block"\} 15\n'
+                               r'storage_dataset_timestamp_seconds \d+\.\d+\n'
+                               r'storage_maintenance_lock_created_timestamp_seconds\{operation=""\} 0\.0\n$')
+
+    def test_host_metrics_playbook_takes_no_lock(self):
+        ps = plays('storage-host-metrics.yml')
+        self.assertEqual([p['hosts'] for p in ps], ['all', 'storage'])
+        self.assertEqual(ps[0]['name'], 'Lab guard')
+        self.assertEqual(imported(load(ROOT / 'storage-host-metrics.yml')[0]), 'storage-play-lab-guard.yml')
+        self.assertEqual(ps[1]['gather_facts'], False)
+        self.assertEqual([module(t, 'import_role') for t in ps[1]['tasks']],
+                         [{'name': 'storage_vm', 'tasks_from': 'host-metrics.yml'}])
+        text = (ROOT / 'storage-host-metrics.yml').read_text()
+        self.assertNotIn('lock-verify', text)
+        self.assertNotIn('maintenance_lock', text)
+
     def test_storage_playbooks_share_plays(self):
-        self.assertEqual(TOP_PLAYBOOKS, ['storage-dry-run.yml', 'storage-expiry.yml', 'storage.yml'])
-        for name in TOP_PLAYBOOKS:
+        # storage-host-metrics.yml reconciles nothing, so it fetches no inventory (test_host_metrics_playbook_takes_no_lock).
+        self.assertEqual(TOP_PLAYBOOKS, ['storage-dry-run.yml', 'storage-expiry.yml', 'storage-host-metrics.yml', 'storage.yml'])
+        for name in (n for n in TOP_PLAYBOOKS if n != 'storage-host-metrics.yml'):
             raw = load(ROOT / name)
             self.assertEqual(imported(raw[0]), 'storage-play-lab-guard.yml', name)
             self.assertIn('storage-play-fetch-inventory.yml', [imported(p) for p in raw], name)

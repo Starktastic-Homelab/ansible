@@ -83,6 +83,19 @@ jobs:
         id: ready
         run: python3 scripts/storage_ready.py
 
+      # Gauges only (df on pve, the lock record, one textfile on the storage VM): no lock, and it runs inside the
+      # backup windows and while another operation holds the lock, so MaintenanceLockStale sees the real holder.
+      # proxmox_hosts is only in inventory/hosts.yml; pve logs in with its vaulted password, hence sshpass.
+      - name: Write host gauges
+        if: steps.ready.outputs.gauges == 'true'
+        continue-on-error: true
+        run: |
+          apt-get update && apt-get install -y sshpass
+          ansible-playbook -i inventory/proxmox.yml -i inventory/hosts.yml \
+            --vault-password-file .vault_pass \
+            --private-key private_key.pem \
+            storage-host-metrics.yml
+
       - name: Skip while another maintenance operation runs
         id: held
         if: steps.ready.outputs.ready == 'true'

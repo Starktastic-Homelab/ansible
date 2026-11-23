@@ -92,14 +92,23 @@ class Fixture:
 
 
 class ReadyTests(unittest.TestCase):
-    def ready(self, **kwargs):
+    def outputs(self, pv=PV, **kwargs):
         with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, GITHUB_OUTPUT=str(Path(d) / 'out')):
             gv = Path(d) / 'storage_vm.yml'
-            gv.write_text(yaml.safe_dump({'storage_vm_pv_devices': PV}))
+            gv.write_text(yaml.safe_dump({'storage_vm_pv_devices': pv}))
             out = io.StringIO()
             with mock.patch.object(storage_ready, 'GROUP_VARS', gv), redirect_stdout(out):
                 storage_ready.main(**kwargs)
             return (Path(d) / 'out').read_text(), out.getvalue()
+
+    def ready(self, **kwargs):
+        # The ready= line only; gauges= has its own test (test_window_skip_still_writes_gauges).
+        written, printed = self.outputs(**kwargs)
+        return ''.join(line for line in written.splitlines(keepends=True) if line.startswith('ready=')), printed
+
+    def gauges(self, **kwargs):
+        written = dict(line.split('=', 1) for line in self.outputs(**kwargs)[0].splitlines())
+        return written['ready'], written['gauges']
 
     def test_workflow_skips_without_storage_host(self):
         self.assertEqual(skip_reason([], {}), 'no host in the storage group')
@@ -158,6 +167,25 @@ class ReadyTests(unittest.TestCase):
         self.assertEqual(self.ready(hosts=['storage-01'], event='schedule', now=at(2027, 1, 13, 10, 5))[0],
                          'ready=true\n')
 
+    def test_window_skip_still_writes_gauges(self):
+        # D29: the window skip stops the reconcile, not the gauges (StorageDatasetLow's 3 h staleness leg).
+        dumps = datetime(2027, 1, 13, 0, 5, tzinfo=timezone.utc)  # Wednesday 02:05 local
+        after = datetime(2027, 1, 13, 1, 5, tzinfo=timezone.utc)  # 03:05
+        one = ['storage-01']
+        self.assertEqual(self.gauges(hosts=one, event='schedule', now=dumps), ('false', 'true'))
+        self.assertEqual(self.outputs(hosts=one, event='schedule', now=dumps)[1],
+                         'Skipping: inside backup window dumps; the next hourly run retries\n')
+        self.assertEqual(self.gauges(hosts=one, event='schedule', now=after), ('true', 'true'))
+        self.assertEqual(self.gauges(hosts=[], event='schedule', now=dumps), ('false', 'false'))
+        self.assertEqual(self.gauges(hosts=one, event='schedule', now=dumps, pv={}), ('false', 'false'))
+        self.assertEqual(self.gauges(hosts=[], event='push'), ('false', 'false'))
+        self.assertEqual(self.gauges(hosts=one, event='workflow_dispatch', now=dumps), ('true', 'true'))
+        # The storage group is read inside a window now, so an unparsed inventory fails there too.
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(storage_ready, 'INVENTORY', Path(d) / 'missing.yml'), \
+                redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.outputs(event='schedule', now=dumps)
+
 
 class WorkflowTests(unittest.TestCase):
     def test_every_step_after_ready_is_gated(self):
@@ -167,10 +195,28 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(ss[ready]['run'], 'python3 scripts/storage_ready.py', name)
             outputs = {('ready', 'ready'): 'false'}  # a skipped step leaves its outputs unset
             for s in ss[ready + 1:-1]:
+                if s['name'] == 'Write host gauges':
+                    continue  # gated on gauges, not ready: test_host_gauges_before_held_unlocked pins its if
                 with self.subTest(workflow=name, step=s['name']):
                     self.assertIn('if', s)
                     self.assertFalse(evaluate(s['if'], outputs))
             self.assertEqual(ss[-1]['name'], 'Remove private controller credentials', name)
+
+    def test_host_gauges_before_held_unlocked(self):
+        ss = steps('storage.yml')
+        gauges = step('storage.yml', name='Write host gauges')
+        self.assertLess(ss.index(step('storage.yml', id='ready')), ss.index(gauges))
+        self.assertLess(ss.index(gauges), ss.index(step('storage.yml', id='held')))
+        self.assertEqual(gauges['if'], "steps.ready.outputs.gauges == 'true'")
+        self.assertIs(gauges['continue-on-error'], True)
+        run = gauges['run'].replace('\\\n', ' ')
+        for want in ('-i inventory/proxmox.yml -i inventory/hosts.yml', 'sshpass', 'storage-host-metrics.yml'):
+            self.assertIn(want, ' '.join(run.split()))
+        self.assertNotIn('maintenance_lock.py', run)
+        self.assertNotRegex(run, r'\s-e\s')
+        self.assertTrue(evaluate(gauges['if'], {('ready', 'ready'): 'false', ('ready', 'gauges'): 'true'}))
+        self.assertFalse(evaluate(gauges['if'], {('ready', 'ready'): 'false', ('ready', 'gauges'): 'false'}))
+        self.assertFalse(any(s.get('name') == 'Write host gauges' for s in steps('storage-expiry.yml')))
 
     def test_dry_run_before_lock_then_apply_then_release(self):
         ss = steps('storage.yml')
@@ -311,9 +357,10 @@ class WorkflowTests(unittest.TestCase):
         for path in ('roles/storage_vm/**', 'storage.yml', 'storage-expiry.yml', 'storage-dry-run.yml',
                      'storage-play-*.yml', 'group_vars/storage/**', '.github/workflows/storage.yml',
                      '.github/workflows/storage-expiry.yml', 'scripts/storage_ready.py',
-                     'scripts/tests/test_storage_workflows.py'):
+                     'scripts/tests/test_storage_workflows.py', 'storage-host-metrics.yml',
+                     'scripts/tests/test_storage_vm_role.py', 'scripts/tests/test_storage_reconcile.py'):
             self.assertIn(path, ignored)
-        for path in ('roles/k3s_common/**', 'k3s.yml', 'tasks/lab-guard.yml'):
+        for path in ('roles/k3s_common/**', 'k3s.yml', 'tasks/lab-guard.yml', 'scripts/tests/test_storage_fencer.py'):
             self.assertNotIn(path, ignored)
 
 

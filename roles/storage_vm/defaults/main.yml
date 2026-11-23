@@ -33,3 +33,6 @@ storage_vm_timings:
   pause_after: []
 storage_vm_maintenance_root: /maintenance
 storage_vm_csi_driver: org.democratic-csi.node-manual
+# tasks/host-metrics.yml: the pve mount of the TrueNAS dataset behind the retained images (Task 1.1), and its name.
+storage_vm_k3s_block_mount: /mnt/pve/k3s-block
+storage_vm_k3s_block_dataset: apps/k3s-block

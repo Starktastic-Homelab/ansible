@@ -362,6 +362,17 @@ class BootCheckTest(Base):
         self.assertEqual(self.check(), 1)
         self.assertIn('/dev/regen/p', self.err)
 
+    def test_boot_check_writes_metric(self):
+        def written():
+            return (self.tmp / 'textfile/storage-boot-check.prom').read_text()
+        f = self.good()
+        self.assertEqual(self.check(), 0, self.err)
+        self.assertEqual(written(), f'storage_boot_check_ok 1\nstorage_boot_check_timestamp_seconds {NOW}\n')
+        del f.lio.targets_['p']  # a missing LUN binding
+        self.assertEqual(self.check(), 1)
+        self.assertEqual(written(), f'storage_boot_check_ok 0\nstorage_boot_check_timestamp_seconds {NOW}\n')
+        self.assertFalse(list((self.tmp / 'textfile').glob('*.tmp')))
+
     def test_boot_check_regen_stall(self):
         f = self.fake(vgs={'retained': vg(['ledger:a:created'], {'a': (GI, ())}), 'regen': vg(['ledger:p:created'])},
                       targets={'a': {'dev': '/dev/lab/x', 'acls': set()}}, stalled={'regen'})

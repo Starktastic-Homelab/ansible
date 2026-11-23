@@ -307,6 +307,9 @@ def boot_check(cfg):
                     errors.append(f'{id}: LUN 0 is not bound to /dev/{n}/{id}')
     for e in errors:
         host.log(f'error: {e}')
+    # StorageBootCheckFailed: 0 here, or a timestamp older than the boot (this check never ran), alerts.
+    metrics.write('storage-boot-check', [('storage_boot_check_ok', {}, 0 if errors else 1),
+                                         ('storage_boot_check_timestamp_seconds', {}, time.time())])
     return 1 if errors else 0
 
 

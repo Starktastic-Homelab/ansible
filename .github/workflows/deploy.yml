@@ -38,6 +38,9 @@ on:
       - '.github/workflows/storage-expiry.yml'
       - 'scripts/storage_ready.py'
       - 'scripts/tests/test_storage_workflows.py'
+      - 'storage-host-metrics.yml'
+      - 'scripts/tests/test_storage_vm_role.py'
+      - 'scripts/tests/test_storage_reconcile.py'
 
 # Serialize deploys: never cancel an in-progress run (a deploy interrupted
 # mid `helm upgrade` leaves the release in a pending-* state). Queue instead.

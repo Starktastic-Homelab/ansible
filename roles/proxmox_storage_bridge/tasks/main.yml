@@ -39,16 +39,18 @@
 - name: Find guests that use the bridge
   ansible.builtin.find:
     paths: /etc/pve/qemu-server
-    patterns: ['*.conf']
+    patterns: ["*.conf"]
     # find applies re.match from column 0, so skip the "netN: virtio=...," prefix
-    contains: '.*[:,]bridge={{ proxmox_storage_bridge_name }}(,|$)'
+    contains: ".*[:,]bridge={{ proxmox_storage_bridge_name }}(,|$)"
   register: proxmox_storage_bridge_users
   when: proxmox_storage_bridge_state == 'absent'
 
 - name: Refuse to remove a bridge that a guest still uses
   ansible.builtin.assert:
     that: proxmox_storage_bridge_users.matched == 0
-    fail_msg: "Guests still use {{ proxmox_storage_bridge_name }}: {{ proxmox_storage_bridge_users.files | map(attribute='path') | list }}"
+    fail_msg:
+      "Guests still use {{ proxmox_storage_bridge_name }}: {{ proxmox_storage_bridge_users.files | map(attribute='path')
+      | list }}"
     quiet: true
   when: proxmox_storage_bridge_state == 'absent'
 

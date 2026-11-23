@@ -758,37 +758,37 @@ class SharedPlayTests(unittest.TestCase):
     def test_host_metrics_writes_the_alert_series(self):
         write = by_name(role_tasks('host-metrics'), 'Write storage-host.prom')
         args = argv(write)
-        for metric in ('storage_dataset_size_bytes', 'storage_dataset_avail_bytes', 'storage_dataset_timestamp_seconds',
+        for metric in ('storage_dataset_avail_bytes', 'storage_dataset_timestamp_seconds',
                        'storage_maintenance_lock_created_timestamp_seconds'):
             self.assertIn(f"('{metric}',", args[2])
+        self.assertNotIn('size', args[2])  # pve's df size is not the quota; the alert floors avail
         self.assertIn("metrics.write('storage-host',", args[2])
         install = by_name(role_tasks(), 'Install the storage programs')
         self.assertIn(f"sys.path.insert(0, '{module(install, 'copy')['dest'].rstrip('/')}')", args[2])
-        self.assertEqual(by_name(role_tasks('host-metrics'), 'Read the k3s-block size and free space on pve')['timeout'], 60)
-        df = {'stdout_lines': ['Mounted on Type 1B-blocks Avail', '/mnt/pve/k3s-block nfs4 161170000000 104903946240']}
+        self.assertEqual(by_name(role_tasks('host-metrics'), 'Read the k3s-block free space on pve')['timeout'], 60)
+        df = {'stdout_lines': ['Mounted on Type Avail', '/mnt/pve/k3s-block nfs4 104903946240']}
         lock = {'stdout': '{"operation": "ansible-deploy", "created": 1795428000.5}'}
         templar = Templar(variables=defaults(storage_vm_df=df, storage_vm_lock=lock))
         self.assertEqual([str(templar.template(trust_as_template(a))) for a in args[3:]],  # argv items become strings
-                         ['apps/k3s-block', '161170000000', '104903946240', 'ansible-deploy', '1795428000.5'])
+                         ['apps/k3s-block', '104903946240', 'ansible-deploy', '1795428000.5'])
         with tempfile.TemporaryDirectory() as d, mock.patch.object(metrics, 'TEXTFILE_DIR', Path(d)), \
-                mock.patch.object(sys, 'argv', ['-c', 'apps/k3s-block', '100', '15', '', '0']):
+                mock.patch.object(sys, 'argv', ['-c', 'apps/k3s-block', '15', '', '0']):
             exec(args[2], {})  # the role's own metrics module: the path insert finds nothing here
             text = (Path(d) / 'storage-host.prom').read_text()
-        self.assertRegex(text, r'^storage_dataset_size_bytes\{dataset="apps/k3s-block"\} 100\n'
-                               r'storage_dataset_avail_bytes\{dataset="apps/k3s-block"\} 15\n'
+        self.assertRegex(text, r'^storage_dataset_avail_bytes\{dataset="apps/k3s-block"\} 15\n'
                                r'storage_dataset_timestamp_seconds \d+(\.\d+)?\n'  # test_proxmox_backup pins time.time to an int
                                r'storage_maintenance_lock_created_timestamp_seconds\{operation=""\} 0\.0\n$')
 
     def test_host_metrics_df_must_be_the_nfs_mount(self):
         # An unmounted path reports pve's root filesystem with a fresh timestamp; fail so the staleness leg fires.
-        df = by_name(role_tasks('host-metrics'), 'Read the k3s-block size and free space on pve')
-        self.assertEqual(argv(df)[:3], ['df', '-B1', '--output=target,fstype,size,avail'])
+        df = by_name(role_tasks('host-metrics'), 'Read the k3s-block free space on pve')
+        self.assertEqual(argv(df)[:3], ['df', '-B1', '--output=target,fstype,avail'])
         failed = lambda rc, line: holds([df['failed_when']], storage_vm_df={
-            'rc': rc, 'stdout_lines': ['Mounted on Type 1B-blocks Avail', line] if line else []})
-        self.assertFalse(failed(0, '/mnt/pve/k3s-block nfs4 161170000000 104903946240'))
-        self.assertFalse(failed(0, '/mnt/pve/k3s-block nfs 161170000000 104903946240'))
-        self.assertTrue(failed(0, '/ zfs 100000000000 90000000000'))  # not mounted: rpool
-        self.assertTrue(failed(0, '/mnt/pve/k3s-block zfs 100000000000 90000000000'))
+            'rc': rc, 'stdout_lines': ['Mounted on Type Avail', line] if line else []})
+        self.assertFalse(failed(0, '/mnt/pve/k3s-block nfs4 104903946240'))
+        self.assertFalse(failed(0, '/mnt/pve/k3s-block nfs 104903946240'))
+        self.assertTrue(failed(0, '/ zfs 90000000000'))  # not mounted: rpool
+        self.assertTrue(failed(0, '/mnt/pve/k3s-block zfs 90000000000'))
         self.assertTrue(failed(1, ''))
 
     def test_host_metrics_playbook_takes_no_lock(self):

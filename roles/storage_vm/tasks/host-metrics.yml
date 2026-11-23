@@ -2,9 +2,9 @@
 # Dataset and lock gauges for StorageDatasetLow and MaintenanceLockStale (ADR 0017): no exporter runs on pve or on the
 # runner, so they are written on the storage VM, whose node-exporter is scraped. Only storage-host-metrics.yml runs
 # this, without the lock: a read-only df on pve, a read of the lock record, one textfile.
-- name: Read the k3s-block size and free space on pve
+- name: Read the k3s-block free space on pve
   ansible.builtin.command:
-    argv: [df, -B1, "--output=target,fstype,size,avail", "{{ storage_vm_k3s_block_mount }}"]
+    argv: [df, -B1, "--output=target,fstype,avail", "{{ storage_vm_k3s_block_mount }}"]
   delegate_to: "{{ groups['proxmox_hosts'][0] }}"
   become: false
   register: storage_vm_df
@@ -49,15 +49,13 @@
         import sys, time
         sys.path.insert(0, '/usr/local/lib/homelab-storage')
         from homelab_storage import metrics
-        dataset, size, avail, operation, created = sys.argv[1:]
+        dataset, avail, operation, created = sys.argv[1:]
         metrics.write('storage-host', [
-            ('storage_dataset_size_bytes', {'dataset': dataset}, int(size)),
             ('storage_dataset_avail_bytes', {'dataset': dataset}, int(avail)),
             ('storage_dataset_timestamp_seconds', {}, time.time()),
             ('storage_maintenance_lock_created_timestamp_seconds', {'operation': operation}, float(created))])
       - "{{ storage_vm_k3s_block_dataset }}"
       - "{{ (storage_vm_df.stdout_lines | last).split()[2] }}"
-      - "{{ (storage_vm_df.stdout_lines | last).split()[3] }}"
       - "{{ (storage_vm_lock.stdout | from_json).operation }}"
       - "{{ (storage_vm_lock.stdout | from_json).created }}"
   changed_when: true

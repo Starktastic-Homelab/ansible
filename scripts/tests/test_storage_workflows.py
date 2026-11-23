@@ -326,14 +326,14 @@ class WorkflowTests(unittest.TestCase):
         self.assertFalse(evaluate(adopt['if'], {('ready', 'ready'): 'false'}, dispatch))
         pinned = load_helper(pinned_helper(), 'pinned_lock_adopt')
 
-        def attempt(input_owner, holder=None):
+        def attempt(input_owner, holder=None, operation='storage-cutover:storage-restore'):  # lock.sh's form
             d = tempfile.TemporaryDirectory()
             self.addCleanup(d.cleanup)
             f = Fixture(d.name)
             nonce = None
             if holder:
                 with mock.patch.dict(os.environ, HOMELAB_RUNNER_INSTANCE='fixture'):
-                    nonce = pinned.acquire(f.lock, 'storage-restore', holder)
+                    nonce = pinned.acquire(f.lock, operation, holder)
             f.env['HELD_LOCK_OWNER'] = input_owner
             return f, nonce, f.run(adopt)
 
@@ -345,6 +345,12 @@ class WorkflowTests(unittest.TestCase):
                                     ('x' + RESTORE_OWNER, None)):
             with self.subTest(input=input_owner, holder=holder):
                 f, nonce, got = attempt(input_owner, holder if holder and '\n' not in holder else None)
+                self.assertNotEqual(got.returncode, 0)
+                self.assertFalse((f.d / 'env').exists())
+                self.assertEqual(f.outputs(), {})
+        for operation in ('storage-cutover:dry-run', 'storage-restore'):  # the owner's lock, another operation
+            with self.subTest(operation=operation):
+                f, nonce, got = attempt(RESTORE_OWNER, RESTORE_OWNER, operation)
                 self.assertNotEqual(got.returncode, 0)
                 self.assertFalse((f.d / 'env').exists())
                 self.assertEqual(f.outputs(), {})

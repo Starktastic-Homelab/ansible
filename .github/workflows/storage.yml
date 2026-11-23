@@ -139,6 +139,8 @@ jobs:
               sys.exit('No maintenance lock is held')
           if record.get('owner') != owner:
               sys.exit('The maintenance lock is held by another owner')
+          if record.get('operation') != 'storage-cutover:storage-restore':  # lock.sh acquire storage-restore
+              sys.exit('The maintenance lock is not the restore runbook\'s')
           nonce = record.get('nonce')
           if not isinstance(nonce, str) or not re.fullmatch(r'[0-9a-f]{64}', nonce):
               sys.exit('The maintenance record has no valid nonce')

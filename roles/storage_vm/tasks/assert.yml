@@ -23,6 +23,23 @@
       storage_vm_ssh_sources must be a non-empty list of IPv4 addresses or CIDRs, storage_vm_bridge_address an IPv4
       address, and storage_vm_workers a non-empty list of unique {name, bridge_address}.
 
+# shortcut: a prefix compare, so only an x.y.z.0/24 subnet passes; the runner image has no netaddr for
+# ansible.utils.ipaddr. Upgrade both this and group_vars/storage/storage_vm.yml if the bridge needs another size.
+- name: Require distinct worker bridge addresses inside the bridge subnet
+  ansible.builtin.assert:
+    that:
+      - storage_vm_bridge_subnet is string
+      - storage_vm_bridge_subnet is match('^[0-9]{1,3}([.][0-9]{1,3}){2}[.]0/24$')
+      - >-
+        storage_vm_workers | map(attribute='bridge_address')
+        | select('match', '^' ~ (storage_vm_bridge_subnet[:-4] | regex_escape) ~ '[0-9]{1,3}$') | list | length
+        == storage_vm_workers | length
+      - storage_vm_bridge_address not in (storage_vm_workers | map(attribute='bridge_address') | list)
+      - storage_vm_workers | map(attribute='bridge_address') | unique | list | length == storage_vm_workers | length
+    fail_msg: >-
+      Every storage_vm_workers bridge_address must be inside storage_vm_bridge_subnet (an x.y.z.0/24), unique, and
+      not storage_vm_bridge_address.
+
 - name: Require one distinct PV path per VG
   ansible.builtin.assert:
     that:
@@ -86,5 +103,5 @@
     that:
       - >-
         (storage_vm_timings.pause_after | default([]) | length == 0)
-        or ('/lab-storage/' in (inventory_file | default('')))
+        or (lab | default(false) | bool)
     fail_msg: storage_vm_timings.pause_after is lab-only (ADR 0017); production never sets it.

@@ -59,8 +59,9 @@ def role_tasks(name='main'):
 def defaults(**values):
     variables = load(ROLE / 'defaults/main.yml')
     variables['storage_initiator_iqn_prefix'] = GROUP_ALL['storage_initiator_iqn_prefix']
-    variables.update({'vip_address': '10.9.9.99', 'argocd_repo_url': 'https://example.invalid/apps.git',
+    variables.update({'vip_address': GROUP_ALL['production_vip_address'], 'argocd_repo_url': 'https://example.invalid/apps.git',
                       'ansible_managed': 'managed', 'storage_vm_workers': WORKERS, 'storage_vm_bridge_address': BRIDGE,
+                      'storage_vm_bridge_subnet': '10.77.0.0/24',
                       'storage_vm_ssh_sources': ['10.9.9.0/24', '10.9.8.0/24'], 'storage_vm_bridge_iface': 'eth1',
                       'storage_vm_fenced_addresses': [],
                       'storage_vm_pv_devices': {'retained': '/dev/disk/by-path/pci-0000:06:0b.0',
@@ -129,11 +130,14 @@ class LabGuardTests(unittest.TestCase):
     def guard(self):
         return load(ROOT / 'tasks/lab-guard.yml')[0]
 
-    def guard_passes(self, inventory_file, vip, masters):
+    def guard_passes(self, lab, vip, masters):
         t = self.guard()
         hostvars = {h: {'ansible_host': a} for h, a in masters.items()}
-        variables = {'inventory_file': inventory_file, 'vip_address': vip, 'hostvars': hostvars,
+        variables = {'inventory_file': '/any/inventory.yml', 'vip_address': vip, 'hostvars': hostvars,
+                     'production_vip_address': GROUP_ALL['production_vip_address'],
                      'groups': {'masters': list(masters), 'all': list(masters)}}
+        if lab is not None:
+            variables['lab'] = lab
         templar = Templar(variables=variables)
         if not templar.evaluate_conditional(t['when']):
             return None  # skipped
@@ -147,11 +151,14 @@ class LabGuardTests(unittest.TestCase):
                              ('all', False, True, ['always']), name)
             self.assertEqual(first['tasks'], [{'name': 'Refuse a lab run aimed at production',
                                                'ansible.builtin.import_tasks': 'tasks/lab-guard.yml', 'run_once': True}])
-        lab = '/maintenance/lab-storage/inventory.yml'
-        self.assertFalse(self.guard_passes(lab, '10.9.9.99', {'lab-server': '10.9.9.99'}))
-        self.assertFalse(self.guard_passes(lab, '10.9.9.180', {'lab-server': '10.9.9.181'}))
-        self.assertTrue(self.guard_passes(lab, '10.9.9.181', {'lab-server': '10.9.9.181'}))
-        self.assertIsNone(self.guard_passes('/work/ansible/inventory/proxmox.yml', '10.9.9.99', {'m': '10.9.9.11'}))
+        prod_vip = GROUP_ALL['production_vip_address']
+        self.assertEqual(prod_vip, '10.9.9.99')
+        self.assertEqual(GROUP_ALL['vip_address'], '{{ production_vip_address }}')
+        self.assertFalse(self.guard_passes(True, prod_vip, {'lab-server': prod_vip}))
+        self.assertFalse(self.guard_passes(True, '10.9.9.180', {'lab-server': '10.9.9.181'}))
+        self.assertTrue(self.guard_passes(True, '10.9.9.181', {'lab-server': '10.9.9.181'}))
+        self.assertIsNone(self.guard_passes(None, prod_vip, {'m': '10.9.9.11'}))  # production: lab unset
+        self.assertIsNone(self.guard_passes(False, prod_vip, {'m': '10.9.9.11'}))
 
 
 class RoleTests(unittest.TestCase):
@@ -179,6 +186,58 @@ class RoleTests(unittest.TestCase):
         self.assertFalse(holds(that, storage_vm_workers=WORKERS + [WORKERS[0]]))
         self.assertFalse(holds(that, storage_vm_bridge_address=''))
 
+    def test_bridge_addresses_in_subnet_unique(self):
+        t = by_name(role_tasks('assert'), 'Require distinct worker bridge addresses inside the bridge subnet')
+        that = module(t, 'assert')['that']
+        self.assertTrue(holds(that))
+        w1 = WORKERS[0]
+        for bad in ([w1, {'name': 'k3s-worker-02', 'bridge_address': BRIDGE}],          # the storage VM's address
+                    [w1, {'name': 'k3s-worker-02', 'bridge_address': w1['bridge_address']}],  # two on one address
+                    [w1, {'name': 'k3s-worker-02', 'bridge_address': '10.77.1.22'}],   # outside the subnet
+                    [w1, {'name': 'k3s-worker-02', 'bridge_address': '10.77.0.222.1'}]):
+            self.assertFalse(holds(that, storage_vm_workers=bad), bad)
+        for subnet in ('', '10.77.0.0/16', '10.77.0.5/24', '10.77.0.0'):  # only an x.y.z.0/24 subnet
+            self.assertFalse(holds(that, storage_vm_bridge_subnet=subnet), subnet)
+        self.assertTrue(holds(that, storage_vm_bridge_subnet='10.77.0.0/24'))
+
+    def production_vars(self, nics):
+        """group_vars/storage/storage_vm.yml templated over a fake inventory: nics maps a worker to its ipconfigN."""
+        raw = load(ROOT / 'group_vars/storage/storage_vm.yml')
+        hostvars = {w: {f'proxmox_ipconfig{n}': {'ip': ip, 'gw': '10.9.9.1'} if ip else {} for n, ip in c.items()}
+                    for w, c in nics.items()}
+        for h in hostvars.values():
+            h['ansible_host'] = 'unused'
+        templar = Templar(loader=DataLoader(), variables={**raw, 'groups': {'workers': list(nics)}, 'hostvars': hostvars})
+        return raw, {k: templar.template(v) for k, v in raw.items()}
+
+    def test_production_storage_vars(self):
+        prod = {w: {0: f'10.9.9.5{n}/24', 1: f'10.9.8.5{n}/24', 2: f'10.99.2.{20 + n}/24'}
+                for w, n in (('kube-worker-02', 2), ('kube-worker-01', 1))}
+        raw, v = self.production_vars(prod)
+        self.assertEqual(v['storage_vm_workers'], [
+            {'name': 'kube-worker-01', 'bridge_address': '10.99.2.21'},
+            {'name': 'kube-worker-02', 'bridge_address': '10.99.2.22'}])
+        self.assertEqual(v['storage_vm_bridge_address'], '10.99.2.10')
+        self.assertEqual(v['storage_vm_bridge_subnet'], '10.99.2.0/24')
+        self.assertEqual(v['storage_vm_ssh_sources'], ['10.9.9.0/24'])
+        self.assertNotIn('storage_vm_pv_devices', raw)  # the file as loaded; set in Task 3.5
+        tasks = role_tasks('assert')
+        first = module(tasks[0], 'assert')['that']
+        bridge = module(by_name(tasks, 'Require distinct worker bridge addresses inside the bridge subnet'), 'assert')['that']
+        self.assertTrue(holds(first + bridge, **v))
+        # The one-NIC cohort fixture: the storage NIC is ipconfig1. Selection is by subnet, never by index.
+        _, one = self.production_vars({'kube-worker-01': {0: '10.9.9.51/24', 1: '10.99.2.21/24'}})
+        self.assertEqual(one['storage_vm_workers'], [{'name': 'kube-worker-01', 'bridge_address': '10.99.2.21'}])
+        # No worker, none or two addresses in the subnet, or a NIC without ip: never a shorter list.
+        _, empty = self.production_vars({})
+        self.assertEqual(empty['storage_vm_workers'], [])
+        self.assertFalse(holds(first, **empty))
+        for nics in ({0: '10.9.9.51/24', 1: '10.9.8.51/24'}, {0: '10.9.9.51/24', 1: '10.99.2.21/24', 2: '10.99.2.31/24'},
+                     {0: '10.9.9.51/24', 1: None, 2: 'dhcp'}):
+            _, bad = self.production_vars({'kube-worker-01': nics, 'kube-worker-02': prod['kube-worker-02']})
+            self.assertEqual([w['name'] for w in bad['storage_vm_workers']], ['kube-worker-01', 'kube-worker-02'], nics)
+            self.assertFalse(holds(first, **bad), nics)
+
     def test_no_restart_of_target_or_nftables(self):
         for t in all_tasks():
             for key in ('ansible.builtin.systemd', 'ansible.builtin.systemd_service', 'ansible.builtin.service'):
@@ -198,12 +257,13 @@ class RoleTests(unittest.TestCase):
         t = next(t for t in role_tasks('assert') if 'pause_after' in json.dumps(t))
         self.assertNotIn('when', t)
         that = module(t, 'assert')['that']
-        prod, lab = '/work/ansible/inventory/proxmox.yml', '/maintenance/lab-storage/inventory.yml'
         paused = dict(defaults()['storage_vm_timings'], pause_after=['reconcile:after-create'])
-        self.assertTrue(holds(that, inventory_file=prod))
-        self.assertFalse(holds(that, inventory_file=prod, storage_vm_timings=paused))
-        self.assertFalse(holds(that, storage_vm_timings=paused))  # no inventory_file is not the lab
-        self.assertTrue(holds(that, inventory_file=lab, storage_vm_timings=paused))
+        lab_path = '/maintenance/lab-storage/inventory.yml'
+        self.assertTrue(holds(that))
+        self.assertFalse(holds(that, storage_vm_timings=paused))  # lab unset is production
+        self.assertFalse(holds(that, lab=False, storage_vm_timings=paused))
+        self.assertFalse(holds(that, inventory_file=lab_path, storage_vm_timings=paused))  # the path is not the marker
+        self.assertTrue(holds(that, lab=True, inventory_file='/any/inventory.yml', storage_vm_timings=paused))
 
     def test_persistent_journal_on_storage_vm(self):
         t = by_name(role_tasks(), 'Ensure the persistent journal directory exists')
@@ -796,7 +856,14 @@ class ExpiryPlaybookTests(unittest.TestCase):
 
 class BootUnitTests(unittest.TestCase):
     def test_targetctl_dropin(self):
-        self.assertEqual(render('rtslib-fb-targetctl.service.d-50-homelab.conf.j2'), TARGETCTL_DROPIN)
+        pv = {'retained': '/dev/disk/by-id/virtio-retained', 'regen': '/dev/disk/by-id/virtio-regen'}
+        unit = r'dev-disk-by\x2did-virtio\x2dretained.device'
+        want = [line for line in TARGETCTL_DROPIN.replace(DEV_UNIT, unit).replace(
+            '/dev/disk/by-path/pci-0000:06:0b.0', pv['retained']).splitlines() if not line.startswith('#')]
+        got = render('rtslib-fb-targetctl.service.d-50-homelab.conf.j2', storage_vm_pv_devices=pv)
+        self.assertEqual([line for line in got.splitlines() if not line.startswith('#')], want)
+        self.assertIn(f'Wants={unit}', want)
+        self.assertIn('ExecStartPre=/sbin/vgchange --devices /dev/disk/by-id/virtio-retained -ay retained', want)
 
     def test_guest_panics_on_oops(self):
         t = by_name(role_tasks(), 'Reboot 10 s after a kernel oops')
@@ -812,10 +879,16 @@ class LabExampleTests(unittest.TestCase):
         inv = load(ROOT / 'lab/inventory.example.yml')
         self.assertEqual(set(inv['all']['children']), {'storage', 'all_k3s'})
         self.assertEqual(set(inv['all']['children']['all_k3s']['children']), {'masters', 'workers'})
-        self.assertNotIn('vars', str(inv))
+        self.assertEqual(inv['all']['vars'], {'lab': True})  # the lab marker; nothing else in the inventory
+        self.assertNotIn('vars', str(inv['all']['children']))
         lab_vars = load(ROOT / 'lab/vars.example.yml')
-        self.assertNotEqual(lab_vars['vip_address'], '10.9.9.99')
+        self.assertNotIn('lab', lab_vars)  # the guard exists to catch a run that forgot this file
+        self.assertNotEqual(lab_vars['vip_address'], GROUP_ALL['production_vip_address'])
         self.assertTrue(lab_vars['storage_vm_ssh_sources'])
+        tasks = role_tasks('assert')
+        that = module(tasks[0], 'assert')['that'] + module(
+            by_name(tasks, 'Require distinct worker bridge addresses inside the bridge subnet'), 'assert')['that']
+        self.assertTrue(holds(that, **lab_vars))
 
     def test_examples_match_the_plan(self):
         groups = load(ROOT / 'lab/inventory.example.yml')['all']['children']['all_k3s']['children']

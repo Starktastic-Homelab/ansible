@@ -4,7 +4,9 @@ ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
 
 mgmt_iface: eth0
 flannel_iface: eth1
-vip_address: "10.9.9.99"
+# The production kube-vip address; the lab guard (tasks/lab-guard.yml) refuses a lab run that would use it.
+production_vip_address: "10.9.9.99"
+vip_address: "{{ production_vip_address }}"
 
 # Domain configuration
 base_domain: "starktastic.net"

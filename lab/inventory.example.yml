@@ -1,8 +1,10 @@
 ---
 # Example only: the real file is <lab>/inventory.yml on VM300 (/maintenance/lab-storage/inventory.yml). Hosts and
-# groups only; every override goes in <lab>/vars.yml, passed as -e @<lab>/vars.yml on every lab run. The path must
-# contain /lab-storage/ so the lab guard checks the VIP. Addresses are placeholders (RFC 5737).
+# groups and the lab marker only; every override goes in <lab>/vars.yml, passed as -e @<lab>/vars.yml on every lab
+# run. lab: true makes the lab guard check the VIP and allows pause_after. Addresses are placeholders (RFC 5737).
 all:
+  vars:
+    lab: true
   children:
     storage:
       hosts:

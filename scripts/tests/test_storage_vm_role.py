@@ -927,7 +927,7 @@ class SharedPlayTests(unittest.TestCase):
         got = run()
         self.assertNotEqual(got.returncode, 0, got.stdout[-3000:])
         self.assertIn('Check out only the inventory file', got.stdout)
-        self.assertNotIn('Validate the inventory with the controller copy of the role] *\nok', got.stdout)
+        self.assertNotIn('Validate the inventory with the controller copy of the role', got.stdout)  # never reached
         (repo / path).parent.mkdir(parents=True)
         (repo / path).write_text('[]\n')
         git('add', '-A')

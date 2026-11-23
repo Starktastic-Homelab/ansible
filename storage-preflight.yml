@@ -39,7 +39,8 @@
 
     - name: Show the k3s answer
       ansible.builtin.debug:
-        msg: "k3s answers on {{ groups['masters'][0] }}: {{ hostvars[groups['masters'][0]].storage_vm_k3s_ready | bool }}"
+        msg:
+          "k3s answers on {{ groups['masters'][0] }}: {{ hostvars[groups['masters'][0]].storage_vm_k3s_ready | bool }}"
 
 # No kubeconfig play ran, so only the checkout is removed.
 - name: Remove the inventory checkout

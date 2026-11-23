@@ -11,8 +11,7 @@
   changed_when: false
   # Unmounted (pve booted while TrueNAS was down), df reports pve's root filesystem: fail, so the staleness leg fires.
   failed_when: >-
-    storage_vm_df.rc | default(1) != 0
-    or (storage_vm_df.stdout_lines | last).split()[0] != storage_vm_k3s_block_mount
+    storage_vm_df.rc | default(1) != 0 or (storage_vm_df.stdout_lines | last).split()[0] != storage_vm_k3s_block_mount
     or not (storage_vm_df.stdout_lines | last).split()[1].startswith('nfs')
   # A hard NFS mount blocks while TrueNAS is down; never hold the reconcile behind it.
   timeout: 60

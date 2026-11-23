@@ -6,7 +6,8 @@
 - name: Find the bridge interface
   ansible.builtin.set_fact:
     storage_vm_bridge_iface: >-
-      {{ ansible_facts.interfaces | map('regex_replace', '[^A-Za-z0-9_]', '_') | map('extract', ansible_facts) | select('mapping')
+      {{ ansible_facts.interfaces | map('regex_replace', '[^A-Za-z0-9_]', '_') | map('extract', ansible_facts) |
+      select('mapping')
          | selectattr('ipv4', 'defined') | selectattr('ipv4.address', 'equalto', storage_vm_bridge_address)
          | map(attribute='device') | first | default('') }}
 
@@ -128,7 +129,7 @@
 # nftables.conf renders the fenced set from the VG tags, read under the lock the fencer takes to change them.
 - name: Read the fence tags under the LIO lock
   ansible.builtin.command:
-    argv: [flock, -w, '120', /run/lock/storage-lio, /usr/local/sbin/storage-fencer, status]
+    argv: [flock, -w, "120", /run/lock/storage-lio, /usr/local/sbin/storage-fencer, status]
   register: storage_vm_fence_status
   changed_when: false
 

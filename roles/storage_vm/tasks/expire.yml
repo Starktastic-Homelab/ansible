@@ -6,7 +6,8 @@
 
 - name: Warn about pending-delete volumes that are back in the inventory
   ansible.builtin.debug:
-    msg: "WARNING: {{ item.id }} is pending-delete but in the inventory on {{ storage_vm_inventory_branch }}; not expired."
+    msg:
+      "WARNING: {{ item.id }} is pending-delete but in the inventory on {{ storage_vm_inventory_branch }}; not expired."
   loop: "{{ storage_vm_expiry_all | selectattr('id', 'in', storage_vm_inventory_ids) | list }}"
   loop_control:
     label: "{{ item.id }}"

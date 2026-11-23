@@ -44,17 +44,17 @@
         that:
           - not storage_vm_candidate.sessions
           - >-
-            storage_vm_expiry_vas.resources | selectattr('spec.source.persistentVolumeName', 'defined')
-            | map(attribute='spec.source.persistentVolumeName')
-            | intersect(storage_vm_expiry_pvs | map(attribute='metadata.name') | list) | length == 0
+            storage_vm_expiry_vas.resources | selectattr('spec.source.persistentVolumeName', 'defined') |
+            map(attribute='spec.source.persistentVolumeName') | intersect(storage_vm_expiry_pvs |
+            map(attribute='metadata.name') | list) | length == 0
           - storage_vm_expiry_used_claims | default('', true) | trim | length == 0
         fail_msg: "{{ storage_vm_candidate.id }} is still in use; nothing deleted."
       vars:
         # Claim names that a Pod in the claim's namespace mounts (an empty result renders as None).
         storage_vm_expiry_used_claims: >-
-          {% for r in storage_vm_expiry_pods.results if r.item.name in (r.resources
-          | map(attribute='spec.volumes', default=[]) | flatten | selectattr('persistentVolumeClaim', 'defined')
-          | map(attribute='persistentVolumeClaim.claimName')) %}{{ r.item.name }} {% endfor %}
+          {% for r in storage_vm_expiry_pods.results if r.item.name in (r.resources | map(attribute='spec.volumes',
+          default=[]) | flatten | selectattr('persistentVolumeClaim', 'defined') |
+          map(attribute='persistentVolumeClaim.claimName')) %}{{ r.item.name }} {% endfor %}
 
     - name: Delete the claims of this volume
       kubernetes.core.k8s:

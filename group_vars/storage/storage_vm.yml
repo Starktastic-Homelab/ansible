@@ -8,15 +8,13 @@ storage_vm_bridge_subnet: 10.99.2.0/24
 # ansible.utils.ipaddr: the runner's pip ansible 15.0.0 (core 2.22.0) has no netaddr (checked 2026-11-23), and the
 # role asserts the subnet is an x.y.z.0/24.
 storage_vm_workers: >-
-  {%- set ns = namespace(workers=[]) -%}
-  {%- for name in groups['workers'] | sort -%}
-  {%- set addresses = hostvars[name].keys() | select('match', '^proxmox_ipconfig[0-9]+$')
+  {%- set ns = namespace(workers=[]) -%} {%- for name in groups['workers'] | sort -%} {%- set addresses =
+  hostvars[name].keys() | select('match', '^proxmox_ipconfig[0-9]+$')
       | map('extract', hostvars[name]) | selectattr('ip', 'defined') | map(attribute='ip')
       | map('split', '/') | map('first')
       | select('match', '^' ~ (storage_vm_bridge_subnet[:-4] | regex_escape) ~ '[0-9]{1,3}$') | list -%}
-  {%- set ns.workers = ns.workers + [{'name': name, 'bridge_address': addresses | join(',')}] -%}
-  {%- endfor -%}
-  {{ ns.workers }}
+  {%- set ns.workers = ns.workers + [{'name': name, 'bridge_address': addresses | join(',')}] -%} {%- endfor -%} {{
+  ns.workers }}
 storage_vm_bridge_address: 10.99.2.10
 # The LAN the storage VM sits on; the runner VM300 (10.9.9.10) and the VIP are on it.
 storage_vm_ssh_sources:

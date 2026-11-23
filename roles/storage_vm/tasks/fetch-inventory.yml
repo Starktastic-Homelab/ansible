@@ -12,8 +12,15 @@
 
 - name: Resolve the inventory branch tip
   ansible.builtin.command:
-    argv: [git, ls-remote, --exit-code, --, "{{ storage_vm_inventory_repo }}",
-           "refs/heads/{{ storage_vm_inventory_branch }}"]
+    argv:
+      [
+        git,
+        ls-remote,
+        --exit-code,
+        --,
+        "{{ storage_vm_inventory_repo }}",
+        "refs/heads/{{ storage_vm_inventory_branch }}"
+      ]
   register: storage_vm_ls_remote
   changed_when: false
 
@@ -49,14 +56,34 @@
 
 - name: Fetch the inventory commit
   ansible.builtin.command:
-    argv: [git, -C, "{{ storage_vm_checkout.path }}", fetch, -q, --depth, "1", --, "{{ storage_vm_inventory_repo }}",
-           "{{ storage_vm_inventory_sha }}"]
+    argv:
+      [
+        git,
+        -C,
+        "{{ storage_vm_checkout.path }}",
+        fetch,
+        -q,
+        --depth,
+        "1",
+        --,
+        "{{ storage_vm_inventory_repo }}",
+        "{{ storage_vm_inventory_sha }}"
+      ]
   changed_when: false
 
 - name: Check out only the inventory file
   ansible.builtin.command:
-    argv: [git, -C, "{{ storage_vm_checkout.path }}", checkout, -q, "{{ storage_vm_inventory_sha }}", --,
-           "{{ storage_vm_inventory_path }}"]
+    argv:
+      [
+        git,
+        -C,
+        "{{ storage_vm_checkout.path }}",
+        checkout,
+        -q,
+        "{{ storage_vm_inventory_sha }}",
+        --,
+        "{{ storage_vm_inventory_path }}"
+      ]
   changed_when: false
 
 - name: Record the inventory file
@@ -65,6 +92,13 @@
 
 - name: Validate the inventory with the controller copy of the role
   ansible.builtin.command:
-    argv: ["{{ ansible_playbook_python }}", -I, "{{ playbook_dir }}/roles/storage_vm/files/storage-reconcile", validate,
-           --inventory, "{{ storage_vm_inventory_file }}"]
+    argv:
+      [
+        "{{ ansible_playbook_python }}",
+        -I,
+        "{{ playbook_dir }}/roles/storage_vm/files/storage-reconcile",
+        validate,
+        --inventory,
+        "{{ storage_vm_inventory_file }}"
+      ]
   changed_when: false

@@ -4,8 +4,19 @@
 # and API URL as kubeconfig.yml and k8s_info; any answer but ok records false, and the workflow skips green.
 - name: Ask the API at storage_vm_api_url for readiness
   ansible.builtin.command:
-    argv: [k3s, kubectl, --kubeconfig, /etc/rancher/k3s/k3s.yaml, --server, "{{ storage_vm_api_url }}",
-           --request-timeout=20s, get, --raw, /readyz]
+    argv:
+      [
+        k3s,
+        kubectl,
+        --kubeconfig,
+        /etc/rancher/k3s/k3s.yaml,
+        --server,
+        "{{ storage_vm_api_url }}",
+        --request-timeout=20s,
+        get,
+        --raw,
+        /readyz
+      ]
   become: true
   register: storage_vm_k3s_readyz
   changed_when: false
@@ -14,4 +25,5 @@
 
 - name: Record whether k3s answers
   ansible.builtin.set_fact:
-    storage_vm_k3s_ready: "{{ storage_vm_k3s_readyz.rc | default(1) == 0 and storage_vm_k3s_readyz.stdout | default('') | trim == 'ok' }}"
+    storage_vm_k3s_ready:
+      "{{ storage_vm_k3s_readyz.rc | default(1) == 0 and storage_vm_k3s_readyz.stdout | default('') | trim == 'ok' }}"

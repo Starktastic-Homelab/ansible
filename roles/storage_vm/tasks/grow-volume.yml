@@ -39,8 +39,8 @@
         that:
           - storage_vm_device_size.stdout | int >= storage_vm_volume.size_bytes | int
         fail_msg: >-
-          {{ storage_vm_device }} is {{ storage_vm_device_size.stdout }} bytes after a rescan, less than
-          {{ storage_vm_volume.size_bytes }}; not resizing.
+          {{ storage_vm_device }} is {{ storage_vm_device_size.stdout }} bytes after a rescan, less than {{
+          storage_vm_volume.size_bytes }}; not resizing.
 
     # resize2fs on an unmounted fs takes the offline path: it demands e2fsck and exits 1, or races kubelet's mount.
     - name: Find the mounted filesystem of the device

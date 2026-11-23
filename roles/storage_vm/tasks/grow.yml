@@ -55,8 +55,8 @@
 - name: Report the volumes not grown on an unreachable node
   ansible.builtin.debug:
     msg: >-
-      WARNING: {{ inventory_hostname }} is unreachable; not grown: {{ storage_vm_grow_volumes | map(attribute='id')
-      | join(', ') }}. The next run retries.
+      WARNING: {{ inventory_hostname }} is unreachable; not grown: {{ storage_vm_grow_volumes | map(attribute='id') |
+      join(', ') }}. The next run retries.
   when: storage_vm_node_answers is failed
 
 - name: Grow each attached exported volume

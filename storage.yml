@@ -155,7 +155,9 @@
   tasks:
     - name: Fail if the first boot check failed
       ansible.builtin.fail:
-        msg: "storage-reconcile boot-check exited {{ storage_vm_first_check.rc }}: {{ storage_vm_first_check.stderr | default('') }}"
+        msg:
+          "storage-reconcile boot-check exited {{ storage_vm_first_check.rc }}: {{ storage_vm_first_check.stderr |
+          default('') }}"
       vars:
         storage_vm_first_check: "{{ hostvars[groups['storage'][0]].storage_vm_first_boot_check | default({}) }}"
       when: storage_vm_first_check.rc | default(0) != 0
@@ -163,8 +165,8 @@
     - name: Fail if the reconcile refused an entry or failed
       ansible.builtin.fail:
         msg: >-
-          storage-reconcile apply exited {{ storage_vm_reconcile_result.rc }}:
-          {{ storage_vm_reconcile_result.stderr | default('') }}
+          storage-reconcile apply exited {{ storage_vm_reconcile_result.rc }}: {{ storage_vm_reconcile_result.stderr |
+          default('') }}
       vars:
         storage_vm_reconcile_result: "{{ hostvars[groups['storage'][0]].storage_vm_apply }}"
       when: storage_vm_reconcile_result.rc != 0

@@ -578,7 +578,7 @@ class FreeSpaceTest(Base):
         self.assertEqual(sorted({c[0] for c, _ in f.calls}), ['lvs', 'systemctl', 'vgs'])
         self.assertEqual({c[:2] for c, _ in f.calls if c[0] == 'systemctl'}, {('systemctl', 'show')})
         self.assertFalse(any(held for _, held in f.calls))
-        self.assertEqual(list((self.tmp / 'textfile').iterdir()), [])
+        self.assertEqual([p.name for p in (self.tmp / 'textfile').iterdir()], ['storage-reconcile.prom'])  # gauges only
 
     def test_vg_read_sets_free_bytes(self):
         from homelab_storage import lvm
@@ -730,11 +730,37 @@ class LockAndTargetctlTest(Base):
         self.assertIn('hold_create set, 1 creates refused', self.err)
         self.assertEqual(sorted({c[0] for c, _ in f.calls}), ['lvs', 'systemctl', 'vgs'])
         self.assertEqual({c[:2] for c, _ in f.calls if c[0] == 'systemctl'}, {('systemctl', 'show')})
-        self.assertEqual(list((self.tmp / 'textfile').iterdir()), [])
+        # Its one write is the gauges textfile (finding n=2); the success time is not its to set.
+        self.assertEqual([p.name for p in (self.tmp / 'textfile').iterdir()], ['storage-reconcile.prom'])
+        self.assertIn('storage_last_reconcile_success_timestamp_seconds 0\n',
+                      (self.tmp / 'textfile/storage-reconcile.prom').read_text())
         f2 = self.fake(vgs=state())
         rc2, real = self.apply([entry('a', size='2Gi'), entry('b')])
         self.assertEqual(rc2, 1)
         self.assertEqual((dry['actions'], dry['refusals']), (real['actions'], real['refusals']))
+
+    def test_dry_run_alerts_on_a_blocking_refusal(self):
+        # A blocking refusal stops every run before the apply, the only other writer: the dry run must set the gauges
+        # StorageTargetMissing and the VG alerts read, and keep the last success time (finding n=2).
+        prom = self.tmp / 'textfile/storage-reconcile.prom'
+        self.fake(vgs={'retained': vg(['ledger:a:created', 'ledger:b:created'], {'b': (GI, ())}), 'regen': vg()},
+                  targets={'b': {'dev': '/dev/retained/b', 'acls': set()}})
+        prom.write_text('storage_target_missing{id="a"} 0\nstorage_last_reconcile_success_timestamp_seconds 42\n')
+        rc, out = self.apply([entry('a'), entry('b')], '--dry-run')
+        self.assertEqual(rc, 1)
+        self.assertEqual(out['refusals'], [{'id': 'a', 'reason': 'lv-missing'}])
+        text = prom.read_text()
+        for line in ('storage_target_missing{id="a"} 1', 'storage_target_missing{id="b"} 0',
+                     'storage_vg_present{vg="retained"} 1', 'storage_last_reconcile_success_timestamp_seconds 42'):
+            self.assertIn(line + '\n', text)
+        self.fake(vgs={'retained': vg()})
+        self.assertEqual(self.apply([entry('a')], '--dry-run')[0], 1)
+        self.assertIn('storage_vg_present{vg="regen"} 0\n', prom.read_text())
+        # A failed write (no textfile dir yet on a first bootstrap) never changes the dry run's answer.
+        self.fake(vgs={'retained': vg(['ledger:a:created'], {'a': (GI, ())}), 'regen': vg()})
+        with mock.patch.object(metrics, 'write', side_effect=OSError('no such directory')):
+            self.assertEqual(self.apply([entry('a')], '--dry-run')[0], 0, self.err)
+        self.assertIn('warning: dry run wrote no metrics', self.err)
 
     def test_dry_run_blocks_on_blocking_failures(self):
         self.fake(vgs={'retained': vg(['ledger:a:created']), 'regen': vg()})

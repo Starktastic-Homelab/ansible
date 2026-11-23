@@ -1,5 +1,6 @@
 ---
-# storage, before the maintenance lock: the same code against the real ledger, reading only (vgs, lvs).
+# storage, before the maintenance lock: the same code against the real ledger. It reads vgs, lvs and LUN 0 and writes
+# only the reconcile gauges textfile, so a refusal that blocks every run still alerts.
 - name: Check the storage VM settings
   ansible.builtin.import_tasks: assert.yml
 

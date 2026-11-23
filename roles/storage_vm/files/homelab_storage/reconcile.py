@@ -224,12 +224,18 @@ def _hold_line(d, cluster):
 
 
 def apply(volumes, cfg, sha, dry_run):
-    if dry_run:  # reads only: the unit state, vgs and lvs, no lock, no checkpoint, no metrics, no save
+    if dry_run:  # reads only (the unit state, vgs, lvs, LUN 0): no lock, no checkpoint, no save; writes the gauges
         if refusal := _boot_restore_unsettled():
             host.log(f'error: {refusal}')
             return 1
         vgs, cluster = _state(cfg)
         d = plan.decide(volumes, vgs, cluster, cfg['max_removals'])
+        # A blocking refusal stops every run before the apply, so the gauges must come from here too, or
+        # StorageTargetMissing never fires. ok=False keeps the last success time; a failed write changes nothing.
+        try:
+            _write_metrics(d, vgs, cluster, lio.Lio(), False)
+        except Exception as e:
+            host.log(f'warning: dry run wrote no metrics: {e}')
         print(json.dumps(_report(sha, d, _exported(d, vgs, set(), True), [])))
         if line := _hold_line(d, cluster):
             host.log(line)

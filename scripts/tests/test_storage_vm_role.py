@@ -62,7 +62,9 @@ def defaults(**values):
     variables.update({'vip_address': '10.9.9.99', 'argocd_repo_url': 'https://example.invalid/apps.git',
                       'ansible_managed': 'managed', 'storage_vm_workers': WORKERS, 'storage_vm_bridge_address': BRIDGE,
                       'storage_vm_ssh_sources': ['10.9.9.0/24', '10.9.8.0/24'], 'storage_vm_bridge_iface': 'eth1',
-                      'storage_vm_fenced_addresses': []})
+                      'storage_vm_fenced_addresses': [],
+                      'storage_vm_pv_devices': {'retained': '/dev/disk/by-path/pci-0000:06:0b.0',
+                                                'regen': '/dev/disk/by-path/pci-0000:06:0c.0'}})
     variables.update(values)
     return variables
 
@@ -410,6 +412,15 @@ class RoleTests(unittest.TestCase):
             path = Path(tmp) / 'config.json'
             path.write_text(render('config.json.j2', storage_vm_pv_devices=pv))
             self.assertEqual(config.load(path)['pv_devices'], pv)
+
+    def test_production_pv_devices_not_lab(self):
+        self.assertEqual(load(ROLE / 'defaults/main.yml')['storage_vm_pv_devices'], {})
+        for f in (ROLE / 'defaults/main.yml', ROOT / 'group_vars/storage/storage_vm.yml'):
+            self.assertNotIn('by-path/pci-', f.read_text(), f)
+        cond = next(t for t in role_tasks('assert') if 'storage_vm_pv_devices' in json.dumps(t))
+        self.assertFalse(holds(module(cond, 'assert')['that'], storage_vm_pv_devices={}))
+        lab_pv = load(ROOT / 'lab/vars.example.yml')['storage_vm_pv_devices']
+        self.assertTrue(holds(module(cond, 'assert')['that'], storage_vm_pv_devices=lab_pv))
 
     def test_assert_pv_devices(self):
         cond = next(t for t in role_tasks('assert') if 'storage_vm_pv_devices' in json.dumps(t))

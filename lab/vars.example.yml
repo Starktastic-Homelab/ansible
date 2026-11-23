@@ -14,6 +14,10 @@ storage_vm_workers:
   - { name: lab-agent, bridge_address: 198.51.100.22 }
 storage_vm_bridge_address: 198.51.100.10
 storage_vm_ssh_sources: [192.0.2.0/24]
+# The lab VM's virtio1 (retained) and virtio2 (regen) slots as by-path links (read on 971 2026-11-18).
+storage_vm_pv_devices:
+  retained: /dev/disk/by-path/pci-0000:06:0b.0
+  regen: /dev/disk/by-path/pci-0000:06:0c.0
 # A bare repo in <lab> (placeholder path), never the production apps repo.
 storage_vm_inventory_repo: /maintenance/lab-storage/apps-inventory.git
 storage_vm_inventory_branch: feat/retained-storage-vm

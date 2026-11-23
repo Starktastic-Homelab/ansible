@@ -1,0 +1,7 @@
+---
+# Production storage VM (ADR 0017). storage_vm_bridge_address must equal terraform storage/terraform.tfvars
+# storage_ipv4 (fixed subnet).
+storage_vm_bridge_address: 10.99.2.10
+# The LAN the storage VM sits on; the runner VM300 (10.9.9.10) and the VIP are on it.
+storage_vm_ssh_sources:
+  - 10.9.9.0/24

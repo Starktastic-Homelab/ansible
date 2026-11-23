@@ -13,11 +13,11 @@ storage_vm_inventory_repo: "{{ argocd_repo_url }}"
 storage_vm_inventory_branch: main
 storage_vm_inventory_path: infrastructure/base-configs/files/retained-volumes.json
 
-# Each VG's one PV, so every LVM command opens only that disk (ADR 0017 F11/F12). terraform's virtio1 (retained) and
-# virtio2 (regen) slots as by-path links: no content probe, unlike lvm-pv-uuid links. Read on 971 2026-11-18.
-storage_vm_pv_devices:
-  retained: /dev/disk/by-path/pci-0000:06:0b.0
-  regen: /dev/disk/by-path/pci-0000:06:0c.0
+# Each VG's one PV, so every LVM command opens only that disk (ADR 0017 F11/F12): {retained: /dev/..., regen: /dev/...}.
+# Set per VM in group_vars/storage/storage_vm.yml to /dev/disk/by-id/virtio-retained and /dev/disk/by-id/virtio-regen
+# (the disk serials) in Task 3.5, because the first run that sees real PV paths configures the VM. Until then the
+# role refuses (tasks/assert.yml) and scripts/storage_ready.py skips the storage workflows.
+storage_vm_pv_devices: {}
 
 # The removal brake; an approved larger removal is one run with -e storage_vm_max_removals=N.
 storage_vm_max_removals: 2

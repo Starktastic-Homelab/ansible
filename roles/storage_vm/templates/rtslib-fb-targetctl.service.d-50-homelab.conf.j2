@@ -5,6 +5,8 @@
 # skips ExecStop (targetctl clear), so a failing check never clears targets.
 {% set dev_unit = storage_vm_pv_devices.retained[1:] | replace('-', '\\x2d') | replace('/', '-') ~ '.device' %}
 [Unit]
+Wants=network-online.target
+After=network-online.target
 After=nftables.service
 Wants={{ dev_unit }}
 After={{ dev_unit }}

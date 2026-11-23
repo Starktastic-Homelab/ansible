@@ -25,7 +25,7 @@ TARGETCTL_DROPIN = (
     "its own PV,\n# no fallback, so a wrong path fails the unit and restores no targets; regen bounded and never "
     "killed (F11).\n# Then re-applies fences, strips fenced ACLs and checks LUN 0 per ledgered LV. A failed "
     "start\n# skips ExecStop (targetctl clear), so a failing check never clears targets.\n[Unit]\n"
-    "After=nftables.service\nWants=" + DEV_UNIT + "\nAfter=" + DEV_UNIT + "\n\n[Service]\n"
+    "Wants=network-online.target\nAfter=network-online.target\nAfter=nftables.service\nWants=" + DEV_UNIT + "\nAfter=" + DEV_UNIT + "\n\n[Service]\n"
     "# A failed start or a stop never signals an abandoned (D-state) LVM child.\nKillMode=process\n"
     "ExecStartPre=\n"
     "ExecStartPre=/sbin/vgchange --devices /dev/disk/by-path/pci-0000:06:0b.0 -ay retained\n"
@@ -305,6 +305,14 @@ class RoleTests(unittest.TestCase):
                 got = subprocess.run(['systemd-escape', '--path', '--suffix=device', path], capture_output=True,
                                      text=True, check=True).stdout.strip()
                 self.assertEqual(got, unit)
+
+    def test_dropin_orders_after_network(self):
+        # The portal binds to the bridge address; this ordering moved here from the image's 10-lvm.conf.
+        out = render('rtslib-fb-targetctl.service.d-50-homelab.conf.j2')
+        lines = [line.strip() for line in out.splitlines() if line.strip() and not line.startswith('#')]
+        unit = lines[lines.index('[Unit]') + 1:lines.index('[Service]')]
+        self.assertIn('Wants=network-online.target', unit)
+        self.assertIn('After=network-online.target', unit)
 
     def test_killmode_process(self):
         self.assertIn('\nKillMode=process\n', render('rtslib-fb-targetctl.service.d-50-homelab.conf.j2'))

@@ -18,6 +18,7 @@ class VgState:
     ledger: object  # ledger.Ledger
     lvs: dict = field(default_factory=dict)  # id -> LvState
     present: bool = True
+    free_bytes: int | None = None  # None = not read: the free-space check is skipped (plan fixtures only)
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,22 @@ def _entry(v, vg, other, other_name):
     return acts, None, False
 
 
+def _fit(d, vgs):
+    """Drop each create or extend that does not fit its VG's free space, in inventory order (sizes are whole extents)."""
+    free = {n: v.free_bytes for n, v in vgs.items()}
+    have = {(n, i): lv.size_bytes for n, v in vgs.items() for i, lv in v.lvs.items()}
+    kept = []
+    for a in d.actions:
+        if a.kind in ('create_new', 'create_raw', 'extend') and free[a.vg] is not None:
+            need = a.size_bytes - have.get((a.vg, a.id), 0) if a.kind == 'extend' else a.size_bytes
+            if need > free[a.vg]:
+                d.refusals.append(Refusal(a.id, 'no-space'))
+                continue
+            free[a.vg] -= need
+        kept.append(a)
+    d.actions = kept
+
+
 def decide(volumes, vgs, cluster, removed_ok=2):
     d = Decision()
     if cluster is None or not all(vgs.get(n) and vgs[n].present for n in ('retained', 'regen')):
@@ -97,6 +114,7 @@ def decide(volumes, vgs, cluster, removed_ok=2):
                 d.refusals.append(Refusal(v.id, 'hold-create'))
             acts = kept
         d.actions += acts
+    _fit(d, vgs)
     # Removed entries: the target stays exported; the LV gets a pending-delete tag.
     removed = []
     for name, vg in vgs.items():

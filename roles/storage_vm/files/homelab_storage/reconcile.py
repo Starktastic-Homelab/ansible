@@ -20,9 +20,9 @@ from . import config, host, inventory, lio, lvm, metrics, nft, plan
 from .ledger import HOLD_CREATE, Cluster, tag_created, tag_creating, tag_tombstone
 
 MARKER_TMP = None  # parent of the private marker mount dir; None = the system temp dir
-# A dry run (before the maintenance lock) exits 1 only for these. hold_create and per-entry refusals do not block it
-# (R6, D6); it logs the hold line instead.
-BLOCKING = {'vg-missing', 'removal-brake', 'lv-missing'}
+# A dry run (before the maintenance lock) exits 1 only for these. hold_create and other per-entry refusals do not block
+# it (R6, D6); it logs the hold line instead. no-space blocks (D40): the run stops before the lock and the next retries.
+BLOCKING = {'vg-missing', 'removal-brake', 'lv-missing', 'no-space'}
 METRICS = 'storage-reconcile'
 _dev_exists = os.path.exists  # tests patch it
 SUCCESS = 'storage_last_reconcile_success_timestamp_seconds'

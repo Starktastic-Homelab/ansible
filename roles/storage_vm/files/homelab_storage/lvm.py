@@ -19,7 +19,6 @@ LVM_TIMEOUT = 30
 class Vg(VgState):
     tags: tuple = ()  # raw VG tags; Cluster.from_tags reads them on 'retained'
     size_bytes: int = 0
-    free_bytes: int = 0
 
 
 def _lvm(cmd, vg, *args, timeout=LVM_TIMEOUT, read=False):
@@ -37,7 +36,7 @@ def _tags(s):
 
 
 def _absent():
-    return Vg(Ledger.from_tags(()), {}, False)
+    return Vg(ledger=Ledger.from_tags(()), lvs={}, present=False)
 
 
 def _read(name, with_lvs):
@@ -55,7 +54,8 @@ def _read(name, with_lvs):
         host.log(f'error: VG {name} unreadable on {host.CONFIG["pv_devices"][name]}: {e}')
         return _absent()
     tags = _tags(r['vg_tags'])
-    return Vg(Ledger.from_tags(tags), lvs, True, tags, int(r['vg_size']), int(r['vg_free']))
+    return Vg(ledger=Ledger.from_tags(tags), lvs=lvs, present=True, free_bytes=int(r['vg_free']), tags=tags,
+              size_bytes=int(r['vg_size']))
 
 
 def vgs(names=('retained', 'regen')):

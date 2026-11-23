@@ -14,8 +14,9 @@ def vol(id='a', cls='retained', origin='new', size=GI, ns='n', claim='c'):
     return Volume(id, ns, claim, size, cls, origin)
 
 
-def vg(tags=(), lvs=None, present=True):
-    return plan.VgState(ledger.Ledger.from_tags(tags), {k: plan.LvState(*v) if isinstance(v, tuple) else plan.LvState(v) for k, v in (lvs or {}).items()}, present)
+def vg(tags=(), lvs=None, present=True, free=None):
+    return plan.VgState(ledger.Ledger.from_tags(tags), {k: plan.LvState(*v) if isinstance(v, tuple) else plan.LvState(v) for k, v in (lvs or {}).items()},
+                        present, free_bytes=free)
 
 
 def run(volumes, retained=None, regen=None, tags=(), cluster=True, **kw):
@@ -130,6 +131,36 @@ class PlanTest(unittest.TestCase):
         d = run([vol()], regen=vg([ledger.tag_created('a')], {'a': GI}))
         self.assertEqual(refused(d), {('a', 'other-vg')})
         self.assertEqual([(a.kind, a.id, a.vg) for a in d.actions], [('export', 'a', 'regen')])
+
+    def test_create_refused_when_vg_too_small(self):
+        d = run([vol('a', size=2 * GI)], vg(free=GI))
+        self.assertEqual(refused(d), {('a', 'no-space')})
+        self.assertEqual(kinds(d), [])
+        self.assertEqual(kinds(run([vol('a', size=2 * GI)], vg(free=2 * GI))), [('create_new', 'a')])
+
+    def test_free_space_is_cumulative(self):
+        d = run([vol('a'), vol('b')], vg(free=GI))
+        self.assertEqual(kinds(d), [('create_new', 'a')])
+        self.assertEqual(refused(d), {('b', 'no-space')})
+        d = run([vol('a'), vol('p', cls='regenerable')], vg(free=GI), vg(free=GI))
+        self.assertEqual(kinds(d), [('create_new', 'a'), ('create_new', 'p')])
+        self.assertEqual(refused(d), set())
+
+    def test_extend_refused_when_vg_too_small(self):
+        d = run([vol(size=3 * GI)], vg([ledger.tag_created('a')], {'a': GI}, free=GI))
+        self.assertEqual(kinds(d), [('export', 'a')])
+        self.assertEqual(refused(d), {('a', 'no-space')})
+        d = run([vol(size=3 * GI)], vg([ledger.tag_created('a')], {'a': GI}, free=2 * GI))
+        self.assertEqual(kinds(d), [('export', 'a'), ('extend', 'a')])
+        self.assertEqual(refused(d), set())
+
+    def test_hold_create_consumes_no_space(self):
+        d = run([vol('a', size=2 * GI)], vg(free=GI), tags=[ledger.HOLD_CREATE])
+        self.assertEqual(refused(d), {('a', 'hold-create')})
+        self.assertEqual(kinds(d), [])
+
+    def test_unread_free_skips_check(self):
+        self.assertEqual(kinds(run([vol('a', size=2 * GI)], vg(free=None))), [('create_new', 'a')])
 
     def test_namespace_change_is_render_only(self):
         r = vg([ledger.tag_created('a')], {'a': GI})

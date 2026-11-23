@@ -531,6 +531,32 @@ class GrowAndReportTest(Base):
         self.assertEqual(out['refusals'], [{'id': 'a', 'reason': 'orphan'}])
 
 
+class FreeSpaceTest(Base):
+    def test_create_refused_when_vg_too_small_writes_no_tag(self):
+        f = self.fake(vgs={'retained': vg(free=GI), 'regen': vg()})
+        rc, _ = self.apply([entry('a', size='2Gi')])
+        self.assertEqual(rc, 1)
+        self.assertIn('refused: a: no-space', self.err)
+        self.assertEqual(f.find('lvcreate'), [])
+        self.assertNotIn(('vgchange', '--addtag', 'ledger:a:creating', 'retained'), [c for c, _ in f.calls])
+
+    def test_dry_run_fails_on_no_space_before_lock(self):
+        f = self.fake(vgs={'retained': vg(free=GI), 'regen': vg()})
+        rc, out = self.apply([entry('a', size='2Gi')], '--dry-run')
+        self.assertEqual(rc, 1)
+        self.assertEqual(out['refusals'], [{'id': 'a', 'reason': 'no-space'}])
+        self.assertEqual(sorted({c[0] for c, _ in f.calls}), ['lvs', 'vgs'])
+        self.assertFalse(any(held for _, held in f.calls))
+        self.assertEqual(list((self.tmp / 'textfile').iterdir()), [])
+
+    def test_vg_read_sets_free_bytes(self):
+        from homelab_storage import lvm
+        self.fake()
+        got = lvm.vgs()
+        self.assertEqual(got['retained'].free_bytes, 50 * GI)
+        self.assertIsInstance(got['regen'].free_bytes, int)
+
+
 class DegradedTest(Base):
     """ADR 0017 F11 approach A: a regen that does not answer refuses every change; nothing hangs or expires."""
 

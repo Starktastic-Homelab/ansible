@@ -1,0 +1,10 @@
+---
+# Manual: ansible-playbook proxmox-storage-bridge.yml -e proxmox_storage_bridge_name=vmbr9 [-e proxmox_storage_bridge_state=absent]
+- name: Configure the uplink-less storage bridge
+  hosts: proxmox_hosts
+  become: true
+  gather_facts: false
+  tags:
+    - proxmox_storage_bridge
+  roles:
+    - role: proxmox_storage_bridge

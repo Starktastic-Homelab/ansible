@@ -23,6 +23,10 @@ on:
       - 'proxmox-backup.yml'
       - '.github/workflows/proxmox-backup.yml'
       - 'scripts/tests/test_proxmox_backup.py'
+      - 'roles/proxmox_storage_bridge/**'
+      - 'proxmox-storage-bridge.yml'
+      - '.github/workflows/storage-bridge.yml'
+      - 'scripts/tests/test_proxmox_storage_bridge.py'
 
 # Serialize deploys: never cancel an in-progress run (a deploy interrupted
 # mid `helm upgrade` leaves the release in a pending-* state). Queue instead.

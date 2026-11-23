@@ -1,0 +1,5 @@
+---
+# An uplink-less, address-less Linux bridge for the storage network (guests only; the host has no address on it).
+# The lab uses vmbr9. Never touches /etc/network/interfaces: only /etc/network/interfaces.d/<name>.
+proxmox_storage_bridge_name: vmbr2
+proxmox_storage_bridge_state: present # present | absent

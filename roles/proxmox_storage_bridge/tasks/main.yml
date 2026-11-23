@@ -1,0 +1,85 @@
+---
+# Additive: writes only /etc/network/interfaces.d/<name> and runs ifup/ifdown for that one bridge (never ifreload,
+# which would re-apply every host interface). Needs the stock Proxmox "source /etc/network/interfaces.d/*" line.
+- name: Refuse unless /etc/network/interfaces sources interfaces.d
+  ansible.builtin.command:
+    argv: [grep, -Eq, '^source /etc/network/interfaces\.d/\*', /etc/network/interfaces]
+  changed_when: false
+
+- name: Refuse an unsafe bridge name or unknown state
+  ansible.builtin.assert:
+    that:
+      - proxmox_storage_bridge_name is match('^vmbr[0-9]{1,4}$')
+      - proxmox_storage_bridge_state in ['present', 'absent']
+    quiet: true
+
+- name: Write the bridge file
+  ansible.builtin.template:
+    src: bridge.j2
+    dest: "/etc/network/interfaces.d/{{ proxmox_storage_bridge_name }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: proxmox_storage_bridge_state == 'present'
+
+- name: Check whether the bridge exists
+  ansible.builtin.command:
+    argv: [ip, link, show, "{{ proxmox_storage_bridge_name }}"]
+  register: proxmox_storage_bridge_link
+  changed_when: false
+  failed_when: false
+  when: proxmox_storage_bridge_state == 'present'
+
+- name: Bring up only this bridge
+  ansible.builtin.command:
+    argv: [ifup, "{{ proxmox_storage_bridge_name }}"]
+  changed_when: true
+  when: proxmox_storage_bridge_state == 'present' and proxmox_storage_bridge_link.rc != 0
+
+- name: Find guests that use the bridge
+  ansible.builtin.find:
+    paths: /etc/pve/qemu-server
+    patterns: ["*.conf"]
+    # find applies re.match from column 0, so skip the "netN: virtio=...," prefix
+    contains: ".*[:,]bridge={{ proxmox_storage_bridge_name }}(,|$)"
+  register: proxmox_storage_bridge_users
+  when: proxmox_storage_bridge_state == 'absent'
+
+- name: Refuse to remove a bridge that a guest still uses
+  ansible.builtin.assert:
+    that: proxmox_storage_bridge_users.matched == 0
+    fail_msg:
+      "Guests still use {{ proxmox_storage_bridge_name }}: {{ proxmox_storage_bridge_users.files | map(attribute='path')
+      | list }}"
+    quiet: true
+  when: proxmox_storage_bridge_state == 'absent'
+
+- name: Check whether the bridge is up
+  ansible.builtin.command:
+    argv: [ip, link, show, "{{ proxmox_storage_bridge_name }}"]
+  register: proxmox_storage_bridge_up
+  changed_when: false
+  failed_when: false
+  when: proxmox_storage_bridge_state == 'absent'
+
+# No stderr matching (ifupdown2 wording is unverified): a missing link means nothing to take down; a live link with
+# a missing stanza makes ifdown fail, which is the right outcome.
+- name: Take down only this bridge
+  ansible.builtin.command:
+    argv: [ifdown, "{{ proxmox_storage_bridge_name }}"]
+  changed_when: true
+  when: proxmox_storage_bridge_state == 'absent' and proxmox_storage_bridge_up.rc == 0
+
+- name: Remove the bridge file
+  ansible.builtin.file:
+    path: "/etc/network/interfaces.d/{{ proxmox_storage_bridge_name }}"
+    state: absent
+  when: proxmox_storage_bridge_state == 'absent'
+
+- name: Verify the bridge is gone
+  ansible.builtin.command:
+    argv: [ip, link, show, "{{ proxmox_storage_bridge_name }}"]
+  register: proxmox_storage_bridge_gone
+  changed_when: false
+  failed_when: proxmox_storage_bridge_gone.rc == 0
+  when: proxmox_storage_bridge_state == 'absent'

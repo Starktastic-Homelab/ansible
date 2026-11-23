@@ -93,16 +93,28 @@ def _fit(d, vgs):
 
 def decide(volumes, vgs, cluster, removed_ok=2):
     d = Decision()
-    if cluster is None or not all(vgs.get(n) and vgs[n].present for n in ('retained', 'regen')):
+    up = {n for n in ('retained', 'regen') if vgs.get(n) and vgs[n].present}
+    if cluster is None or not up:
         d.refusals = [Refusal(v.id, 'vg-missing') for v in volumes]
         d.fail = True
         return d
+    d.fail = len(up) < 2  # one VG missing: only its class is refused, the run still fails
     hold = HOLD_CREATE in cluster.holds()
     ids = {v.id for v in volumes}
     for v in volumes:
         name = vg_for(v.cls)
         oname = "regen" if name == "retained" else "retained"
-        acts, reason, fail = _entry(v, vgs[name], vgs[oname], oname)
+        own, other = vgs[name], vgs[oname]
+        if name not in up:
+            live = other.ledger.state(v.id) == 'created' and v.id in other.lvs  # a class move keeps its live target
+            d.refusals.append(Refusal(v.id, 'vg-missing'))
+            d.actions += [Action('export', v.id, oname)] if live else []
+            continue
+        if oname not in up and not (own.ledger.state(v.id) or own.ledger.tombstoned(v.id) or v.id in own.lvs):
+            # A would-be create: the cross-VG duplicate-id check cannot read the other VG.
+            d.refusals.append(Refusal(v.id, 'other-vg-unread'))
+            continue
+        acts, reason, fail = _entry(v, own, other, oname)
         d.fail |= fail
         if reason:
             d.refusals.append(Refusal(v.id, reason))

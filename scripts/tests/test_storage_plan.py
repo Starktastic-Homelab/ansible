@@ -75,11 +75,34 @@ class PlanTest(unittest.TestCase):
         d = run([vol()], vg([ledger.tag_tombstone('a')]))
         self.assertEqual(refused(d), {('a', 'tombstoned')})
 
-    def test_vg_missing_refuses_all(self):
-        d = run([vol('a'), vol('b', cls='regenerable')], regen=vg(present=False))
-        self.assertEqual(refused(d), {('a', 'vg-missing'), ('b', 'vg-missing')})
+    def test_regen_missing_keeps_retained_lifecycle(self):
+        d = run([vol('a', size=2 * GI), vol('p', cls='regenerable')], vg([ledger.tag_created('a')], {'a': GI}),
+                vg(present=False))
+        self.assertEqual(kinds(d), [('export', 'a'), ('extend', 'a')])
+        self.assertEqual(refused(d), {('p', 'vg-missing')})
         self.assertTrue(d.fail)
+
+    def test_both_vgs_missing_refuses_all(self):
+        d = run([vol('a'), vol('p', cls='regenerable')], vg(present=False), vg(present=False))
+        self.assertEqual(refused(d), {('a', 'vg-missing'), ('p', 'vg-missing')})
         self.assertEqual(d.actions, [])
+        self.assertTrue(d.fail)
+
+    def test_one_vg_missing_fails_with_no_entry_of_its_class(self):
+        d = run([vol('a')], vg([ledger.tag_created('a')], {'a': GI}), vg(present=False))
+        self.assertEqual((kinds(d), refused(d)), ([('export', 'a')], set()))
+        self.assertTrue(d.fail)
+
+    def test_other_vg_unread_refuses_entry_only(self):
+        d = run([vol('a'), vol('b')], vg([ledger.tag_created('a')], {'a': GI}), vg(present=False))
+        self.assertEqual(kinds(d), [('export', 'a')])
+        self.assertEqual(refused(d), {('b', 'other-vg-unread')})
+
+    def test_class_move_keeps_live_export(self):
+        d = run([vol('a', cls='regenerable')], vg([ledger.tag_created('a')], {'a': GI}), vg(present=False))
+        self.assertEqual(refused(d), {('a', 'vg-missing')})
+        self.assertEqual([(a.kind, a.id, a.vg) for a in d.actions], [('export', 'a', 'retained')])
+        self.assertTrue(d.fail)
 
     def test_retained_missing_refuses_everything(self):
         d = run([vol('a'), vol('b', cls='regenerable')], cluster=False)

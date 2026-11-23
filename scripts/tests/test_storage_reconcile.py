@@ -558,7 +558,8 @@ class FreeSpaceTest(Base):
 
 
 class DegradedTest(Base):
-    """ADR 0017 F11 approach A: a regen that does not answer refuses every change; nothing hangs or expires."""
+    """ADR 0017 F11 approach A: a regen that does not answer refuses its own class and new creates; retained exports
+    and grows go on (the dry run still exits 1, D42); nothing hangs or expires."""
 
     def test_dry_run_missing_vg_empty_inventory(self):
         self.fake(stalled={'regen'})
@@ -571,6 +572,14 @@ class DegradedTest(Base):
         rc, out = self.apply([entry('a'), entry('p', cls='regenerable')], '--dry-run')
         self.assertEqual(rc, 1)
         self.assertEqual({r['reason'] for r in out['refusals']}, {'vg-missing'})
+
+    def test_apply_regen_stall_grows_retained(self):
+        self.fake(vgs={'retained': vg(['ledger:a:created'], {'a': (GI, ())}), 'regen': vg()}, stalled={'regen'})
+        rc, out = self.apply([entry('a', size='2Gi'), entry('p', cls='regenerable')])
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.f.find('lvextend'), [('lvextend', '-L', f'{2 * GI}b', 'retained/a')])
+        self.assertEqual(out['refusals'], [{'id': 'p', 'reason': 'vg-missing'}])
+        self.assertIn('refused: p: vg-missing', self.err)
 
     def test_apply_regen_timeout_fails_entry(self):
         self.fake(vgs={'retained': vg(['ledger:a:created'], {'a': (GI, ())}),

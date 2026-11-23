@@ -53,6 +53,20 @@ class InventoryTest(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(inventory.InventoryError):
                 inventory.load(text)
 
+    def test_rejects_unknown_key(self):
+        with self.assertRaises(inventory.InventoryError):
+            load(entry(foo='1'))
+
+    def test_accepts_copied(self):
+        self.assertEqual(load(entry(origin='migrated', copied='2026-12-01')), load(entry(origin='migrated')))
+
+    def test_rejects_bad_copied(self):
+        for e in [entry(origin='migrated', copied='2026-13-01'), entry(origin='migrated', copied='01-12-2026'),
+                  entry(origin='migrated', copied=''), entry(origin='migrated', copied=20261201),
+                  entry(origin='new', copied='2026-12-01')]:
+            with self.subTest(e=e), self.assertRaises(inventory.InventoryError):
+                load(e)
+
 
 if __name__ == '__main__':
     unittest.main()

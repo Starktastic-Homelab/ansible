@@ -1,4 +1,5 @@
 """Parse and validate the apps-owned volume inventory (a JSON array, one entry per volume)."""
+import datetime
 import json
 import re
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ EXTENT = 4 * 1024 ** 2  # lvcreate rounds up to this; a non-multiple would later
 CLASSES = ('retained', 'regenerable')
 ORIGINS = ('migrated', 'new')
 FIELDS = {'id', 'namespace', 'claim', 'size', 'class', 'origin'}
+OPTIONAL = {'copied'}  # ISO date the switch PR sets on a migrated entry; not used here, only validated
 
 
 class InventoryError(ValueError):
@@ -35,6 +37,17 @@ def parse_size(s):
     return n
 
 
+def check_copied(vid, e):
+    if e['origin'] != 'migrated':
+        raise InventoryError(f'{vid}: copied is only allowed on origin migrated')
+    try:
+        if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', e['copied']):
+            raise ValueError
+        datetime.date.fromisoformat(e['copied'])
+    except ValueError:
+        raise InventoryError(f'{vid}: bad copied {e["copied"]!r}: want YYYY-MM-DD')
+
+
 def vg_for(cls):
     if cls not in CLASSES:
         raise InventoryError(f'bad class {cls!r}')
@@ -50,9 +63,9 @@ def load(text):
         raise InventoryError('inventory must be a JSON array')
     volumes, seen = [], set()
     for i, e in enumerate(data):
-        if not isinstance(e, dict) or set(e) != FIELDS:
-            raise InventoryError(f'entry {i}: fields must be exactly {sorted(FIELDS)}')
-        if not all(isinstance(e[k], str) for k in FIELDS):
+        if not isinstance(e, dict) or not FIELDS <= set(e) <= FIELDS | OPTIONAL:
+            raise InventoryError(f'entry {i}: fields must be exactly {sorted(FIELDS)} plus optional {sorted(OPTIONAL)}')
+        if not all(isinstance(v, str) for v in e.values()):
             raise InventoryError(f'entry {i}: all fields must be strings')
         vid = e['id']
         if not re.fullmatch(ID_PATTERN, vid):
@@ -66,5 +79,7 @@ def load(text):
             raise InventoryError(f'{vid}: bad class {e["class"]!r}')
         if e['origin'] not in ORIGINS:
             raise InventoryError(f'{vid}: bad origin {e["origin"]!r}')
+        if 'copied' in e:
+            check_copied(vid, e)
         volumes.append(Volume(vid, e['namespace'], e['claim'], parse_size(e['size']), e['class'], e['origin']))
     return volumes

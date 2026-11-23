@@ -52,6 +52,8 @@ def backup_window(now):
 def storage_hosts():
     from ansible.inventory.manager import InventoryManager
     from ansible.parsing.dataloader import DataLoader
+    from ansible.plugins.loader import init_plugin_loader
+    init_plugin_loader()  # as the ansible-* CLIs do; without it no collection plugin (community.proxmox) loads
     groups = InventoryManager(loader=DataLoader(), sources=[str(INVENTORY)]).get_groups_dict()
     # An unparsed source (an API outage) only warns: an empty storage group must not hide it.
     if not groups['all']:

@@ -437,8 +437,10 @@ class WorkflowTests(unittest.TestCase):
                 continue
             seen.add(name)
             self.assertTrue(any(fnmatch.fnmatchcase(name, p) for p in paths), name)
-            todo += [p['ansible.builtin.import_playbook'] for p in yaml.safe_load((ROOT / name).read_text())
-                     if 'ansible.builtin.import_playbook' in p]
+            # shortcut: plays only, not task-level imports (tasks/lab-guard.yml is outside push.paths, and adding it
+            # would start deploy.yml and storage.yml on one push); follow them once Ben decides that trigger.
+            todo += [p[k] for p in yaml.safe_load((ROOT / name).read_text())
+                     for k in ('import_playbook', 'ansible.builtin.import_playbook') if k in p]
         self.assertIn('storage-host-metrics.yml', seen)
 
     def test_lock_helper_pinned_like_deploy(self):

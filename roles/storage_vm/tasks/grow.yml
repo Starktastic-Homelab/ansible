@@ -36,10 +36,33 @@
          | selectattr('spec.csi', 'defined') | selectattr('spec.csi.driver', 'equalto', storage_vm_csi_driver)
          | map(attribute='spec.csi.volumeHandle') | list }}
 
+- name: Find the exported volumes attached to this node
+  ansible.builtin.set_fact:
+    storage_vm_grow_volumes: >-
+      {{ hostvars[groups['storage'][0]].storage_vm_exported | selectattr('id', 'in', storage_vm_attached_ids) | list }}
+
+# A hung or powered-off worker keeps its VolumeAttachments. Failing on it kept the lock (D31) through exactly those
+# incidents, so skip it once here and report its ids; growth is level-triggered, so the next run retries them.
+# wait_for_connection reports a dead connection as a failed task, not as unreachable: ignore_unreachable still trips
+# any_errors_fatal and ends the play (checked 2026-11-23 with ansible-core 2.21.6).
+- name: Check that this node answers
+  ansible.builtin.wait_for_connection:
+    timeout: 30
+  register: storage_vm_node_answers
+  ignore_errors: true
+  when: storage_vm_grow_volumes | length > 0
+
+- name: Report the volumes not grown on an unreachable node
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: {{ inventory_hostname }} is unreachable; not grown: {{ storage_vm_grow_volumes | map(attribute='id')
+      | join(', ') }}. The next run retries.
+  when: storage_vm_node_answers is failed
+
 - name: Grow each attached exported volume
   ansible.builtin.include_tasks: grow-volume.yml
-  loop: >-
-    {{ hostvars[groups['storage'][0]].storage_vm_exported | selectattr('id', 'in', storage_vm_attached_ids) | list }}
+  loop: "{{ storage_vm_grow_volumes }}"
+  when: storage_vm_node_answers is not failed
   loop_control:
     loop_var: storage_vm_volume
     label: "{{ storage_vm_volume.id }}"

@@ -1,6 +1,7 @@
 """Offline checks for the storage VM role, storage.yml, storage-expiry.yml and the lab guard (ADR 0017)."""
 import base64
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -725,8 +726,11 @@ class StoragePlaybookTests(unittest.TestCase):
         play = plays('storage.yml')[5]
         self.assertIn('grow.yml', str(play))
         include = by_name(role_tasks('grow'), 'Grow each attached exported volume')
-        self.assertIn('storage_vm_exported', include['loop'])
-        self.assertNotRegex(include['loop'], r'extend|actions')
+        volumes = module(by_name(role_tasks('grow'), 'Find the exported volumes attached to this node'),
+                         'set_fact')['storage_vm_grow_volumes']
+        self.assertEqual(include['loop'], '{{ storage_vm_grow_volumes }}')
+        self.assertIn('storage_vm_exported', volumes)
+        self.assertNotRegex(volumes, r'extend|actions')
         steps = [t['name'] for t in walk(role_tasks('grow-volume'))]
         self.assertEqual(steps, ['List the iSCSI sessions', 'Find the session of this target',
                                  'Refuse more than one session of this target', 'Grow only while logged in here',
@@ -759,6 +763,68 @@ class StoragePlaybookTests(unittest.TestCase):
         other = f'tcp: [8] {BRIDGE}:3260,1 iqn.2026-11.net.starktastic.storage:paperless-old (non-flash)'
         got = Templar(variables={**variables, 'storage_vm_sessions': {'stdout_lines': [other, line]}}).template(find)
         self.assertEqual(list(got), [line])
+
+    @unittest.skipUnless(shutil.which('ansible-playbook', path=str(Path(sys.executable).parent)) or
+                         shutil.which('ansible-playbook'), 'ansible-playbook is not installed')
+    def test_unreachable_worker_does_not_fail_the_grow(self):
+        # A hung worker keeps its VolumeAttachments: failing the grow play on it kept the lock (D31) through exactly
+        # those incidents (finding n=4). The real grow.yml runs, with only its two k8s_info reads replaced.
+        exe = shutil.which('ansible-playbook', path=str(Path(sys.executable).parent)) or shutil.which('ansible-playbook')
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        tasks = d / 'roles/storage_vm/tasks'
+        tasks.mkdir(parents=True)
+        shutil.copy(ROLE / 'tasks/grow-volume.yml', tasks)
+        grow = (ROLE / 'tasks/grow.yml').read_text()
+        reads = [t['name'] for t in role_tasks('grow') if 'kubernetes.core.k8s_info' in t]
+        self.assertEqual(reads, ['List PersistentVolumes', 'List VolumeAttachments'])
+        fixture = [t for t in load(ROLE / 'tasks/grow.yml') if t['name'] not in reads]
+        probe = by_name(fixture, 'Check that this node answers')
+        self.assertEqual((module(probe, 'wait_for_connection'), probe['ignore_errors']), ({'timeout': 30}, True))
+        probe['ansible.builtin.wait_for_connection'] = {'timeout': 2}  # the refused port fails at once; keep it quick
+        driver = 'org.democratic-csi.node-manual'
+        pvs = {'resources': [{'metadata': {'name': f'pv-{i}'}, 'spec': {'csi': {'driver': driver, 'volumeHandle': i}}}
+                             for i in ('a', 'b')]}
+        vas = {'resources': [{'spec': {'attacher': driver, 'nodeName': n, 'source': {'persistentVolumeName': f'pv-{i}'}}}
+                             for n, i in (('hung', 'a'), ('alive', 'b'))]}
+        (tasks / 'grow.yml').write_text(json.dumps(
+            [{'name': 'Fixture reads', 'ansible.builtin.set_fact': {'storage_vm_pvs': pvs, 'storage_vm_vas': vas}},
+             *fixture]))
+        self.assertIn('storage_vm_exported', grow)
+        (d / 'inventory.json').write_text(json.dumps({'all': {'hosts': {
+            'storage-01': {'ansible_connection': 'local'},
+            'alive': {'ansible_connection': 'local'},
+            'hung': {'ansible_host': '127.0.0.1', 'ansible_port': 1, 'ansible_connection': 'ssh',
+                     'ansible_ssh_common_args': '-o ConnectTimeout=3 -o BatchMode=yes'}},
+            'children': {'storage': {'hosts': {'storage-01': {}}}, 'masters': {'hosts': {'storage-01': {}}},
+                         'all_k3s': {'hosts': {'alive': {}, 'hung': {}}}}},
+            'vars': {'ansible_python_interpreter': sys.executable}}))
+        storage_play = plays('storage.yml')[5]
+        self.assertEqual((storage_play['hosts'], storage_play['any_errors_fatal']), ('all_k3s', True))
+
+        def run(exported, iscsiadm_rc):
+            (d / 'bin').mkdir(exist_ok=True)
+            fake = d / 'bin/iscsiadm'
+            fake.write_text(f'#!/bin/sh\nexit {iscsiadm_rc}\n')  # 21: no active sessions, so nothing to grow
+            fake.chmod(0o755)
+            (d / 'play.yml').write_text(json.dumps([
+                {'name': 'Exported', 'hosts': 'storage', 'gather_facts': False, 'tasks': [
+                    {'ansible.builtin.set_fact': {'storage_vm_exported': exported, 'storage_vm_portal': '192.0.2.10:3260'}}]},
+                {**{k: v for k, v in storage_play.items() if k != 'become'}, 'tasks': [
+                    {'ansible.builtin.import_role': {'name': 'storage_vm', 'tasks_from': 'grow.yml'}}]}]))
+            env = dict(os.environ, PATH=f'{d / "bin"}:{os.environ["PATH"]}', ANSIBLE_HOST_KEY_CHECKING='False',
+                       ANSIBLE_CONFIG=str(d / 'none.cfg'), ANSIBLE_ROLES_PATH=str(d / 'roles'))
+            return subprocess.run([exe, '-i', str(d / 'inventory.json'), '-e', f'storage_vm_csi_driver={driver}',
+                                   str(d / 'play.yml')], capture_output=True, text=True, env=env, timeout=120, cwd=d)
+
+        vol = lambda i: {'id': i, 'size_bytes': 1, 'iqn': lio.iqn(i)}
+        got = run([vol('a'), vol('b')], 21)
+        self.assertEqual(got.returncode, 0, got.stdout[-3000:] + got.stderr[-2000:])
+        self.assertIn('hung is unreachable; not grown: a', got.stdout)
+        # A real failure on a reachable worker still fails the run.
+        got = run([vol('a'), vol('b')], 1)
+        self.assertNotEqual(got.returncode, 0, got.stdout[-3000:])
+        self.assertIn('alive', got.stdout)
 
     def test_set_fact_never_reads_a_sibling_key(self):
         # Ansible templates every set_fact argument before it sets any, so a sibling reference is undefined

@@ -1,0 +1,33 @@
+---
+# The storage workflow's dry run before it tries the lock (ADR 0017 "How a run works"): fetch, dry-run, clean up.
+# storage.yml dry-runs again under the lock at the SHA it fetches, so this run may see an older SHA, harmlessly.
+# Lab: ansible-playbook -i <lab>/inventory.yml -e @<lab>/vars.yml storage-dry-run.yml
+- name: Import the lab guard
+  ansible.builtin.import_playbook: storage-play-lab-guard.yml
+
+- name: Import the inventory fetch
+  ansible.builtin.import_playbook: storage-play-fetch-inventory.yml
+
+# A refusal (schema, brake, missing VG or ledgered LV) ends the run before it touches the maintenance lock.
+- name: Dry-run the reconcile before the lock
+  hosts: storage
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Dry-run against the real ledger
+      ansible.builtin.import_role:
+        name: storage_vm
+        tasks_from: dry-run.yml
+
+# No kubeconfig play ran, so only the checkout is removed.
+- name: Remove the inventory checkout
+  hosts: localhost
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: Remove the inventory checkout
+      ansible.builtin.file:
+        path: "{{ storage_vm_checkout.path }}"
+        state: absent

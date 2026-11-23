@@ -1,0 +1,15 @@
+---
+# Needs the masters[0] kubeconfig fact, so storage-dry-run.yml keeps its own checkout-only cleanup.
+- name: Remove the temporary files
+  hosts: localhost
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: Remove the kubeconfig and the inventory checkout
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ hostvars[groups['masters'][0]].storage_vm_kubeconfig_path }}"
+        - "{{ storage_vm_checkout.path }}"

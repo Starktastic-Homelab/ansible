@@ -65,6 +65,8 @@ jobs:
       - name: Check native recovery with synthetic keys
         env:
           KUBESEAL_BINARY: /usr/local/bin/kubeseal
+          # Without kubeseal these tests skip elsewhere; here that must fail instead.
+          REQUIRE_KUBESEAL: '1'
         run: python3 scripts/tests/test_sealing_recovery.py
       - name: Prepare ephemeral Vault access
         env:

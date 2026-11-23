@@ -1,0 +1,11 @@
+---
+- name: Fetch and validate the inventory at the branch tip
+  hosts: localhost
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: Resolve, fetch and validate the inventory
+      ansible.builtin.import_role:
+        name: storage_vm
+        tasks_from: fetch-inventory.yml

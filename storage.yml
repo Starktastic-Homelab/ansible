@@ -2,27 +2,11 @@
 # Reconcile the storage VM against apps' retained-volume inventory (ADR 0017), then grow attached filesystems.
 # Runs under an existing maintenance lock (MAINTENANCE_OWNER/MAINTENANCE_NONCE in the environment).
 # Lab: ansible-playbook -i <lab>/inventory.yml -e @<lab>/vars.yml storage.yml
-- name: Lab guard
-  hosts: all
-  gather_facts: false
-  any_errors_fatal: true
-  tags:
-    - always
-  tasks:
-    - name: Refuse a lab run aimed at production
-      ansible.builtin.import_tasks: tasks/lab-guard.yml
-      run_once: true
+- name: Import the lab guard
+  ansible.builtin.import_playbook: storage-play-lab-guard.yml
 
-- name: Fetch and validate the inventory at the branch tip
-  hosts: localhost
-  gather_facts: false
-  become: false
-  any_errors_fatal: true
-  tasks:
-    - name: Resolve, fetch and validate the inventory
-      ansible.builtin.import_role:
-        name: storage_vm
-        tasks_from: fetch-inventory.yml
+- name: Import the inventory fetch
+  ansible.builtin.import_playbook: storage-play-fetch-inventory.yml
 
 - name: Write a private kubeconfig
   hosts: masters[0]
@@ -133,20 +117,15 @@
         name: storage_vm
         tasks_from: grow.yml
 
-- name: Remove the temporary files
+- name: Import the cleanup
+  ansible.builtin.import_playbook: storage-play-cleanup.yml
+
+- name: Fail if the reconcile refused an entry or failed
   hosts: localhost
   gather_facts: false
   become: false
   any_errors_fatal: true
   tasks:
-    - name: Remove the kubeconfig and the inventory checkout
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - "{{ hostvars[groups['masters'][0]].storage_vm_kubeconfig_path }}"
-        - "{{ storage_vm_checkout.path }}"
-
     - name: Fail if the reconcile refused an entry or failed
       ansible.builtin.fail:
         msg: >-

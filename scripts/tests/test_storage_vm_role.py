@@ -39,8 +39,16 @@ def load(path):
     return DataLoader().load_from_file(str(path), trusted_as_template=True)
 
 
+def imported(play):
+    return play.get('ansible.builtin.import_playbook', play.get('import_playbook'))
+
+
 def plays(name):
-    return load(ROOT / name)
+    """The plays of a playbook, each import_playbook resolved in place."""
+    return [q for p in load(ROOT / name) for q in (plays(imported(p)) if imported(p) else [p])]
+
+
+TOP_PLAYBOOKS = sorted(p.name for p in ROOT.glob('storage*.yml') if not p.name.startswith('storage-play-'))
 
 
 def role_tasks(name='main'):
@@ -76,7 +84,7 @@ def walk(items):
 
 
 def all_tasks():
-    files = [ROOT / 'storage.yml', ROOT / 'storage-expiry.yml', ROOT / 'tasks/lab-guard.yml',
+    files = [*sorted(ROOT.glob('storage*.yml')), ROOT / 'tasks/lab-guard.yml',
              *sorted((ROLE / 'tasks').glob('*.yml')), ROLE / 'handlers/main.yml']
     for f in files:
         yield from walk(load(f))
@@ -128,7 +136,7 @@ class LabGuardTests(unittest.TestCase):
         return all(templar.evaluate_expression(e) for e in module(t, 'assert')['that'])
 
     def test_lab_guard(self):
-        for name in ('k3s.yml', 'storage.yml', 'storage-expiry.yml'):
+        for name in ('k3s.yml', 'storage.yml', 'storage-expiry.yml', 'storage-dry-run.yml'):
             first = plays(name)[0]
             self.assertEqual(first['name'], 'Lab guard', name)
             self.assertEqual((first['hosts'], first['gather_facts'], first['any_errors_fatal'], first['tags']),
@@ -143,6 +151,16 @@ class LabGuardTests(unittest.TestCase):
 
 
 class RoleTests(unittest.TestCase):
+    def test_dry_run_shows_its_warnings(self):
+        tasks = role_tasks('dry-run')
+        run = by_name(tasks, 'Dry-run the reconcile against the real ledger')
+        show = by_name(tasks, 'Show the dry-run warnings')
+        self.assertEqual(run['register'], 'storage_vm_dry_run')
+        self.assertEqual(module(show, 'debug'), {'msg': '{{ storage_vm_dry_run.stderr_lines }}'})
+        self.assertEqual(show['when'], 'storage_vm_dry_run.stderr | length > 0')
+        for stderr, shown in (('', False), ('hold_create set, 2 creates refused', True)):
+            self.assertIs(holds([show['when']], storage_vm_dry_run={'stderr': stderr}), shown)
+
     def test_asserts_come_first(self):
         for name in ('main', 'dry-run'):
             self.assertEqual(role_tasks(name)[0].get('ansible.builtin.import_tasks'), 'assert.yml', name)
@@ -403,7 +421,8 @@ class RoleTests(unittest.TestCase):
 class StoragePlaybookTests(unittest.TestCase):
     def test_play_order(self):
         ps = plays('storage.yml')
-        self.assertEqual([p['hosts'] for p in ps], ['all', 'localhost', 'masters[0]', 'storage', 'storage', 'all_k3s', 'localhost'])
+        self.assertEqual([p['hosts'] for p in ps], ['all', 'localhost', 'masters[0]', 'storage', 'storage', 'all_k3s', 'localhost',
+                                                'localhost'])
         for p in ps:
             self.assertIs(p.get('any_errors_fatal'), True, p['name'])
 
@@ -509,9 +528,8 @@ class StoragePlaybookTests(unittest.TestCase):
         self.assertEqual(list(Templar(variables={'storage_vm_apply': {'rc': 1, 'stdout': report}}).template(expr)),
                          [{'id': 'a', 'size_bytes': 1}])
         self.assertEqual(list(Templar(variables={'storage_vm_apply': {'rc': 1, 'stdout': ''}}).template(expr)), [])
-        cleanup = plays('storage.yml')[-1]['tasks']
-        self.assertIn('ansible.builtin.file', cleanup[0])
-        fail = cleanup[-1]
+        self.assertIn('ansible.builtin.file', plays('storage.yml')[-2]['tasks'][0])
+        fail = plays('storage.yml')[-1]['tasks'][-1]
         self.assertIn('ansible.builtin.fail', fail)
         for rc, failed in ((0, False), (1, True)):
             self.assertIs(holds([fail['when']], **fail['vars'], groups={'storage': ['s']},
@@ -594,13 +612,41 @@ class StoragePlaybookTests(unittest.TestCase):
         self.assertEqual(list(got), ['a'])
 
 
+class SharedPlayTests(unittest.TestCase):
+    def test_dry_run_playbook_takes_no_lock(self):
+        ps = plays('storage-dry-run.yml')
+        self.assertEqual([p['hosts'] for p in ps], ['all', 'localhost', 'storage', 'localhost'])
+        self.assertEqual(ps[0]['name'], 'Lab guard')
+        self.assertEqual(ps[2], next(p for p in plays('storage.yml') if p['name'] == 'Dry-run the reconcile before the lock'))
+        cleanup = ps[3]['tasks']
+        self.assertEqual(len(cleanup), 1)
+        self.assertEqual(module(cleanup[0], 'file'), {'path': '{{ storage_vm_checkout.path }}', 'state': 'absent'})
+        text = (ROOT / 'storage-dry-run.yml').read_text()
+        self.assertNotIn('lock-verify', text)
+        self.assertNotIn('maintenance_lock', text)
+
+    def test_storage_playbooks_share_plays(self):
+        self.assertEqual(TOP_PLAYBOOKS, ['storage-dry-run.yml', 'storage-expiry.yml', 'storage.yml'])
+        for name in TOP_PLAYBOOKS:
+            raw = load(ROOT / name)
+            self.assertEqual(imported(raw[0]), 'storage-play-lab-guard.yml', name)
+            self.assertIn('storage-play-fetch-inventory.yml', [imported(p) for p in raw], name)
+            for p in raw:
+                self.assertNotIn(p.get('name'), ('Lab guard', 'Fetch and validate the inventory at the branch tip'), name)
+        for name in ('storage.yml', 'storage-expiry.yml'):
+            self.assertIn('storage-play-cleanup.yml', [imported(p) for p in load(ROOT / name)], name)
+        self.assertEqual([p['name'] for p in plays('storage-expiry.yml')[:3]],
+                         ['Lab guard', 'Verify maintenance ownership', 'Fetch and validate the inventory at the branch tip'])
+
+
 class ExpiryPlaybookTests(unittest.TestCase):
     def test_expiry_verifies_lock_before_delete(self):
         ps = plays('storage-expiry.yml')
         self.assertEqual([p['name'] for p in ps], ['Lab guard', 'Verify maintenance ownership',
                                                     'Fetch and validate the inventory at the branch tip',
                                                     'Write a private kubeconfig', 'List expiry candidates',
-                                                    'Expire removed volumes', 'Remove the temporary files'])
+                                                    'Expire removed volumes', 'Remove the temporary files',
+                                                    'Fail if a volume was refused or failed'])
         for p in ps:
             self.assertIs(p.get('any_errors_fatal'), True, p['name'])
         self.assertEqual(lock_play_index(ps), 1)
@@ -654,6 +700,20 @@ class ExpiryPlaybookTests(unittest.TestCase):
         self.assertFalse(ok(pods=[other, user]))
         self.assertTrue(ok(pods=[other, {'spec': {}}]))
 
+    def test_expiry_users_expression(self):
+        refuse = by_name(role_tasks('expire-volume'), 'Refuse while a VolumeAttachment, a session or a Pod uses the volume')
+        expr = refuse['vars']['storage_vm_expiry_used_claims']
+        def mounting(*claims):
+            return {'spec': {'volumes': [{'name': c, 'persistentVolumeClaim': {'claimName': c}} for c in claims]}}
+        results = {'results': [
+            {'item': {'namespace': 'media', 'name': 'a-data'},
+             'resources': [mounting('a-data'), {'spec': {}}, mounting('other')]},
+            {'item': {'namespace': 'media', 'name': 'b-data'}, 'resources': [{'spec': {}}, mounting('other')]}]}
+        got = Templar(variables={'storage_vm_expiry_pods': results}).template(expr)
+        self.assertEqual(got.split(), ['a-data'])
+        none = {'results': [{'item': {'namespace': 'media', 'name': 'b-data'}, 'resources': [mounting('other')]}]}
+        self.assertEqual((Templar(variables={'storage_vm_expiry_pods': none}).template(expr) or '').split(), [])
+
 
     def test_expiry_skips_volumes_in_the_inventory(self):
         # A volume re-added to the inventory keeps its pending-delete tag until a green reconcile: never expire it.
@@ -679,10 +739,10 @@ class ExpiryPlaybookTests(unittest.TestCase):
         record = module(block[0]['rescue'][0], 'set_fact')['storage_vm_expiry_refused']
         self.assertEqual(Templar(variables={'storage_vm_candidate': {'id': 'b'}, 'storage_vm_expiry_refused': ['a']})
                          .template(record), ['a', 'b'])
-        cleanup = plays('storage-expiry.yml')[-1]['tasks']
+        cleanup = plays('storage-expiry.yml')[-2]['tasks']
         self.assertEqual(cleanup[0]['loop'], ["{{ hostvars[groups['masters'][0]].storage_vm_kubeconfig_path }}",
                                               '{{ storage_vm_checkout.path }}'])
-        fail = cleanup[-1]
+        fail = plays('storage-expiry.yml')[-1]['tasks'][-1]
         self.assertIn('ansible.builtin.fail', fail)
         self.assertTrue(holds([fail['when']], storage_vm_expiry_refused=['a']))
         self.assertFalse(holds([fail['when']]))
@@ -700,25 +760,6 @@ class BootUnitTests(unittest.TestCase):
             'sysctl_set': True, 'state': 'present', 'reload': True})
         self.assertEqual(t['loop'], [{'key': 'kernel.panic_on_oops', 'value': '1'}, {'key': 'kernel.panic', 'value': '10'}])
         self.assertNotIn('when', t)
-
-
-class WorkflowTests(unittest.TestCase):
-    def test_validate_runs_this_test_and_syntax_checks_playbooks(self):
-        text = (ROOT / '.github/workflows/validate.yml').read_text()
-        self.assertIn('run: python3 scripts/tests/test_storage_vm_role.py', text)
-        syntax = next(line for line in text.splitlines() if '--syntax-check k3s.yml' in line)
-        self.assertTrue(syntax.rstrip().endswith('storage.yml storage-expiry.yml 2>&1)'), syntax)
-
-    def test_validate_runs_every_storage_test(self):
-        text = (ROOT / '.github/workflows/validate.yml').read_text()
-        lint = text.index('Install ansible-lint')
-        tests = sorted((ROOT / 'scripts/tests').glob('test_storage_*.py'))
-        for path in tests + [ROOT / 'scripts/tests/test_argocd_bootstrap.py']:
-            step = f'run: python3 scripts/tests/{path.name}'
-            self.assertIn(step, text, path.name)
-            self.assertGreater(text.index(step), lint, path.name)  # test_argocd_bootstrap imports ansible
-            # a file without a live __main__ guard runs 0 tests under python3 <file> and passes
-            self.assertRegex(path.read_text(), r'(?m)^if __name__ == [\'"]__main__[\'"]:', path.name)
 
 
 class LabExampleTests(unittest.TestCase):

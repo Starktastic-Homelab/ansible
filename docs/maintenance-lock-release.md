@@ -23,7 +23,7 @@ Precedent: one failed-run lock has been released by hand. That was ansible deplo
 
 Use it when all of these are true:
 - `/var/lib/homelab-maintenance/operation.json` exists on VM300.
-- Its `owner` is a CI run: `Starktastic-Homelab/terraform/<run_id>/<attempt>` or `Starktastic-Homelab/ansible/<run_id>/<attempt>`. Both workflows set this (terraform `apply.yml@main:112`, ansible `deploy.yml@main:47`).
+- Its `owner` is a CI run: `Starktastic-Homelab/terraform/<run_id>/<attempt>` or `Starktastic-Homelab/ansible/<run_id>/<attempt>`. Both workflows set this (terraform `apply.yml@main:112`, ansible `deploy.yml@main:47`). The script refuses any owner that is not `<a>/<b>/<digits>/<digits>` (`NOT A CI OWNER`); its test ties that shape to `deploy.yml`.
 - Its `stage` is `acquired`, `applying` or `recovering`. Those are the only stages CI writes (`maintenance_lock.py:135`; `maintenance_apply.py@main:152,161`). `held` means a person took it over: stop and find out who, unless your own `held-by-me` marker (4.4) is there.
 - That run attempt has ended (failed or cancelled), and no process of it is left on VM300 (2.3).
 
@@ -31,7 +31,7 @@ Do not use it:
 - **While the owning run is still running or queued.** Wait. A cancel is Ben's call and has a cost: it leaves the 3.4 or 3.6 mess (a deploy cut mid `helm upgrade` leaves `pending-*` releases, `deploy.yml@main:27-28`).
 - **Because the lock is old.** Age means nothing. The helper never takes over an old lock (`maintenance_lock.py:2`), and the docs forbid clearing one for its age or on a timer (ansible `maintenance-coordination.md:132`, terraform `storage-safe-maintenance.md:33-34`).
 - **To get a pipeline moving.** A release is the last step of a reconcile, not a bypass. Releasing does not authorize targeted applies or skipping the pipeline (terraform `storage-safe-maintenance.md:131-134`).
-- **For a lock a person took by hand** (owner `claude-code/...`, `lab/...`). Whoever took it keeps their own owner and nonce files, and releases it with those.
+- **For a lock a person took by hand** (owner `claude-code/...`, `lab/...`). Whoever took it keeps their own owner and nonce files, and releases it with those. The script refuses those shapes, but a hand-made owner shaped like `a/b/1/1` would pass it: check the owner against `gh run view` (2.2).
 - **For a run that failed at "Acquire" with `FileExistsError: ... '/maintenance/operation.json'`.** That run holds nothing (`maintenance_lock.py:57`). Deal with it after the real holder is released (5.2).
 - **For a corrupt or empty record.** The helper refuses it with "Corrupt maintenance record; inspect manually without clearing it" (`maintenance_lock.py:74-75`). This runbook has no step that removes a record, corrupt or not. Bring it to Ben.
 
@@ -45,7 +45,7 @@ Through the live helper, `/opt/azure-cli/bin/python3 -I ~/.cache/claude-homelab-
 - `live.py` has only `pve` (SSH) and `tn` (QGA on VM100) targets (`live.py:15-18`), so VM300 is reached as root with `qm guest exec 300` from pve.
 - pve expands `$` before the guest sees it, so no row contains `$`.
 - Every row is ASCII only (`live.py:14`).
-- The row timeout (last field) is always the `qm --timeout` plus 30. `live.py` has no `try` (`live.py:13-19`), so a row that hits its own timeout aborts every row after it.
+- The row timeout (last field) is at least the `qm --timeout` plus 30. `live.py` has no `try` (`live.py:13-19`), so a row that hits its own timeout aborts every row after it.
 
 ```json
 [
@@ -62,7 +62,7 @@ sudo python3 -I -c 'import json; d=json.load(open("/var/lib/homelab-maintenance/
 
 Write down `owner`, `operation`, `stage` and `created_at` (UTC, written at acquire, `maintenance_lock.py:137`).
 - Possible `operation` values: `ansible-deploy` (`deploy.yml@main:94`), and `terraform-normal`, `terraform-drain` or `terraform-destroy` (terraform `maintenance_apply.py@main:113`).
-- `instance` must be `cc1aeeb7-4827-466c-9d4b-5dc6c881f193` (`apply.yml@main:111`, `deploy.yml@main:43`). If it is anything else, stop.
+- `instance` must equal `maintenance_runner_instance` (`roles/maintenance_runner/defaults/main.yml:2`; CI writes it at `apply.yml@main:111`, `deploy.yml@main:43`). If it is anything else, stop; `maintenance_lock_op.sh` refuses it too.
 - If the read fails with a JSON error, the record is corrupt. Stop (section 1).
 - Stray `stage-<hex>.json` files are left over from an interrupted `advance` (`maintenance_lock.py:160-162`). They are harmless. Leave them.
 
@@ -297,20 +297,24 @@ Resume is in 5.2.
 
 ## 4. Release
 
-Only after section 3 is done for the shape. 4.1 is prep; 4.3 to 4.5 change the lock. Both routes put `maintenance_lock_op.sh` and `maintenance_lock.py` from one ansible commit in one fresh directory on VM300; the script calls the helper next to itself.
+Only after section 3 is done for the shape. 4.1 is prep, 4.3 is a dry check, and 4.4 and 4.5 change the lock. Both routes put `maintenance_lock_op.sh` and `maintenance_lock.py` from one ansible commit in one fresh directory on VM300; the script calls the helper next to itself.
 
 ### 4.1 Stage the files (Ben OK: this writes files on VM300)
 
-On the workstation, in bash (in zsh `$S:scripts` breaks, so write `"${S}:..."`). `S` is the ansible commit Ben read the two files at. It must be on `origin/main`:
+On the workstation, in bash: start `bash` first (Ben's login shell is fish, where these lines fail) and keep that shell open until the 4.5 cleanup, since it holds `$W`. Write `"${S}:..."` (in zsh `$S:scripts` breaks). `S` is the ansible commit Ben read the two files at. It must be on `origin/main`:
 
 ```bash
 W=$(mktemp -d)        # 0700
 A=~/Projects/homelab/ansible
 git -C "$A" fetch origin
 S=<sha>               # the commit Ben read; for example: git -C "$A" rev-parse origin/main
-git -C "$A" merge-base --is-ancestor "$S" origin/main && echo "on main"
-for f in maintenance_lock.py maintenance_lock_op.sh; do git -C "$A" show "${S}:scripts/$f" > "$W/$f"; done
-sha256sum "$W"/maintenance_lock.py "$W"/maintenance_lock_op.sh    # write both hashes down
+if git -C "$A" merge-base --is-ancestor "$S" origin/main; then
+  echo "on main"
+  for f in maintenance_lock.py maintenance_lock_op.sh; do git -C "$A" show "${S}:scripts/$f" > "$W/$f"; done
+  sha256sum "$W"/maintenance_lock.py "$W"/maintenance_lock_op.sh    # write both hashes down
+else
+  echo "STOP: $S is not on origin/main"
+fi
 ```
 
 - Stop if `on main` is not printed. Unmerged code was not reviewed.
@@ -338,7 +342,7 @@ print('rows:', [len(r[1]) for r in rows])
 PY
 ```
 
-- The first row refuses if `/root/lock-release` already exists, and each file is opened with `xb`. So only one operator can be staged at a time. If it refuses, either someone else is mid-release (stop and find out who) or your own earlier staging failed half way (clean up as in 4.5, Ben OK, and stage again).
+- The first row refuses if `/root/lock-release` already exists, and each file is opened with `xb`. So only one operator can be staged at a time on Route A. Route B stages in `~/lock-release`, so exclusivity does not hold across the two routes: one operator at a time is a rule, not a mechanism. If it refuses, either someone else is mid-release (stop and find out who) or your own earlier staging failed half way (clean up as in 4.5, Ben OK, and stage again).
 - The last row must print the two hashes you wrote down.
 - The helper row is about 10.8 KB (helper at `1eab126`). The QGA argument size limit is UNVERIFIED. If that row fails, nothing ran in the guest; stop and use Route B.
 
@@ -357,17 +361,17 @@ ssh ben@10.9.9.10 'sha256sum ~/lock-release/*'
 
 Ben reads it, and its test, at `S` before staging. Usage, as root: `timeout 20 bash <dir>/maintenance_lock_op.sh <expected owner> <expected stage> verify|hold|release`.
 - It never prints the nonce, and never passes it in argv or through an inner `sudo env`.
-- It never uses `set -x`, and never uses `cmd && echo ok` (that does not stop under `set -e`).
+- It turns tracing off first (`set +x`), so `bash -x` or `SHELLOPTS=xtrace` cannot print the nonce (tested), and never uses `cmd && echo ok` (that does not stop under `set -e`).
 
 Exit codes:
 
 | Exit | Output | Meaning |
 |---|---|---|
 | 0 | `verify ok: ...`, then `advanced to held` or `released: ...` | done |
-| 1 | a helper error, or `pgrep failed` | refused; see the 4.3 stop list |
-| 2 | `UNKNOWN STAGE`, `unknown action`, `usage` | bad arguments |
+| 1 | a helper error, `pgrep failed`, `grep failed`, or `not root: run it with sudo` | refused; see the 4.3 stop list |
+| 2 | `NOT A CI OWNER`, `unknown action`, `usage` | bad arguments, or a person's lock |
 | 3 | `OWNER MISMATCH` | the record is not the run you named |
-| 4 | `RUNNER JOB ALIVE` | a job is running; wait, then run again |
+| 4 | `RUNNER JOB ALIVE`, `OWNER PROCESS ALIVE` | a job, or a process whose env names the owner (a step that outlived `Runner.Worker`), is running; wait, then run again |
 | 5 | `HELD BY SOMEONE ELSE` | `held` without your own `held-by-me` marker |
 | 6 | `NO LOCK` | no `operation.json` |
 | 124 | (none) | `timeout 20` fired, most likely waiting on `guard` |
@@ -376,13 +380,14 @@ Why it is shaped like this:
 - **The owner and nonce come from the record itself, so the helper's ownership check proves nothing here.** The real gates are:
   - the literal `want_owner`, which Ben copies from `gh run view` (2.2);
   - `verify` at the exact recorded stage;
-  - the `held` marker, the runner check and the exclusive staging directory (4.1);
+  - the `held` marker, the runner and owner-process checks, the CI owner shape and the exclusive staging directory (4.1);
   - Ben's OK.
-- The stage list (`acquired`, `applying`, `recovering`, `held`) is the stages section 1 covers. It is policy, not read from CI; terraform's stages live in terraform `maintenance_apply.py`.
+- There is no stage list: `verify --stage` refuses any stage the record does not hold (`maintenance_lock.py:78-79`), including an empty one. Only `held` is special, through the marker. terraform's stages live in terraform `maintenance_apply.py`.
+- The owner-process check reads every `/proc/<pid>/environ` for `MAINTENANCE_OWNER=<owner>`, before the script sets that variable itself. An unreadable or vanished entry counts as clear; as root only a vanished pid is unreadable. It does not replace the `docker ps -a` check in 2.3.
 - The owner needs no quoting: owners match `[a-zA-Z0-9_./:-]` (`maintenance_lock.py:130`).
 - `HOMELAB_RUNNER_INSTANCE` is VM300's own `/sys/class/dmi/id/product_uuid`, lowercased: the value `roles/maintenance_runner/tasks/main.yml:5` checks against the reviewed instance. Every call checks it against `runner-instance` (`maintenance_lock.py:29-31`), and the record's `instance` must match it. Never create a second marker to get past a mismatch (`maintenance-coordination.md:144-145`).
 - The root is fixed at `/var/lib/homelab-maintenance` (the role's `maintenance_runner_root`; the test ties the two). The helper's default is the container path `/maintenance` (`maintenance_lock.py:169`).
-- Test hooks: `LOCK_OP_TEST_ROOT`, `LOCK_OP_TEST_INSTANCE_FILE` and `LOCK_OP_TEST_WORKER` are read only when the script is not root. As root it ignores them and sets a fixed `PATH`. Not as root, it fails on the root-only DMI file. So in production no environment value changes the root, the instance or the runner check.
+- Test hooks: `LOCK_OP_TEST_ROOT`, `LOCK_OP_TEST_INSTANCE_FILE` and `LOCK_OP_TEST_WORKER` are read only when the script is not root. As root it ignores them and sets a fixed `PATH`. Not as root, it refuses unless `LOCK_OP_TEST_ROOT` is set, so a run without `sudo` can never report `NO LOCK` for a directory it cannot read. So in production no environment value changes the root, the instance or the runner check. A source test pins the fixed `PATH` and keeps every hook inside the non-root branch.
 - It runs as root on both routes, so group membership does not matter. `hold` written by root keeps the group: `_write` sets 0660 (`maintenance_lock.py:56-59`) in the setgid 2770 directory (role `tasks/main.yml@main:21-27`).
 - `timeout 20` ends the script and its helper child if the helper waits on `guard` (`maintenance_lock.py:42`); tested.
 - The nonce lives only in this root shell's environment and its python children. The shell exits when the script ends.
@@ -400,12 +405,13 @@ Route A row (`live.py`, in a rows file of its own):
 
 Route B: `sudo timeout 20 bash ~/lock-release/maintenance_lock_op.sh Starktastic-Homelab/<repo>/<run_id>/<attempt> <stage> verify`
 
-Expect `verify ok: ...`. Stop on any of:
-- `OWNER MISMATCH`, `HELD BY SOMEONE ELSE`, `RUNNER JOB ALIVE` (wait, then retry), `NO LOCK`, `UNKNOWN STAGE`;
+Expect `verify ok: ...`. Stop on any other output. Examples:
+- `OWNER MISMATCH`, `NOT A CI OWNER`, `HELD BY SOMEONE ELSE`, `RUNNER JOB ALIVE` or `OWNER PROCESS ALIVE` (wait, then retry), `NO LOCK`;
 - staged hashes that differ from the ones you wrote down in 4.1 (wrong files staged);
 - `Maintenance ownership mismatch`, `Maintenance stage mismatch`, `Corrupt maintenance record`;
-- `Maintenance execution is busy` (another process holds `execution.guard`; check `/proc/locks`, 2.3), `Invalid maintenance execution guard`, `Execution guard group permissions changed` (`maintenance_lock.py:99-107`);
-- `pgrep failed`;
+- `Maintenance execution is busy` (another process holds `execution.guard`; check `/proc/locks`, 2.3). The dry check never sees this: `verify` takes only `guard` (`maintenance_lock.py:141-143`), so it first shows at 4.4 or 4.5. The 2.3 `/proc/locks` check is what covers it before then. Also `Invalid maintenance execution guard`, `Execution guard group permissions changed` (`maintenance_lock.py:99-107`);
+- `pgrep failed`, `grep failed`, `not root: run it with sudo`;
+- `Invalid maintenance guard`, `Maintenance guard group permissions changed`, `Maintenance directory must exist without symlink components`, `Expected a regular maintenance file` (`maintenance_lock.py:20,28,37,41`; a symlinked `operation.json` gives the last);
 - `Missing or mismatched runner instance; check the host bind mount` (`maintenance_lock.py:31`). Never "fix the marker" (`maintenance-coordination.md:144-145`).
 
 **Timeouts (Route A):**
@@ -430,7 +436,7 @@ Same row or command as 4.3, with `<stage-or-held> release` for `<stage> verify`.
 
 Clean up (Ben OK):
 - Route A: `["pve","qm guest exec 300 --timeout 30 -- rm -rf /root/lock-release | python3 -c 'import json,sys; d=json.load(sys.stdin); print(\"exit\", d.get(\"exitcode\"))'",60]`
-- Route B: `rm -rf ~/lock-release`
+- Route B: `ssh ben@10.9.9.10 'rm -rf ~/lock-release'` (on VM300, not the workstation)
 - Workstation: `rm -rf "$W"`
 
 ## 5. Verify, then resume
@@ -488,7 +494,7 @@ By shape:
 ## 6. Never
 
 - `cat`, `tee`, copy or upload `operation.json`. An evidence bundle must leave it out or redact the nonce. Keep the runner workspace out too (2.4).
-- Pass the nonce in argv, through `sudo env NONCE=...`, under `set -x`, or in a live-helper row.
+- Pass the nonce in argv, through `sudo env NONCE=...`, under `set -x` or `bash -x`, or in a live-helper row.
 - Release while the owner run, its container or `Runner.Worker` is still alive.
 - Release because the lock is old, on a timer, or to unblock a merge.
 - Release before reconciling (no cordons left unexplained, no VM left stopped unexplained).
@@ -525,7 +531,7 @@ By shape:
 Findings not taken, or taken in part:
 - **Correctness I1, the reason the 11-06 precedent worked** ("its fix was outside the ansible tree"): taken in part. Both attempts ran `1a21268`, so any fix between them was outside the repo; but the named helm-diff fix #304 (`902db94`, 08:53Z) is an ansible commit that landed after attempt 2 passed (01:48Z). Whether a by-hand change came between the attempts was not checked. The mechanism (a rerun keeps the old SHA) is taken.
 - **Safety I2, a person-owned lock around late uncordons:** not taken. It needs nonce handling at a terminal. The recheck before each uncordon (5.2) is used instead.
-- **Safety I3, a `held-by-me` marker alone:** in a shared `/root/lock-release` it cannot tell two QGA operators apart. Taken together with the staging directory that refuses to exist twice (4.1).
+- **Safety I3, a `held-by-me` marker alone:** in a shared `/root/lock-release` it cannot tell two QGA operators apart. Taken together with the staging directory that refuses to exist twice (4.1); that holds within one route only.
 - **Correctness M5, `gh run rerun --failed` for a failure after Release:** if only `handoff` failed, `--failed` reruns `handoff` alone, not `provision`. 3.7 uses a whole-run rerun instead.
 - **Correctness M8, "remove `pr-<N>/` from the bucket (Ben OK)" as a step:** no repo tool does this by hand. Recorded in 5.2 and question 13 instead.
 - **Operability C1, "Section 4 cannot be run":** taken as a second route. Route B (Ben's own shell) stays, since this runbook is for Ben.

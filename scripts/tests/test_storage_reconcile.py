@@ -61,8 +61,9 @@ class FakeLio:
         self.fake, self.targets_ = fake, targets or {}
         self.sessions_ = sessions or {}
 
-    def ensure_target(self, id, dev, acl_iqns, portal):
+    def ensure_target(self, id, dev, acl_iqns, portal, cut=()):
         self.fake.record('lio.ensure_target', id, dev, tuple(acl_iqns), portal)
+        self.cut_ = tuple(cut)
         self.targets_[id] = {'dev': dev, 'acls': set(acl_iqns)}
 
     def save(self):
@@ -313,6 +314,17 @@ class FenceTest(Base):
         self.assertEqual(rc, 0, self.err)
         self.assertEqual(f.find('lio.ensure_target')[0][3], (W1,))
 
+    def test_fenced_worker_may_be_cut(self):
+        # Only a fenced worker's ACL may go with a session (a fence interrupted before its ACL delete); any other
+        # worker missing from the config is refused by ensure_target (finding n=1, second layer).
+        f = self.fake(vgs={'retained': vg(['ledger:a:created', f'fenced:w2:{UUID_A}'], {'a': (GI, ())}), 'regen': vg()},
+                      fenced_set=['192.0.2.22'])
+        self.assertEqual(self.apply([entry()])[0], 0, self.err)
+        self.assertEqual(f.lio.cut_, (W2,))
+        f = self.fake(vgs={'retained': vg(['ledger:a:created'], {'a': (GI, ())}), 'regen': vg()})
+        self.assertEqual(self.apply([entry()])[0], 0, self.err)
+        self.assertEqual(f.lio.cut_, ())
+
     def test_fence_applies_to_regen_targets(self):
         f = self.fake(vgs={'retained': vg([f'fenced:w2:{UUID_A}']),
                            'regen': vg(['ledger:p:created'], {'p': (GI, ())})}, fenced_set=['192.0.2.22'])
@@ -507,9 +519,9 @@ class GrowAndReportTest(Base):
                        'regen': vg(['ledger:p:created'], {'p': (GI, ())}, size=10 * GI, free=4 * GI)})
         real = self.f.lio.ensure_target
 
-        def ensure_except_p(id, *args):  # p never gets a target
+        def ensure_except_p(id, *args, **kw):  # p never gets a target
             if id != 'p':
-                real(id, *args)
+                real(id, *args, **kw)
         self.f.lio.ensure_target = ensure_except_p
         rc, _ = self.apply([entry('a'), entry('p', cls='regenerable')])
         self.assertEqual(rc, 0, self.err)
@@ -1032,6 +1044,59 @@ class LioOrderTest(Base):
         with mock.patch.dict(sys.modules, {'rtslib_fb': fake}):
             l = lio.Lio()
         return l, deleted
+
+    def ensure_lio(self, acls):
+        """A target 'a' with ACLs {iqn: info text, or None for unreadable}; the root raises once ensure_target
+        goes past its ACL check, so a refusal provably comes before any change."""
+        deleted = []
+
+        class Acl:
+            def __init__(self, wwn, path):
+                self.node_wwn, self.path = wwn, path
+
+            def delete(self):
+                deleted.append(self.node_wwn)
+
+        nodes = []
+        for i, (wwn, info) in enumerate(acls.items()):
+            path = self.tmp / f'acl{i}'
+            path.mkdir()
+            if info is not None:
+                (path / 'info').write_text(info)
+            nodes.append(Acl(wwn, path))
+        tpg = types.SimpleNamespace(tag=1, node_acls=nodes, luns=[])
+        target = types.SimpleNamespace(wwn=lio.iqn('a'), tpgs=[tpg])
+
+        class Proceeded(Exception):
+            pass
+
+        class Root:
+            @property
+            def storage_objects(self):
+                raise Proceeded()
+
+        fake = types.SimpleNamespace(RTSRoot=Root, FabricModule=lambda name: types.SimpleNamespace(targets=[target]))
+        with mock.patch.dict(sys.modules, {'rtslib_fb': fake}):
+            l = lio.Lio()
+        return l, deleted, Proceeded
+
+    def test_ensure_target_refuses_a_live_acl(self):
+        idle = 'No active iSCSI Session for Initiator Endpoint: x\n'
+        live = 'InitiatorName: x\nSession ID: 3\n'
+        for acls, cut, refused in (({W1: idle, W2: live}, (), True),  # w2 left the config while logged in
+                                   ({W1: idle, W2: None}, (), True),  # unreadable info counts as a session
+                                   ({W1: idle, W2: idle}, (), False),  # an idle ACL may go
+                                   ({W1: idle, W2: live}, (W2,), False),  # a fenced worker is still cut
+                                   ({W1: live}, (), False)):  # a wanted ACL is never checked
+            with self.subTest(acls=acls, cut=cut):
+                for p in self.tmp.iterdir():
+                    shutil.rmtree(p)
+                l, deleted, proceeded = self.ensure_lio(acls)
+                with self.assertRaises(lio.InUse if refused else proceeded) as e:
+                    l.ensure_target('a', '/dev/retained/a', [W1], '192.0.2.10:3260', cut=cut)
+                if refused:
+                    self.assertIn(W2, str(e.exception))
+                self.assertEqual(deleted, [])
 
     def test_retained_first(self):
         l, deleted = self.lio_with([('b', '/dev/regen/b'), ('c', '/dev/retained/c'), ('a', '/dev/retained/a')])

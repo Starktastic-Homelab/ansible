@@ -23,6 +23,38 @@
       storage_vm_ssh_sources must be a non-empty list of IPv4 addresses or CIDRs, storage_vm_bridge_address an IPv4
       address, and storage_vm_workers a non-empty list of unique {name, bridge_address}.
 
+# A Proxmox API timeout drops a worker from its tag groups with only a warning (inventory/proxmox.yml). The shorter
+# list would cut that worker's ACLs and its tcp/3260 rule, so refuse it before any write unless storage_vm_remove_workers
+# (the storage.yml dispatch input remove_workers, one run only) names it. Nothing installed yet: first bootstrap.
+- name: Find the installed storage config
+  ansible.builtin.stat:
+    path: /etc/homelab-storage/config.json
+  register: storage_vm_installed_config_stat
+
+- name: Read the installed storage config
+  ansible.builtin.slurp:
+    src: /etc/homelab-storage/config.json
+  register: storage_vm_installed_config
+  when: storage_vm_installed_config_stat.stat.exists
+
+# An unreadable installed config fails this task (from_json, or no workers list): never read as no workers.
+- name: Refuse a worker that left the inventory without an approval naming it
+  ansible.builtin.assert:
+    that:
+      - storage_vm_remove_workers is sequence and storage_vm_remove_workers is not string
+      - storage_vm_installed_workers is sequence and storage_vm_installed_workers is not string
+      - >-
+        storage_vm_installed_workers | map(attribute='name') | difference(storage_vm_workers | map(attribute='name'))
+        | difference(storage_vm_remove_workers) | length == 0
+    fail_msg: >-
+      {{ storage_vm_installed_workers | map(attribute='name') | difference(storage_vm_workers | map(attribute='name'))
+         | join(', ') }} is in the installed config.json but not in the inventory (a Proxmox inventory drop-out?).
+      Nothing was changed. If the removal is deliberate, dispatch storage.yml with remove_workers naming it.
+  vars:
+    storage_vm_installed_workers: >-
+      {{ (storage_vm_installed_config.content | b64decode | from_json).workers
+         if storage_vm_installed_config_stat.stat.exists else [] }}
+
 # shortcut: a prefix compare, so only an x.y.z.0/24 subnet passes; the runner image has no netaddr for
 # ansible.utils.ipaddr. Upgrade both this and group_vars/storage/storage_vm.yml if the bridge needs another size.
 - name: Require distinct worker bridge addresses inside the bridge subnet

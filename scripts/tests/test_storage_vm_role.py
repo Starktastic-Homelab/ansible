@@ -1,4 +1,5 @@
 """Offline checks for the storage VM role, storage.yml, storage-expiry.yml and the lab guard (ADR 0017)."""
+import base64
 import json
 import re
 import shutil
@@ -192,6 +193,52 @@ class RoleTests(unittest.TestCase):
         self.assertFalse(holds(that, storage_vm_workers=[]))
         self.assertFalse(holds(that, storage_vm_workers=WORKERS + [WORKERS[0]]))
         self.assertFalse(holds(that, storage_vm_bridge_address=''))
+
+    def test_worker_dropped_from_inventory_refused(self):
+        # A Proxmox API timeout drops a worker from its tag groups with only a warning (inventory/proxmox.yml): the
+        # shorter list must never reach config.json, nftables.conf or the ACLs unless an approval names that worker.
+        tasks = role_tasks('assert')
+        names = [t['name'] for t in tasks]
+        stat = by_name(tasks, 'Find the installed storage config')
+        read = by_name(tasks, 'Read the installed storage config')
+        check = by_name(tasks, 'Refuse a worker that left the inventory without an approval naming it')
+        self.assertEqual(module(stat, 'stat')['path'], str(config.PATH))
+        self.assertEqual(module(read, 'slurp')['src'], str(config.PATH))
+        self.assertEqual(read['when'], 'storage_vm_installed_config_stat.stat.exists')
+        self.assertLess(names.index(stat['name']), names.index(read['name']))
+        self.assertLess(names.index(read['name']), names.index(check['name']))
+        self.assertEqual(load(ROLE / 'defaults/main.yml')['storage_vm_remove_workers'], [])
+
+        def installed(workers):
+            if workers is None:
+                return {'storage_vm_installed_config_stat': {'stat': {'exists': False}},
+                        'storage_vm_installed_config': {'skipped': True}}
+            raw = workers if isinstance(workers, str) else json.dumps({'workers': workers})
+            return {'storage_vm_installed_config_stat': {'stat': {'exists': True}},
+                    'storage_vm_installed_config': {'content': base64.b64encode(raw.encode()).decode()}}
+
+        def passes(installed_workers, rendered=WORKERS, approved=()):
+            return holds(module(check, 'assert')['that'], **check['vars'], **installed(installed_workers),
+                         storage_vm_workers=rendered,
+                         storage_vm_remove_workers=list(approved) if not isinstance(approved, str) else approved)
+
+        one = WORKERS[:1]
+        self.assertTrue(passes(None))  # first bootstrap: nothing installed yet
+        self.assertTrue(passes(WORKERS))
+        self.assertTrue(passes(one, rendered=WORKERS))  # a worker added
+        self.assertFalse(passes(WORKERS, rendered=one))  # k3s-worker-02 dropped out of the inventory
+        self.assertTrue(passes(WORKERS, rendered=one, approved=['k3s-worker-02']))
+        self.assertFalse(passes(WORKERS, rendered=one, approved=['k3s-worker-01']))
+        self.assertFalse(passes(WORKERS, rendered=one, approved='k3s-worker-02'))  # a string, not a list
+        self.assertFalse(passes(WORKERS, rendered=[], approved=['k3s-worker-01']))  # still one approval short
+        for broken in ('not json', '{"workers": 7}', '{}'):
+            with self.subTest(installed=broken):  # refused (False) or the task errors: never read as no workers
+                try:
+                    self.assertFalse(passes(broken, rendered=[]))
+                except AssertionError:
+                    raise
+                except Exception:
+                    pass
 
     def test_bridge_addresses_in_subnet_unique(self):
         t = by_name(role_tasks('assert'), 'Require distinct worker bridge addresses inside the bridge subnet')

@@ -45,12 +45,13 @@ class Executor:
     def __init__(self, cfg, lio_, vgs, fenced):
         self.cfg, self.lio, self.vgs = cfg, lio_, vgs
         self.acls = [lio.worker_iqn(w['name'], cfg['initiator_prefix']) for w in cfg['workers'] if w['name'] not in fenced]
+        self.cut = [lio.worker_iqn(n, cfg['initiator_prefix']) for n in sorted(fenced)]
 
     def target(self, a, step=None):
         dev = f'/dev/{a.vg}/{a.id}'
         if not _dev_exists(dev):  # a VG whose boot activation was given up on (ADR 0017 F11)
             lvm.activate(a.vg)
-        self.lio.ensure_target(a.id, dev, self.acls, self.cfg['portal'])
+        self.lio.ensure_target(a.id, dev, self.acls, self.cfg['portal'], cut=self.cut)
         if step:
             host.checkpoint(step)
 

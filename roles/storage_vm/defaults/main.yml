@@ -8,6 +8,9 @@ storage_vm_bridge_address: ""
 storage_vm_bridge_subnet: ""
 # Required: addresses or CIDRs allowed to reach tcp/22 (the runner and the LAN).
 storage_vm_ssh_sources: []
+# Workers approved to leave the installed config.json this run (tasks/assert.yml); the storage.yml dispatch input
+# remove_workers sets it for one run. Any other worker missing from storage_vm_workers is refused.
+storage_vm_remove_workers: []
 storage_vm_api_url: "https://{{ vip_address }}:6443"
 
 # Every run reconciles against this branch's tip, never a pinned commit.

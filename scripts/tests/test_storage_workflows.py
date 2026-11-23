@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import fnmatch
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import re
@@ -26,6 +27,7 @@ HELPER = 'python3 maintenance-helper/scripts/maintenance_lock.py'
 OUTPUT = re.compile(r'steps\.([\w-]+)\.outputs\.(\w+)')
 CONTEXT = re.compile(r'\b(github\.event_name|inputs\.\w+)\b')
 RESTORE_OWNER = 'claude-code/storage-restore/2026-11-23T10:00:00Z'
+APPROVALS = 'storage-approvals.json'  # the dispatch approvals step's vars file, read by both storage playbooks
 
 
 def workflow(name):
@@ -85,7 +87,7 @@ class Fixture:
         script = script.replace('/maintenance/', str(self.lock) + '/')
         for command in ('acquire', 'verify', 'release'):
             script = script.replace('maintenance_lock.py ' + command, f'maintenance_lock.py {command} --root {self.lock}')
-        return subprocess.run(['bash', '-e', '-c', script], env=self.env, capture_output=True, text=True)
+        return subprocess.run(['bash', '-e', '-c', script], env=self.env, capture_output=True, text=True, cwd=self.d)
 
     def outputs(self):
         path = self.d / 'output'
@@ -302,7 +304,10 @@ class WorkflowTests(unittest.TestCase):
 
     def test_held_lock_input(self):
         inputs = workflow('storage.yml')[True]['workflow_dispatch']['inputs']
-        self.assertEqual(set(inputs), {'held_lock_owner'})
+        self.assertEqual(set(inputs), {'held_lock_owner', 'remove_workers'})
+        for name in ('held_lock_owner', 'remove_workers'):
+            self.assertIs(inputs[name]['required'], False, name)
+            self.assertEqual(inputs[name]['default'], '', name)
         self.assertIs(inputs['held_lock_owner']['required'], False)
         self.assertEqual(inputs['held_lock_owner']['default'], '')
 
@@ -367,6 +372,45 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(f.run(playbook_step('storage.yml', 'storage.yml')).returncode, 0)
         self.assertIn(RESTORE_OWNER, (f.lock / 'operation.json').read_text())
 
+    def test_dispatch_approvals(self):
+        approvals = step('storage.yml', id='approvals')
+        ss = steps('storage.yml')
+        self.assertLess(ss.index(step('storage.yml', id='ready')), ss.index(approvals))
+        self.assertEqual(approvals['if'], "steps.ready.outputs.ready == 'true'")
+        self.assertNotIn('${{', approvals['run'])  # the inputs reach the script through env only
+        self.assertIn('python3 -I', approvals['run'])
+        self.assertEqual(approvals['env'], {'REMOVE_WORKERS': '${{ inputs.remove_workers }}'})
+        # Both the pre-lock dry run and the reconcile read it, or the dry run refuses what the approval allows.
+        for playbook in ('storage-dry-run.yml', 'storage.yml'):
+            s = playbook_step('storage.yml', playbook)
+            self.assertLess(ss.index(approvals), ss.index(s), playbook)
+            self.assertIn(f'-e @{APPROVALS}', ' '.join(s['run'].replace('\\\n', ' ').split()), playbook)
+        self.assertIn(APPROVALS, step('storage.yml', name='Remove private controller credentials')['run'])
+        self.assertNotIn(APPROVALS, (WORKFLOWS / 'storage-expiry.yml').read_text())
+
+        def run(**env):
+            d = tempfile.TemporaryDirectory()
+            self.addCleanup(d.cleanup)
+            f = Fixture(d.name)
+            f.env.update(env)
+            got = f.run(approvals)
+            path = f.d / APPROVALS
+            return got, (json.loads(path.read_text()) if path.exists() else None)
+
+        for env, want in (({}, {}), ({'REMOVE_WORKERS': ''}, {}),
+                          ({'REMOVE_WORKERS': 'k3s-worker-02'}, {'storage_vm_remove_workers': ['k3s-worker-02']}),
+                          ({'REMOVE_WORKERS': ' k3s-worker-03, k3s-worker-02 k3s-worker-03'},
+                           {'storage_vm_remove_workers': ['k3s-worker-02', 'k3s-worker-03']})):
+            with self.subTest(env=env):
+                got, written = run(**env)
+                self.assertEqual(got.returncode, 0, got.stderr)
+                self.assertEqual(written, want)
+        for bad in ('Worker-1', 'w1;rm', '-w1', 'w1/x', '"w1"', 'w1=x'):
+            with self.subTest(bad=bad):
+                got, written = run(REMOVE_WORKERS=bad)
+                self.assertNotEqual(got.returncode, 0)
+                self.assertIsNone(written)
+
     def test_held_lock_skips_acquire_and_release(self):
         dispatch = {'github.event_name': 'workflow_dispatch', 'inputs.held_lock_owner': RESTORE_OWNER}
         adopted = {('ready', 'ready'): 'true', ('held', 'held'): 'true', ('adopt', 'adopted'): 'true'}
@@ -400,6 +444,8 @@ class WorkflowTests(unittest.TestCase):
             for s in steps(name):
                 for line in s.get('run', '').replace('\\\n', ' ').splitlines():
                     if 'ansible-playbook' in line:
+                        # Only the approvals step's validated file, never a raw input or payload value.
+                        line = line.replace(f' -e @{APPROVALS} ', ' ')
                         self.assertNotRegex(line, r'\s(-e|--extra-vars)(\s|=)', name)
 
     def test_triggers(self):

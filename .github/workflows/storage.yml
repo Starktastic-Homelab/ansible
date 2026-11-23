@@ -12,6 +12,13 @@ on:
         required: false
         default: ''
         type: string
+      # A deliberate worker removal (roles/storage_vm/tasks/assert.yml): names, comma or space separated, approved to
+      # leave the installed config.json for this run only. Any other worker missing from the inventory is refused.
+      remove_workers:
+        description: Workers approved to leave the storage VM config this run (names); empty approves none
+        required: false
+        default: ''
+        type: string
 
   # Sent by apps on an inventory change. The run always reconciles the branch tip, never a payload SHA.
   repository_dispatch:
@@ -93,6 +100,27 @@ jobs:
         id: ready
         run: python3 scripts/storage_ready.py
 
+      # The dispatch approvals for this run, validated; both playbooks read only this file (-e @), never a raw input.
+      - name: Validate the dispatch approvals
+        id: approvals
+        if: steps.ready.outputs.ready == 'true'
+        env:
+          REMOVE_WORKERS: ${{ inputs.remove_workers }}
+        run: |
+          python3 -I - <<'PY'
+          import json, os, re, sys
+          approvals = {}
+          workers = os.environ.get('REMOVE_WORKERS', '').replace(',', ' ').split()
+          for name in workers:
+              if not re.fullmatch(r'[a-z0-9]([a-z0-9.-]*[a-z0-9])?', name):
+                  sys.exit(f'remove_workers: {name!r} is not a worker name')
+          if workers:
+              approvals['storage_vm_remove_workers'] = sorted(set(workers))
+          with open('storage-approvals.json', 'w') as stream:
+              json.dump(approvals, stream)
+          print('Approvals for this run:', json.dumps(approvals))
+          PY
+
       # Gauges only (df on pve, the lock record, one textfile on the storage VM): no lock, and it runs inside the
       # backup windows and while another operation holds the lock, so MaintenanceLockStale sees the real holder.
       # proxmox_hosts is only in inventory/hosts.yml; pve logs in with its vaulted password, hence sshpass.
@@ -159,6 +187,7 @@ jobs:
           ansible-playbook -i inventory/proxmox.yml \
             --vault-password-file .vault_pass \
             --private-key private_key.pem \
+            -e @storage-approvals.json \
             storage-dry-run.yml
 
       # The pinned helper's acquire fails on a held lock, so check first: a lock taken in between fails the run.
@@ -183,6 +212,7 @@ jobs:
           ansible-playbook -i inventory/proxmox.yml \
             --vault-password-file .vault_pass \
             --private-key private_key.pem \
+            -e @storage-approvals.json \
             storage.yml
 
       # No always(): a failed run keeps the lock for a human to read the log (D31, as deploy.yml).
@@ -192,4 +222,4 @@ jobs:
 
       - name: Remove private controller credentials
         if: always()
-        run: rm -f .vault_pass private_key.pem
+        run: rm -f .vault_pass private_key.pem storage-approvals.json

@@ -35,6 +35,14 @@ def _is_regen(target):
         return False
 
 
+def _logged_in(acl):
+    """As sessions(): anything but configfs's idle text, or an unreadable info, is a session."""
+    try:
+        return not Path(acl.path, 'info').read_text().startswith('No active iSCSI Session')
+    except OSError:
+        return True
+
+
 class Lio:
     def __init__(self):
         import rtslib_fb
@@ -51,8 +59,17 @@ class Lio:
         t = self._target(id)
         return next((g for g in t.tpgs if g.tag == 1), None) if t else None
 
-    def ensure_target(self, id, dev, acl_iqns, portal):
-        """Make the target exactly: LUN 0 on `dev`, one portal, and ACLs for `acl_iqns` only."""
+    def ensure_target(self, id, dev, acl_iqns, portal, cut=()):
+        """Make the target exactly: LUN 0 on `dev`, one portal, and ACLs for `acl_iqns` only.
+
+        An ACL to remove that has a session (or unreadable info) refuses the whole target before any change, unless its
+        initiator is in `cut` (a fenced worker): a worker missing from the config is never cut off (finding n=1)."""
+        want = set(acl_iqns)
+        if (old := self._tpg(id)) is not None:
+            busy = sorted(a.node_wwn for a in old.node_acls
+                          if a.node_wwn not in want and a.node_wwn not in cut and _logged_in(a))
+            if busy:
+                raise InUse(f'{id}: not removing the ACL of {", ".join(busy)}: it has an iSCSI session')
         r = self._rts
         so = next((s for s in self._root.storage_objects if s.plugin == 'block' and s.name == id), None)
         if so is None:
@@ -76,7 +93,6 @@ class Lio:
                 p.delete()
         if not any(True for _ in tpg.network_portals):
             r.NetworkPortal(tpg, ip, int(port))
-        want = set(acl_iqns)
         for acl in list(tpg.node_acls):
             if acl.node_wwn not in want:
                 acl.delete()  # synchronous: LIO closes that initiator's sessions

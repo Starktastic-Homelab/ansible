@@ -11,6 +11,9 @@ import sys
 from zoneinfo import ZoneInfo
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'roles/storage_vm/files'))
+from homelab_storage.lvm import VG_NAMES  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / 'inventory/proxmox.yml'
 GROUP_VARS = ROOT / 'group_vars/storage/storage_vm.yml'
@@ -30,7 +33,7 @@ def skip_reason(hosts, group_vars):
     if len(hosts) > 1:
         sys.exit('more than one host in the storage group')  # a misconfiguration, never a skip
     pv = group_vars.get('storage_vm_pv_devices')
-    if not (isinstance(pv, dict) and set(pv) == {'retained', 'regen'}
+    if not (isinstance(pv, dict) and set(pv) == set(VG_NAMES)
             and all(isinstance(v, str) and v.startswith('/dev/') for v in pv.values())):
         return 'storage_vm_pv_devices is the placeholder'
     return None

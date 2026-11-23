@@ -33,6 +33,15 @@ def refused(d):
 
 
 class PlanTest(unittest.TestCase):
+    def test_incomplete_vg_mapping_refuses_everything(self):
+        c = ledger.Cluster.from_tags([], 'retained')
+        for vgs in ({'retained': vg()}, {'regen': vg()}, {}, {'retained': vg(), 'regen': vg(), 'extra': vg()}):
+            with self.subTest(keys=sorted(vgs)):
+                d = plan.decide([vol('a')], vgs, c)
+                self.assertTrue(d.fail)
+                self.assertEqual(d.actions, [])
+                self.assertEqual([(r.id, r.reason) for r in d.refusals], [('a', 'vg-missing')])
+
     def test_created_and_present_exports(self):
         d = run([vol()], vg([ledger.tag_created('a')], {'a': GI}))
         self.assertEqual(kinds(d), [('export', 'a')])

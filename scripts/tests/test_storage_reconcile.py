@@ -539,7 +539,7 @@ class FreeSpaceTest(Base):
         self.assertEqual(rc, 1)
         self.assertIn('refused: a: no-space', self.err)
         self.assertEqual(f.find('lvcreate'), [])
-        self.assertNotIn(('vgchange', '--addtag', 'ledger:a:creating', 'retained'), [c for c, _ in f.calls])
+        self.assertEqual([c for c, _ in f.calls if c[0] == 'vgchange'], [])
 
     def test_dry_run_fails_on_no_space_before_lock(self):
         f = self.fake(vgs={'retained': vg(free=GI), 'regen': vg()})

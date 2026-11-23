@@ -2,7 +2,7 @@
 from dataclasses import dataclass, field
 
 from .ledger import HOLD_CREATE
-from .inventory import vg_for
+from .inventory import CLASSES, vg_for
 
 PENDING_PREFIX = 'pending-delete:'
 
@@ -94,7 +94,7 @@ def _fit(d, vgs):
 def decide(volumes, vgs, cluster, removed_ok=2):
     d = Decision()
     up = {n for n, v in vgs.items() if v.present}  # vgs holds every VG (lvm.VG_NAMES), present or not
-    if cluster is None or not up:
+    if cluster is None or not up or set(vgs) != {vg_for(c) for c in CLASSES}:  # not exactly the full VG set
         d.refusals = [Refusal(v.id, 'vg-missing') for v in volumes]
         d.fail = True
         return d

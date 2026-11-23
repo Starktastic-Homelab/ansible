@@ -2,6 +2,8 @@
 import json
 from pathlib import Path
 
+from .lvm import VG_NAMES
+
 PATH = Path('/etc/homelab-storage/config.json')
 KEYS = {'workers': list, 'bridge_address': str, 'portal': str, 'initiator_prefix': str, 'api_url': str, 'token_file': str,
         'ca_file': str, 'csi_driver': str, 'max_removals': int, 'not_ready_seconds': int, 'loop_seconds': int,
@@ -31,7 +33,7 @@ def load(path=PATH):
     if data['portal'] != f'{data["bridge_address"]}:3260':
         raise ConfigError(f'{path}: portal must be <bridge_address>:3260')
     pv = data['pv_devices']
-    if set(pv) != {'retained', 'regen'} or not all(isinstance(v, str) and v.startswith('/dev/') for v in pv.values()) \
+    if set(pv) != set(VG_NAMES) or not all(isinstance(v, str) and v.startswith('/dev/') for v in pv.values()) \
             or pv['retained'] == pv['regen']:
         raise ConfigError(f'{path}: pv_devices must map retained and regen to distinct /dev/ paths')
     if not all(isinstance(p, str) for p in data['pause_after']):

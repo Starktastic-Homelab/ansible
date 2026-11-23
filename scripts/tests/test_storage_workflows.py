@@ -305,6 +305,12 @@ class WorkflowTests(unittest.TestCase):
         self.assertIs(inputs['held_lock_owner']['required'], False)
         self.assertEqual(inputs['held_lock_owner']['default'], '')
 
+    def test_held_lock_owner_set_at_job_level(self):
+        # GITHUB_ENV may not override a job-level env key, so the owner the verify step reads must not depend on it.
+        owner = workflow('storage.yml')['jobs']['reconcile']['env']['MAINTENANCE_OWNER']
+        self.assertEqual(owner, "${{ inputs.held_lock_owner || format('{0}/{1}/{2}', github.repository, "
+                                "github.run_id, github.run_attempt) }}")
+
     def test_held_lock_adopt_step(self):
         adopt = step('storage.yml', id='adopt')
         ss = steps('storage.yml')

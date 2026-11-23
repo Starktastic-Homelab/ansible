@@ -47,7 +47,8 @@ jobs:
         - /var/lib/homelab-maintenance:/maintenance
     env:
       HOMELAB_RUNNER_INSTANCE: cc1aeeb7-4827-466c-9d4b-5dc6c881f193
-      MAINTENANCE_OWNER: ${{ github.repository }}/${{ github.run_id }}/${{ github.run_attempt }}
+      # A dispatch that adopts a held lock runs as its owner; the adopt step validates it before any lock step.
+      MAINTENANCE_OWNER: ${{ inputs.held_lock_owner || format('{0}/{1}/{2}', github.repository, github.run_id, github.run_attempt) }}
       PROXMOX_URL: ${{ secrets.PROXMOX_URL }}
       PROXMOX_USER: ${{ secrets.PROXMOX_USER }}
       PROXMOX_TOKEN_ID: ${{ secrets.PROXMOX_TOKEN_ID }}

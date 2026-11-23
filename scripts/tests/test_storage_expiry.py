@@ -88,7 +88,7 @@ class ExpiryTest(Base):
         rc, _ = self.run_cli('expire', '--id', 'a')
         self.assertEqual(rc, 0, self.err)
         self.assertEqual([n for n in f.names() if n not in ('vgs', 'lvs')],
-                         ['lio.delete_target', 'lio.save', 'blkdiscard', 'lvremove', 'vgchange'])
+                         ['systemctl', 'lio.delete_target', 'lio.save', 'blkdiscard', 'lvremove', 'vgchange'])
         # No -f, so the exclusive open still refuses a busy LV (the tty refusal is covered by test_run_stdin_is_devnull).
         self.assertEqual(f.find('blkdiscard')[0], ('blkdiscard', '/dev/retained/a'))
         self.assertEqual(f.find('lvremove')[0], ('lvremove', '-y', 'retained/a'))
@@ -100,6 +100,20 @@ class ExpiryTest(Base):
         f.lio.sessions_['a'] = ['iqn.2026-11.net.starktastic:w1']  # a login after the listing
         self.assertEqual(self.run_cli('expire', '--id', 'a')[0], 1)
         self.assertEqual(f.find('lio.delete_target') + f.find('blkdiscard') + f.find('lvremove'), [])
+
+    def test_refuses_while_the_boot_restore_may_run(self):
+        # The queued targetctl restore would load the config this save wrote, dropping every other retained target.
+        busy = {'LoadState': 'loaded', 'ActiveState': 'activating', 'Job': '41'}
+        f = self.fake(targetctl_show=busy)
+        self.assertEqual(self.run_cli('expire', '--id', 'a')[0], 1)
+        self.assertIn('storage VM still booting', self.err)
+        self.assertEqual(f.calls, [(('systemctl', 'show', '-p', 'LoadState,ActiveState,Job', 'rtslib-fb-targetctl'), True)])
+        self.assertEqual(f.vgs['retained']['tags'], {'ledger:a:created'})
+
+    def test_expires_with_the_boot_unit_failed(self):
+        f = self.fake(targetctl_active=False, targetctl_show={'LoadState': 'loaded', 'ActiveState': 'failed', 'Job': ''})
+        self.assertEqual(self.run_cli('expire', '--id', 'a')[0], 0, self.err)
+        self.assertEqual(f.find('lvremove'), [('lvremove', '-y', 'retained/a')])
 
     def test_tombstone_written(self):
         f = self.fake()

@@ -761,15 +761,17 @@ class BootRestoreGateTest(Base):
                     self.assertEqual(list((self.tmp / 'textfile').iterdir()), [])
 
     def test_unanswered_show_refuses(self):
-        f = self.fake(vgs=self.state())
-        real = f.run
-        def run(argv, check=True, timeout=None, key=None):
-            if argv[:2] == ['systemctl', 'show']:
-                raise subprocess.TimeoutExpired(argv, timeout)
-            return real(argv, check, timeout, key)
-        with mock.patch.object(host, 'run', run):
-            self.assertEqual(self.apply([entry('a')], '--dry-run')[0], 1)
-        self.assertIn('storage VM still booting', self.err)
+        for e in (subprocess.TimeoutExpired(['systemctl'], 60), FileNotFoundError('systemctl')):
+            with self.subTest(error=type(e).__name__):
+                f = self.fake(vgs=self.state())
+                real = f.run
+                def run(argv, check=True, timeout=None, key=None, e=e):
+                    if argv[:2] == ['systemctl', 'show']:
+                        raise e
+                    return real(argv, check, timeout, key)
+                with mock.patch.object(host, 'run', run):
+                    self.assertEqual(self.apply([entry('a')], '--dry-run')[0], 1)
+                self.assertIn('storage VM still booting', self.err)
 
     def test_apply_gate_runs_under_the_lio_lock(self):
         f = self.fake(vgs=self.state())

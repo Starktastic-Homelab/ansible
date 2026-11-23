@@ -150,7 +150,7 @@ def _boot_restore_unsettled():
     try:
         out = host.run(['systemctl', 'show', '-p', 'LoadState,ActiveState,Job', 'rtslib-fb-targetctl'],
                        timeout=60).stdout
-    except subprocess.SubprocessError:  # no answer or an error: unknown is unsettled
+    except (subprocess.SubprocessError, OSError):  # no answer or an error: unknown is unsettled
         out = ''
     p = dict(line.split('=', 1) for line in out.splitlines() if '=' in line)
     if p.get('LoadState') == 'loaded' and p.get('Job') == '' and \
@@ -366,6 +366,9 @@ def expire(cfg, id):
     """Re-check age, hold and sessions under the lock, then remove the target, the data and the ledger; any error is 1."""
     try:
         with host.LIO_LOCK:
+            # A save before the queued boot restore would hand it a config without every other retained target.
+            if refusal := _boot_restore_unsettled():
+                raise RuntimeError(refusal)
             vgs, cluster = _state(cfg)
             lio_ = lio.Lio()
             c = next((c for c in _pending(vgs, cluster, cfg, lio_) if c['id'] == id), None)

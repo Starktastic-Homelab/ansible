@@ -521,6 +521,33 @@ class RoleTests(unittest.TestCase):
             cfg = config.load(path)
         self.assertEqual((cfg['max_removals'], cfg['workers']), (3, WORKERS))
 
+    def test_approved_removals_pass_the_brake(self):
+        # Two apps PRs that each remove 2 entries land between two reconciles: 4 untagged removals trip the default
+        # brake and block every create and grow; the storage.yml input max_removals (approvals file) lets them through.
+        from homelab_storage import ledger, plan
+        from homelab_storage.inventory import Volume
+        gi = 1024 ** 3
+        ids = ['gone1', 'gone2', 'gone3', 'gone4', 'keep']
+        vgs = {'retained': plan.VgState(ledger.Ledger.from_tags([ledger.tag_created(i) for i in ids]),
+                                        {i: plan.LvState(gi) for i in ids}, True, free_bytes=50 * gi),
+               'regen': plan.VgState(ledger.Ledger.from_tags([]), {}, True, free_bytes=50 * gi)}
+        volumes = [Volume('keep', 'n', 'c', 2 * gi, 'retained', 'new'), Volume('new1', 'n', 'c', gi, 'retained', 'new')]
+        cluster = ledger.Cluster.from_tags([], 'retained')
+
+        def decide(**approvals):
+            cfg = json.loads(render('config.json.j2', **approvals))
+            return plan.decide(volumes, vgs, cluster, cfg['max_removals'])
+
+        d = decide()
+        self.assertTrue(d.fail)
+        self.assertEqual({a.kind for a in d.actions}, {'export'})  # no grow of keep, no create of new1
+        self.assertEqual({r.reason for r in d.refusals}, {'removal-brake'})
+        d = decide(storage_vm_max_removals=4)  # the approvals file holds a JSON int
+        self.assertFalse(d.fail)
+        self.assertEqual({a.kind for a in d.actions} - {'export'}, {'extend', 'mark_pending', 'create_new'})
+        self.assertNotIn('-e storage_vm_max_removals', (ROLE / 'defaults/main.yml').read_text())
+        self.assertIn('max_removals', (ROLE / 'defaults/main.yml').read_text())
+
     def test_config_template_pv_devices(self):
         pv = {'retained': '/dev/disk/by-path/a', 'regen': '/dev/disk/by-path/b'}
         with tempfile.TemporaryDirectory() as tmp:

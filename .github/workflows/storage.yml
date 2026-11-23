@@ -19,6 +19,13 @@ on:
         required: false
         default: ''
         type: string
+      # The removal brake (storage_vm_max_removals) for this run only: an approved removal of more volumes than the
+      # default, or several removal PRs that landed between two runs. A positive integer; empty keeps the default.
+      max_removals:
+        description: Removal brake for this run only (a positive integer); empty keeps the default
+        required: false
+        default: ''
+        type: string
 
   # Sent by apps on an inventory change. The run always reconciles the branch tip, never a payload SHA.
   repository_dispatch:
@@ -107,6 +114,7 @@ jobs:
         if: steps.ready.outputs.ready == 'true'
         env:
           REMOVE_WORKERS: ${{ inputs.remove_workers }}
+          MAX_REMOVALS: ${{ inputs.max_removals }}
         run: |
           python3 -I - <<'PY'
           import json, os, re, sys
@@ -117,6 +125,11 @@ jobs:
                   sys.exit(f'remove_workers: {name!r} is not a worker name')
           if workers:
               approvals['storage_vm_remove_workers'] = sorted(set(workers))
+          brake = os.environ.get('MAX_REMOVALS', '').strip()
+          if brake:
+              if not re.fullmatch(r'[1-9][0-9]{0,2}', brake):
+                  sys.exit(f'max_removals: {brake!r} is not a positive integer below 1000')
+              approvals['storage_vm_max_removals'] = int(brake)
           with open('storage-approvals.json', 'w') as stream:
               json.dump(approvals, stream)
           print('Approvals for this run:', json.dumps(approvals))

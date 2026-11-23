@@ -24,7 +24,9 @@ storage_vm_inventory_path: infrastructure/base-configs/files/retained-volumes.js
 # role refuses (tasks/assert.yml) and scripts/storage_ready.py skips the storage workflows.
 storage_vm_pv_devices: {}
 
-# The removal brake; an approved larger removal is one run with -e storage_vm_max_removals=N.
+# The removal brake: more untagged removals than this in one run (across every inventory change since the last one)
+# refuse every create and grow. An approved larger removal is one storage.yml dispatch with max_removals=N, which
+# sets this for that run only (apps docs/runbooks/storage-vm-expiry.md).
 storage_vm_max_removals: 2
 # Production values. An override replaces the whole map, and config.json then must still have every key.
 storage_vm_timings:

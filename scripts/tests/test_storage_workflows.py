@@ -340,8 +340,8 @@ class WorkflowTests(unittest.TestCase):
 
     def test_held_lock_input(self):
         inputs = workflow('storage.yml')[True]['workflow_dispatch']['inputs']
-        self.assertEqual(set(inputs), {'held_lock_owner', 'remove_workers'})
-        for name in ('held_lock_owner', 'remove_workers'):
+        self.assertEqual(set(inputs), {'held_lock_owner', 'remove_workers', 'max_removals'})
+        for name in ('held_lock_owner', 'remove_workers', 'max_removals'):
             self.assertIs(inputs[name]['required'], False, name)
             self.assertEqual(inputs[name]['default'], '', name)
         self.assertIs(inputs['held_lock_owner']['required'], False)
@@ -415,7 +415,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(approvals['if'], "steps.ready.outputs.ready == 'true'")
         self.assertNotIn('${{', approvals['run'])  # the inputs reach the script through env only
         self.assertIn('python3 -I', approvals['run'])
-        self.assertEqual(approvals['env'], {'REMOVE_WORKERS': '${{ inputs.remove_workers }}'})
+        self.assertEqual(approvals['env'], {'REMOVE_WORKERS': '${{ inputs.remove_workers }}',
+                                            'MAX_REMOVALS': '${{ inputs.max_removals }}'})
         # Both the pre-lock dry run and the reconcile read it, or the dry run refuses what the approval allows.
         for playbook in ('storage-dry-run.yml', 'storage.yml'):
             s = playbook_step('storage.yml', playbook)
@@ -446,6 +447,19 @@ class WorkflowTests(unittest.TestCase):
                 got, written = run(REMOVE_WORKERS=bad)
                 self.assertNotEqual(got.returncode, 0)
                 self.assertIsNone(written)
+        # max_removals: the removal brake for this run only (finding n=3); empty keeps the role default.
+        for value, want in (('', {}), ('4', {'storage_vm_max_removals': 4}), (' 12 ', {'storage_vm_max_removals': 12})):
+            with self.subTest(max_removals=value):
+                got, written = run(MAX_REMOVALS=value)
+                self.assertEqual(got.returncode, 0, got.stderr)
+                self.assertEqual(written, want)
+        for bad in ('0', '-1', '01', '2.5', 'four', '4 5', '10000', '4\n-e x=y'):
+            with self.subTest(max_removals=bad):
+                got, written = run(MAX_REMOVALS=bad)
+                self.assertNotEqual(got.returncode, 0)
+                self.assertIsNone(written)
+        got, written = run(REMOVE_WORKERS='w2', MAX_REMOVALS='3')
+        self.assertEqual(written, {'storage_vm_remove_workers': ['w2'], 'storage_vm_max_removals': 3})
 
     def test_held_lock_skips_acquire_and_release(self):
         dispatch = {'github.event_name': 'workflow_dispatch', 'inputs.held_lock_owner': RESTORE_OWNER}

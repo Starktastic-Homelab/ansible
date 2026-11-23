@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_storage_reconcile import FILES, LVM_TOOLS, FakeHost, FakeLio, config, vg  # noqa: E402
+from test_storage_reconcile import FILES, LVM_TOOLS, PREFIX, FakeHost, FakeLio, config, vg  # noqa: E402
 
 from homelab_storage import fence_policy, fencer, host, kube, lio, metrics  # noqa: E402
 
@@ -26,7 +26,7 @@ WATCHING = SERVER_NOW - timedelta(days=1)  # a fencer that has watched long enou
 A, B, C, D = ('aaaaaaaa-0000-4000-8000-00000000000a', 'bbbbbbbb-0000-4000-8000-00000000000b',
               'cccccccc-0000-4000-8000-00000000000c', 'dddddddd-0000-4000-8000-00000000000d')
 UNSETTLED = 'fenced:w2:unknown'
-W1, W2 = lio.worker_iqn('w1'), lio.worker_iqn('w2')
+W1, W2 = lio.worker_iqn('w1', PREFIX), lio.worker_iqn('w2', PREFIX)
 W2_ADDR = '192.0.2.22'
 OOS = dict(kube.OUT_OF_SERVICE)
 SS_LINE = '0 0 192.0.2.10:3260 192.0.2.22:51234'

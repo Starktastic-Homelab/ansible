@@ -14,6 +14,9 @@ authentik_url: "https://auth.{{ base_domain }}"
 
 argocd_repo_url: "https://github.com/Starktastic-Homelab/apps.git"
 
+# iSCSI initiator name of every k3s node is this prefix plus its hostname; the storage VM's ACLs use the same.
+storage_initiator_iqn_prefix: "iqn.2026-11.net.starktastic:"
+
 # NFS storage
 nfs_server: "10.9.8.30"
 nfs_base_path: "/mnt/apps/pv"

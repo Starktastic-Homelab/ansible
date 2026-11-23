@@ -29,10 +29,10 @@ TARGETCTL_DROPIN = (
     "# A failed start or a stop never signals an abandoned (D-state) LVM child.\nKillMode=process\n"
     "ExecStartPre=\n"
     "ExecStartPre=/sbin/vgchange --devices /dev/disk/by-path/pci-0000:06:0b.0 -ay retained\n"
-    "ExecStartPre=-/usr/local/sbin/storage-reconcile activate --vg regen --config /etc/homelab-storage/config.json\n"
+    "ExecStartPre=-/usr/local/sbin/storage-reconcile activate --vg regen\n"
     "ExecStartPre=-/usr/local/sbin/storage-fencer restore-set\n"
     "ExecStartPost=/usr/local/sbin/storage-fencer restore-set\n"
-    "ExecStartPost=/usr/local/sbin/storage-reconcile boot-check --config /etc/homelab-storage/config.json\n")
+    "ExecStartPost=/usr/local/sbin/storage-reconcile boot-check\n")
 
 
 def load(path):
@@ -48,6 +48,7 @@ def plays(name):
     return [q for p in load(ROOT / name) for q in (plays(imported(p)) if imported(p) else [p])]
 
 
+GROUP_ALL = load(ROOT / 'group_vars/all/vars.yml')
 TOP_PLAYBOOKS = sorted(p.name for p in ROOT.glob('storage*.yml') if not p.name.startswith('storage-play-'))
 
 
@@ -57,6 +58,7 @@ def role_tasks(name='main'):
 
 def defaults(**values):
     variables = load(ROLE / 'defaults/main.yml')
+    variables['storage_initiator_iqn_prefix'] = GROUP_ALL['storage_initiator_iqn_prefix']
     variables.update({'vip_address': '10.9.9.99', 'argocd_repo_url': 'https://example.invalid/apps.git',
                       'ansible_managed': 'managed', 'storage_vm_workers': WORKERS, 'storage_vm_bridge_address': BRIDGE,
                       'storage_vm_ssh_sources': ['10.9.9.0/24', '10.9.8.0/24'], 'storage_vm_bridge_iface': 'eth1',
@@ -277,10 +279,10 @@ class RoleTests(unittest.TestCase):
         out = render('rtslib-fb-targetctl.service.d-50-homelab.conf.j2')
         execs = [l for l in out.splitlines() if l.startswith('ExecStart')]
         want = ['ExecStartPre=', 'ExecStartPre=/sbin/vgchange --devices /dev/',
-                'ExecStartPre=-/usr/local/sbin/storage-reconcile activate --vg regen ',
+                'ExecStartPre=-/usr/local/sbin/storage-reconcile activate --vg regen',
                 'ExecStartPre=-/usr/local/sbin/storage-fencer restore-set',
                 'ExecStartPost=/usr/local/sbin/storage-fencer restore-set',
-                'ExecStartPost=/usr/local/sbin/storage-reconcile boot-check ']
+                'ExecStartPost=/usr/local/sbin/storage-reconcile boot-check']
         self.assertEqual(len(execs), len(want), execs)
         for line, prefix in zip(execs, want):
             self.assertTrue(line.startswith(prefix) and (prefix != 'ExecStartPre=' or line == prefix), (line, prefix))
@@ -381,6 +383,8 @@ class RoleTests(unittest.TestCase):
             path.write_text(render('config.json.j2'))
             cfg = config.load(path)
         self.assertEqual(cfg['workers'], WORKERS)
+        self.assertNotIn('vgs', cfg)
+        self.assertEqual(cfg['initiator_prefix'], 'iqn.2026-11.net.starktastic:')
         self.assertEqual((cfg['portal'], cfg['api_url'], cfg['csi_driver'], cfg['max_removals'], cfg['pause_after']),
                          (f'{BRIDGE}:3260', 'https://10.9.9.99:6443', 'org.democratic-csi.node-manual', 2, []))
         self.assertEqual((cfg['not_ready_seconds'], cfg['loop_seconds'], cfg['proof_timeout_seconds'],
@@ -409,13 +413,34 @@ class RoleTests(unittest.TestCase):
             self.assertFalse(holds(that, storage_vm_pv_devices=bad), bad)
 
     def test_worker_iqn_matches_k3s_common(self):
-        self.assertEqual(lio.worker_iqn('k3s-worker-01'), 'iqn.2026-11.net.starktastic:k3s-worker-01')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'config.json'
+            path.write_text(render('config.json.j2'))
+            prefix = config.load(path)['initiator_prefix']
         tasks = [t for t in load(ROOT / 'roles/k3s_common/tasks/main.yml')
                  if t.get('ansible.builtin.copy', {}).get('dest') == '/etc/iscsi/initiatorname.iscsi']
         self.assertEqual(len(tasks), 1)
-        got = Templar(variables={'inventory_hostname': 'k3s-worker-01'}).template(
+        got = Templar(variables={**GROUP_ALL, 'inventory_hostname': 'k3s-worker-01'}).template(
             tasks[0]['ansible.builtin.copy']['content'])
-        self.assertEqual(got, 'InitiatorName=' + lio.worker_iqn('k3s-worker-01') + '\n')
+        self.assertEqual(got, 'InitiatorName=' + lio.worker_iqn('k3s-worker-01', prefix) + '\n')
+        # The same bytes every node has today: no initiator changes on deploy.
+        self.assertEqual(got, 'InitiatorName=iqn.2026-11.net.starktastic:k3s-worker-01\n')
+
+    def test_installed_config_path_is_the_default(self):
+        installed = str(config.PATH)
+        self.assertEqual(module(by_name(role_tasks(), 'Write the storage config'), 'template')['dest'], installed)
+        texts = {n: (ROOT / n).read_text() for n in ('storage.yml', 'storage-expiry.yml')}
+        texts['expire-volume.yml'] = (ROLE / 'tasks/expire-volume.yml').read_text()
+        texts['targetctl drop-in'] = render('rtslib-fb-targetctl.service.d-50-homelab.conf.j2')
+        for name, text in texts.items():
+            self.assertNotIn(installed, text, name)
+        dry = argv(by_name(role_tasks('dry-run'), 'Dry-run the reconcile against the real ledger'))
+        self.assertEqual(dry[dry.index('--config') + 1], '{{ storage_vm_dry_run_dir.path }}/config.json')
+
+    def test_grow_reads_the_reported_iqn(self):
+        include = by_name(role_tasks('grow'), 'Grow each attached exported volume')
+        self.assertEqual(include['vars']['storage_vm_iqn'], '{{ storage_vm_volume.iqn }}')
+        self.assertNotIn('starktastic', (ROLE / 'tasks/grow.yml').read_text())
 
 
 class StoragePlaybookTests(unittest.TestCase):
@@ -563,7 +588,8 @@ class StoragePlaybookTests(unittest.TestCase):
         self.assertEqual(size, ['blockdev', '--getsize64', '{{ storage_vm_device }}'])
         line = f'tcp: [7] {BRIDGE}:3260,1 iqn.2026-11.net.starktastic.storage:paperless (non-flash)'
         variables = defaults(**{**include['vars'], 'storage_vm_portal': f'{BRIDGE}:3260',
-                                'storage_vm_volume': {'id': 'paperless', 'size_bytes': 1}, 'storage_vm_session_lines': [line]})
+                                'storage_vm_volume': {'id': 'paperless', 'size_bytes': 1, 'iqn': lio.iqn('paperless')},
+                                'storage_vm_session_lines': [line]})
         templar = Templar(variables=variables)
         self.assertEqual(templar.template(trust_as_template('{{ storage_vm_device }}')),
                          f'/dev/disk/by-path/ip-{BRIDGE}:3260-iscsi-iqn.2026-11.net.starktastic.storage:paperless-lun-0')

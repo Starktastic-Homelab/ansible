@@ -159,7 +159,7 @@
 
 - name: Set the iSCSI initiator name
   ansible.builtin.copy:
-    content: "InitiatorName=iqn.2026-11.net.starktastic:{{ inventory_hostname }}\n"
+    content: "InitiatorName={{ storage_initiator_iqn_prefix }}{{ inventory_hostname }}\n"
     dest: /etc/iscsi/initiatorname.iscsi
     owner: root
     group: root

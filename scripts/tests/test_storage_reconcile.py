@@ -20,7 +20,8 @@ from homelab_storage import host, lio, metrics, nft, reconcile  # noqa: E402
 GI = 1024 ** 3
 NOW = 1_800_000_000
 UUID_A = '11111111-2222-3333-4444-555555555555'
-W1, W2 = 'iqn.2026-11.net.starktastic:w1', 'iqn.2026-11.net.starktastic:w2'
+PREFIX = 'iqn.2026-11.net.starktastic:'
+W1, W2 = PREFIX + 'w1', PREFIX + 'w2'
 PV_RETAINED, PV_REGEN = '/dev/disk/by-path/test-retained', '/dev/disk/by-path/test-regen'
 PV = {'retained': PV_RETAINED, 'regen': PV_REGEN}
 LVM_TOOLS = ('vgs', 'lvs', 'pvs', 'vgchange', 'lvchange', 'lvcreate', 'lvextend', 'lvremove', 'pvscan')
@@ -29,7 +30,7 @@ WRITES = ('vgchange', 'lvcreate', 'lvextend', 'lvchange', 'mkfs.ext4', 'mount', 
 
 def config(**kw):
     c = {'workers': [{'name': 'w1', 'bridge_address': '192.0.2.21'}, {'name': 'w2', 'bridge_address': '192.0.2.22'}],
-         'bridge_address': '192.0.2.10', 'portal': '192.0.2.10:3260', 'vgs': ['retained', 'regen'],
+         'bridge_address': '192.0.2.10', 'portal': '192.0.2.10:3260', 'initiator_prefix': PREFIX,
          'api_url': 'https://192.0.2.99:6443', 'token_file': '/etc/storage-fencer/token',
          'ca_file': '/etc/storage-fencer/ca.crt', 'csi_driver': 'org.democratic-csi.node-manual', 'max_removals': 2,
          'not_ready_seconds': 300, 'loop_seconds': 15, 'proof_timeout_seconds': 60, 'quarantine_seconds': 259200,
@@ -257,7 +258,7 @@ class CreateTest(Base):
         self.assertEqual(f.vgs['retained']['tags'], {'ledger:a:created'})
         self.assertEqual(f.find('lio.ensure_target')[0],
                          ('lio.ensure_target', 'a', '/dev/retained/a', (W1, W2), '192.0.2.10:3260'))
-        self.assertEqual(out['exported'], [{'id': 'a', 'size_bytes': GI}])
+        self.assertEqual(out['exported'], [{'id': 'a', 'size_bytes': GI, 'iqn': 'iqn.2026-11.net.starktastic.storage:a'}])
 
     def test_unreadable_device_never_formats(self):
         f = self.fake(dd_rc=1)
@@ -464,7 +465,7 @@ class GrowAndReportTest(Base):
         i = names.index('lvextend')
         self.assertEqual(names[i + 1], 'checkpoint:grow:lvextend')
         self.assertLess(names.index('lio.ensure_target'), i)
-        self.assertEqual(out['exported'], [{'id': 'a', 'size_bytes': 2 * GI}])
+        self.assertEqual(out['exported'], [{'id': 'a', 'size_bytes': 2 * GI, 'iqn': lio.iqn('a')}])
 
     def test_exported_lists_every_lv(self):
         self.fake(vgs={'retained': vg(['ledger:a:created', 'ledger:b:created', 'ledger:gone:created'],
@@ -605,7 +606,7 @@ class DegradedTest(Base):
             rc, out = self.apply([entry('a'), entry('p', cls='regenerable')])
         self.assertEqual(rc, 1)
         self.assertIn('final read: VG regen unreadable', out['errors'])
-        self.assertIn({'id': 'p', 'size_bytes': 3 * GI}, out['exported'])
+        self.assertIn({'id': 'p', 'size_bytes': 3 * GI, 'iqn': lio.iqn('p')}, out['exported'])
         text = (self.tmp / 'textfile/storage-reconcile.prom').read_text()
         self.assertIn('storage_vg_size_bytes{vg="regen"}', text)
 
@@ -713,6 +714,46 @@ class LockAndTargetctlTest(Base):
 
 
 class CliTest(Base):
+    def test_config_defaults_to_config_path(self):
+        from homelab_storage import config as cfgmod
+        self.fake(vgs={'retained': vg(['ledger:a:created'], {'a': (GI, ())}), 'regen': vg()},
+                  targets={'a': {'dev': '/dev/retained/a', 'acls': [W1, W2]}})
+        conf, inv = self.tmp / 'default.json', self.tmp / 'inv.json'
+        conf.write_text(json.dumps(config()))
+        inv.write_text(json.dumps([entry('a')]))
+        with mock.patch.object(cfgmod, 'PATH', conf), contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(reconcile.main(['boot-check']), 0)
+            self.assertEqual(reconcile.main(['apply', '--inventory', str(inv), '--dry-run']), 0)
+            self.assertEqual(reconcile.main(['expire-candidates']), 0)
+            self.assertEqual(reconcile.main(['activate', '--vg', 'regen']), 0)
+            self.assertEqual(reconcile.main(['expire', '--id', 'a']), 1)  # not pending: refused, but the config loaded
+        conf.unlink()
+        with mock.patch.object(cfgmod, 'PATH', conf), contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(reconcile.main(['boot-check']), 1)
+        self.assertIn(str(conf), err.getvalue())
+
+    def test_vg_names_one_copy(self):
+        from homelab_storage import lvm
+        self.assertEqual(lvm.VG_NAMES, ('retained', 'regen'))
+        self.fake()
+        self.assertEqual(tuple(lvm.vgs()), lvm.VG_NAMES)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            reconcile.main(['activate', '--vg', 'other'])
+
+    def test_exported_rows_carry_target_iqn(self):
+        self.fake(vgs={'retained': vg(['ledger:a:created'], {'a': (GI, ())}),
+                       'regen': vg(['ledger:p:created'], {'p': (GI, ())})})
+        _, out = self.apply([entry('a'), entry('p', cls='regenerable'), entry('b')])
+        self.assertEqual({e['id']: e['iqn'] for e in out['exported']}, {i: lio.iqn(i) for i in 'abp'})
+
+    def test_acls_use_config_prefix(self):
+        other = 'iqn.2099-01.example.lab:'
+        f = self.fake(vgs={'retained': vg(['ledger:a:created'], {'a': (GI, ())}), 'regen': vg()})
+        rc, _ = self.apply([entry('a')], cfg=config(initiator_prefix=other))
+        self.assertEqual(rc, 0, self.err)
+        self.assertEqual(sorted(f.lio.targets_['a']['acls']), [other + 'w1', other + 'w2'])
+
     def test_validate_does_no_host_io(self):
         f = self.fake()
         inv = self.tmp / 'inv.json'
@@ -738,7 +779,8 @@ class CliTest(Base):
         from homelab_storage import config as cfgmod
         p = self.tmp / 'c.json'
         for bad in (config(extra=1), {k: v for k, v in config().items() if k != 'portal'},
-                    config(portal='0.0.0.0:3260'), config(max_removals='2'), config(vgs=['retained'])):
+                    config(portal='0.0.0.0:3260'), config(max_removals='2'), config(vgs=['retained', 'regen']),
+                    config(initiator_prefix='')):
             p.write_text(json.dumps(bad))
             with self.subTest(bad=bad), self.assertRaises(cfgmod.ConfigError):
                 cfgmod.load(p)
@@ -767,7 +809,7 @@ class AdapterTest(Base):
         self.assertEqual(lio.wwn('media'), '34de5e5b-5881-5bc4-b64c-5bacbf263e3a')  # pinned: a rebuild must match
         self.assertNotEqual(lio.wwn('media'), lio.wwn('media2'))
         self.assertEqual(lio.iqn('media'), 'iqn.2026-11.net.starktastic.storage:media')
-        self.assertEqual(lio.worker_iqn('w1'), W1)
+        self.assertEqual(lio.worker_iqn('w1', PREFIX), W1)
 
     def test_save_is_atomic(self):
         save = self.tmp / 'saveconfig.json'

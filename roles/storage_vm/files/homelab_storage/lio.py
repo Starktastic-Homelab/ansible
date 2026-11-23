@@ -4,7 +4,6 @@ import uuid
 from pathlib import Path
 
 TARGET_PREFIX = 'iqn.2026-11.net.starktastic.storage:'
-WORKER_PREFIX = 'iqn.2026-11.net.starktastic:'
 SAVE_FILE = Path('/etc/rtslib-fb-target/saveconfig.json')
 CONFIGFS = Path('/sys/kernel/config/target/iscsi')
 TPG_ATTRIBUTES = {'authentication': '0', 'generate_node_acls': '0', 'cache_dynamic_acls': '0', 'demo_mode_discovery': '0'}
@@ -18,8 +17,8 @@ def iqn(id):
     return TARGET_PREFIX + id
 
 
-def worker_iqn(name):
-    return WORKER_PREFIX + name  # must equal the IQN k3s_common writes on the node
+def worker_iqn(name, prefix):
+    return prefix + name  # prefix: config initiator_prefix, from the variable k3s_common writes the node IQN with
 
 
 def wwn(id):

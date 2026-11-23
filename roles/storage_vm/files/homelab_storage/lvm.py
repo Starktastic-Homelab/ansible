@@ -13,6 +13,7 @@ LV_COLS = ['--reportformat', 'json', '--units', 'b', '--nosuffix', '-o', 'vg_nam
 # Per VG read (vgs and lvs share it) and per write. A command past it is left running, never killed (host.run), and
 # later commands for that VG fail at once until it ends (ADR 0017 F11).
 LVM_TIMEOUT = 30
+VG_NAMES = ('retained', 'regen')  # the one copy; plan.decide reads the names from the mapping it is given
 
 
 @dataclass(frozen=True)
@@ -58,7 +59,7 @@ def _read(name, with_lvs):
               size_bytes=int(r['vg_size']))
 
 
-def vgs(names=('retained', 'regen')):
+def vgs(names=VG_NAMES):
     """Only the named VGs, each read from its own PV alone; one that cannot be read (stall, I/O error, absent PV) is
     present=False and never raises."""
     return {n: _read(n, True) for n in names}

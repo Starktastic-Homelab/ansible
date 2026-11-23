@@ -36,7 +36,7 @@
   tasks:
     - name: List pending-delete volumes past quarantine
       ansible.builtin.command:
-        argv: [/usr/local/sbin/storage-reconcile, expire-candidates, --config, /etc/homelab-storage/config.json]
+        argv: [/usr/local/sbin/storage-reconcile, expire-candidates]
       register: storage_vm_expiry_list
       changed_when: false
 

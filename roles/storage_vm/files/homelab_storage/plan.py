@@ -93,17 +93,17 @@ def _fit(d, vgs):
 
 def decide(volumes, vgs, cluster, removed_ok=2):
     d = Decision()
-    up = {n for n in ('retained', 'regen') if vgs.get(n) and vgs[n].present}
+    up = {n for n, v in vgs.items() if v.present}  # vgs holds every VG (lvm.VG_NAMES), present or not
     if cluster is None or not up:
         d.refusals = [Refusal(v.id, 'vg-missing') for v in volumes]
         d.fail = True
         return d
-    d.fail = len(up) < 2  # one VG missing: only its class is refused, the run still fails
+    d.fail = len(up) < len(vgs)  # one VG missing: only its class is refused, the run still fails
     hold = HOLD_CREATE in cluster.holds()
     ids = {v.id for v in volumes}
     for v in volumes:
         name = vg_for(v.cls)
-        oname = "regen" if name == "retained" else "retained"
+        oname = next(n for n in vgs if n != name)
         own, other = vgs[name], vgs[oname]
         if name not in up:
             live = other.ledger.state(v.id) == 'created' and v.id in other.lvs  # a class move keeps its live target

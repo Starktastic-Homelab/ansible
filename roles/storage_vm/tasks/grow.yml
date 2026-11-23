@@ -45,7 +45,7 @@
     label: "{{ storage_vm_volume.id }}"
   vars:
     storage_vm_portal: "{{ hostvars[groups['storage'][0]].storage_vm_portal }}"
-    storage_vm_iqn: "iqn.2026-11.net.starktastic.storage:{{ storage_vm_volume.id }}"
+    storage_vm_iqn: "{{ storage_vm_volume.iqn }}"
     storage_vm_device: "/dev/disk/by-path/ip-{{ storage_vm_portal }}-iscsi-{{ storage_vm_iqn }}-lun-0"
     # iscsiadm -m session: "tcp: [<sid>] <portal>,<tpgt> <iqn> (non-flash)"
     storage_vm_sid: "{{ (storage_vm_session_lines[0] | regex_search('^[a-z]+: .([0-9]+). ', '\\1'))[0] }}"

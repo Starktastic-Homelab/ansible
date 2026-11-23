@@ -6,7 +6,7 @@
   ],
   "bridge_address": {{ storage_vm_bridge_address | to_json }},
   "portal": {{ (storage_vm_bridge_address ~ ':3260') | to_json }},
-  "vgs": ["retained", "regen"],
+  "initiator_prefix": {{ storage_initiator_iqn_prefix | to_json }},
   "pv_devices": {{ storage_vm_pv_devices | to_json }},
   "api_url": {{ storage_vm_api_url | to_json }},
   "token_file": "/etc/storage-fencer/token",

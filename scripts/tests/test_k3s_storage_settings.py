@@ -39,7 +39,10 @@ class StorageSettingsTests(unittest.TestCase):
         tasks = common_tasks()
         iqn, task = find(tasks, "ansible.builtin.copy", dest="/etc/iscsi/initiatorname.iscsi")
         self.assertEqual(task["ansible.builtin.copy"]["content"],
-                         "InitiatorName=iqn.2026-11.net.starktastic:{{ inventory_hostname }}\n")
+                         "InitiatorName={{ storage_initiator_iqn_prefix }}{{ inventory_hostname }}\n")
+        variables = {**read("group_vars/all/vars.yml"), "inventory_hostname": "k3s-worker-01"}
+        got = Templar(variables=variables).template(trust_as_template(task["ansible.builtin.copy"]["content"]))
+        self.assertEqual(got, "InitiatorName=iqn.2026-11.net.starktastic:k3s-worker-01\n")  # unchanged bytes
         self.assertNotIn("when", task)  # every k3s node, the lab server included (R17)
         # copy does not create parents, and open-iscsi is not installed yet.
         mkdir, _ = find(tasks, "ansible.builtin.file", path="/etc/iscsi", state="directory")

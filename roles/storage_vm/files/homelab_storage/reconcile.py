@@ -1,10 +1,12 @@
 """storage-reconcile: make LVs and LIO targets match the apps inventory and the LVM ledger.
 
 validate --inventory FILE                     schema only, no host I/O
-apply --inventory FILE --config FILE [--dry-run]
-boot-check --config FILE                      strip fenced ACLs, save, verify every ledgered target
-expire-candidates --config FILE               JSON of pending-delete LVs past quarantine (none under hold_create)
-expire --id ID --config FILE                  delete one such LV's target, data, ledger and write its tombstone
+apply --inventory FILE [--dry-run]
+boot-check                                    strip fenced ACLs, save, verify every ledgered target
+expire-candidates                             JSON of pending-delete LVs past quarantine (none under hold_create)
+expire --id ID                                delete one such LV's target, data, ledger and write its tombstone
+activate --vg VG                              activate one VG (the boot drop-in's regen line)
+Every subcommand but validate takes --config FILE, default /etc/homelab-storage/config.json (config.PATH).
 """
 import argparse
 import hashlib
@@ -29,7 +31,7 @@ SUCCESS = 'storage_last_reconcile_success_timestamp_seconds'
 
 
 def _state(cfg):
-    vgs = lvm.vgs(tuple(cfg['vgs']))
+    vgs = lvm.vgs()
     cluster = None
     if vgs['retained'].present:
         try:
@@ -42,7 +44,7 @@ def _state(cfg):
 class Executor:
     def __init__(self, cfg, lio_, vgs, fenced):
         self.cfg, self.lio, self.vgs = cfg, lio_, vgs
-        self.acls = [lio.worker_iqn(w['name']) for w in cfg['workers'] if w['name'] not in fenced]
+        self.acls = [lio.worker_iqn(w['name'], cfg['initiator_prefix']) for w in cfg['workers'] if w['name'] not in fenced]
 
     def target(self, a, step=None):
         dev = f'/dev/{a.vg}/{a.id}'
@@ -168,7 +170,7 @@ def _exported(d, vgs, failed, planned):
         seen.add(a.id)
         lv = vgs[a.vg].lvs.get(a.id)
         size = grow.get(a.id) or (lv.size_bytes if lv else a.size_bytes)
-        out.append({'id': a.id, 'size_bytes': size})
+        out.append({'id': a.id, 'size_bytes': size, 'iqn': lio.iqn(a.id)})
     return out
 
 
@@ -289,12 +291,12 @@ def restore_set(cfg):
 def boot_check(cfg):
     """After targetctl restore: drop fenced workers' ACLs, save, then fail if a ledgered target is not restored."""
     with host.LIO_LOCK:
-        vgs = lvm.vgs(tuple(cfg['vgs']))
+        vgs = lvm.vgs()
         fenced, errors = _fenced_tags(cfg, vgs['retained'])
         errors = [f'{e}: only the valid fence tags were applied' for e in errors]
         lio_ = lio.Lio()
         for node in sorted(fenced):
-            lio_.delete_acl(lio.worker_iqn(node))
+            lio_.delete_acl(lio.worker_iqn(node, cfg['initiator_prefix']))
         lio_.save()
         for n, v in vgs.items():
             if not v.present:
@@ -364,18 +366,13 @@ def main(argv=None):
     sub = p.add_subparsers(dest='cmd', required=True)
     v = sub.add_parser('validate')
     v.add_argument('--inventory', required=True)
-    a = sub.add_parser('apply')
-    a.add_argument('--inventory', required=True)
-    a.add_argument('--config', required=True)
-    a.add_argument('--dry-run', action='store_true')
-    sub.add_parser('boot-check').add_argument('--config', required=True)
-    sub.add_parser('expire-candidates').add_argument('--config', required=True)
-    act = sub.add_parser('activate')
-    act.add_argument('--vg', required=True, choices=['retained', 'regen'])
-    act.add_argument('--config', required=True)
-    x = sub.add_parser('expire')
-    x.add_argument('--id', required=True)
-    x.add_argument('--config', required=True)
+    cmds = {n: sub.add_parser(n) for n in ('apply', 'boot-check', 'expire-candidates', 'activate', 'expire')}
+    for c in cmds.values():
+        c.add_argument('--config', default=str(config.PATH))  # read at call time: tests patch config.PATH
+    cmds['apply'].add_argument('--inventory', required=True)
+    cmds['apply'].add_argument('--dry-run', action='store_true')
+    cmds['activate'].add_argument('--vg', required=True, choices=lvm.VG_NAMES)
+    cmds['expire'].add_argument('--id', required=True)
     args = p.parse_args(argv)
     try:
         if args.cmd in ('boot-check', 'expire-candidates', 'expire', 'activate'):

@@ -82,8 +82,7 @@
     # Re-checks age, hold and sessions under the LIO lock, then removes the target, the data and the ledger entry.
     - name: Expire the volume on the storage VM
       ansible.builtin.command:
-        argv: [/usr/local/sbin/storage-reconcile, expire, --id, "{{ storage_vm_candidate.id }}",
-               --config, /etc/homelab-storage/config.json]
+        argv: [/usr/local/sbin/storage-reconcile, expire, --id, "{{ storage_vm_candidate.id }}"]
       delegate_to: "{{ groups['storage'][0] }}"
       become: true
       changed_when: true

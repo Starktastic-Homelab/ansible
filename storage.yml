@@ -91,8 +91,7 @@
 
     - name: Reconcile volumes and targets
       ansible.builtin.command:
-        argv: [/usr/local/sbin/storage-reconcile, apply, --inventory, /etc/homelab-storage/retained-volumes.json,
-               --config, /etc/homelab-storage/config.json]
+        argv: [/usr/local/sbin/storage-reconcile, apply, --inventory, /etc/homelab-storage/retained-volumes.json]
       register: storage_vm_apply
       changed_when: storage_vm_apply.rc == 0 and (storage_vm_apply.stdout | from_json).actions | length > 0
       # A per-entry refusal exits 1 but still exports every live target: grow them and clean up, then fail last.

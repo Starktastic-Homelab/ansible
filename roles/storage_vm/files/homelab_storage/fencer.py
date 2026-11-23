@@ -70,7 +70,7 @@ class Fencer:
         return Cluster.parse(retained.tags, 'retained')  # bad fence tags land in .errors; the valid ones still count
 
     def proof(self, lio_, name):
-        addr, iqn = self.worker(name), lio.worker_iqn(name)
+        addr, iqn = self.worker(name), lio.worker_iqn(name, self.cfg['initiator_prefix'])
         return {'acl_present': {t: iqn in lio_.acl_iqns(t) for t in sorted(lio_.targets())},
                 'addr_in_set': nft.is_fenced(addr), 'established': established(addr)}
 
@@ -100,7 +100,7 @@ class Fencer:
             self.acl_delete_started[name] = int(time.time())
             self._report()
         try:
-            deleted = lio_.delete_acl(lio.worker_iqn(name))
+            deleted = lio_.delete_acl(lio.worker_iqn(name, self.cfg['initiator_prefix']))
         finally:
             if report:
                 self.acl_delete_started.pop(name, None)
@@ -135,7 +135,7 @@ class Fencer:
         addr = self.worker(name)
         self.set_taint(name, False)
         host.checkpoint('unfence:1')
-        lio_.add_acl(lio.worker_iqn(name))
+        lio_.add_acl(lio.worker_iqn(name, self.cfg['initiator_prefix']))
         host.checkpoint('unfence:2')
         nft.remove_fenced(addr)
         host.checkpoint('unfence:3')

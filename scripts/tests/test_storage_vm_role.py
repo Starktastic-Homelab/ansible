@@ -762,6 +762,9 @@ class SharedPlayTests(unittest.TestCase):
                        'storage_maintenance_lock_created_timestamp_seconds'):
             self.assertIn(f"('{metric}',", args[2])
         self.assertIn("metrics.write('storage-host',", args[2])
+        install = by_name(role_tasks(), 'Install the storage programs')
+        self.assertIn(f"sys.path.insert(0, '{module(install, 'copy')['dest'].rstrip('/')}')", args[2])
+        self.assertEqual(by_name(role_tasks('host-metrics'), 'Read the k3s-block size and free space on pve')['timeout'], 60)
         df = {'stdout_lines': ['     1B-blocks         Avail', '161170000000 104903946240']}
         lock = {'stdout': '{"operation": "ansible-deploy", "created": 1795428000.5}'}
         templar = Templar(variables=defaults(storage_vm_df=df, storage_vm_lock=lock))

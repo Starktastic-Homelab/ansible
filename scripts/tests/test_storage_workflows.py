@@ -209,6 +209,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertLess(ss.index(gauges), ss.index(step('storage.yml', id='held')))
         self.assertEqual(gauges['if'], "steps.ready.outputs.gauges == 'true'")
         self.assertIs(gauges['continue-on-error'], True)
+        self.assertLessEqual(gauges['timeout-minutes'], 5)  # a hung df or mirror must not eat the job's 30 minutes
         run = gauges['run'].replace('\\\n', ' ')
         for want in ('-i inventory/proxmox.yml -i inventory/hosts.yml', 'sshpass', 'storage-host-metrics.yml'):
             self.assertIn(want, ' '.join(run.split()))

@@ -89,6 +89,7 @@ jobs:
       - name: Write host gauges
         if: steps.ready.outputs.gauges == 'true'
         continue-on-error: true
+        timeout-minutes: 5
         run: |
           apt-get update && apt-get install -y sshpass
           ansible-playbook -i inventory/proxmox.yml -i inventory/hosts.yml \

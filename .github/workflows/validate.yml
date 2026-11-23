@@ -15,6 +15,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
+      # The pinned lock helper the storage workflows acquire and release with (test_storage_workflows.py).
+      - name: Checkout reviewed maintenance helper
+        uses: actions/checkout@v7
+        with:
+          repository: Starktastic-Homelab/ansible
+          ref: 887269798650e88fed791bb4f22a47bf50ad17be
+          path: maintenance-helper
+          persist-credentials: false
+
       - name: Cache Pip Packages
         uses: actions/cache@v6.1.0
         with:
@@ -22,9 +31,6 @@ jobs:
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
-
-      - name: Test maintenance ownership and execution
-        run: python3 -m unittest discover -s scripts/tests -p 'test_maintenance*.py' -v
 
       - name: Install ansible-lint
         run: pip install ansible-lint
@@ -39,38 +45,12 @@ jobs:
       - name: Create dummy Ansible Vault password file
         run: echo "dummy" > .vault_pass
 
-      - name: Test Proxmox CSI bootstrap rendering
-        run: python3 scripts/tests/test_proxmox_csi_bootstrap.py
-
-      - name: Test K3s storage settings
-        run: python3 scripts/tests/test_k3s_storage_settings.py
-
-      - name: Test verified worker Node retirement
-        run: python3 scripts/tests/test_node_retirement.py
-
-      - name: Test activation preflight inventory drift
-        run: python3 scripts/tests/test_csi_preflight.py
-
-      - name: Test post-install drain recovery
-        run: python3 scripts/tests/test_drain_recovery.py
-
-      - name: Test manual Proxmox CSI setup refusals
-        run: python3 scripts/tests/test_proxmox_csi_storage.py
-
-      - name: Test deploy workflow ownership
-        run: python3 scripts/tests/test_deploy_lock.py
-
-      - name: Test workflow credential handling
-        run: python3 scripts/tests/test_workflow_credentials.py
-
-      - name: Test host-side backup checks
-        run: python3 scripts/tests/test_proxmox_backup.py
-
-      - name: Test host crash settings
-        run: python3 scripts/tests/test_proxmox_guest_startup.py
-
-      - name: Test additive storage bridge role
-        run: python3 scripts/tests/test_proxmox_storage_bridge.py
+      # One discover step: a new test file needs no step of its own. After the collections, since
+      # test_argocd_bootstrap.py and test_storage_vm_role.py import ansible.
+      - name: Run unit tests
+        env:
+          PINNED_LOCK_HELPER: maintenance-helper/scripts/maintenance_lock.py
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 
       - name: Run ansible-lint
         run: |
@@ -128,7 +108,7 @@ jobs:
           set +e
           OUTPUT=$(ansible-playbook -i inventory/proxmox.yml \
             --vault-password-file .vault_pass \
-            --syntax-check k3s.yml ser2net.yml i915-sriov.yml i915-acceptance.yml proxmox-csi-storage.yml csi-activation-preflight.yml proxmox-backup.yml proxmox-guest-startup.yml proxmox-storage-bridge.yml 2>&1)
+            --syntax-check k3s.yml ser2net.yml i915-sriov.yml i915-acceptance.yml proxmox-csi-storage.yml csi-activation-preflight.yml proxmox-backup.yml proxmox-guest-startup.yml proxmox-storage-bridge.yml storage.yml storage-expiry.yml storage-dry-run.yml storage-host-metrics.yml storage-preflight.yml 2>&1)
           EXIT_CODE=$?
           set -e
 

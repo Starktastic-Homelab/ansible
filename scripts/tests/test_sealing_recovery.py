@@ -17,6 +17,9 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 ROOT = Path(__file__).resolve().parents[2]
+# validate.yml's discover run has no kubeseal and skips; csi-activation-preflight.yml sets both and must never skip.
+if os.environ.get('REQUIRE_KUBESEAL') and not os.environ.get('KUBESEAL_BINARY'):
+    raise RuntimeError('REQUIRE_KUBESEAL is set but KUBESEAL_BINARY is not')
 
 
 def keypair():
@@ -31,6 +34,7 @@ def keypair():
                               serialization.NoEncryption()), cert.public_bytes(serialization.Encoding.PEM))
 
 
+@unittest.skipUnless(os.environ.get('KUBESEAL_BINARY'), 'needs KUBESEAL_BINARY; csi-activation-preflight.yml runs it')
 class RecoveryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

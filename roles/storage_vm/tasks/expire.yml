@@ -1,0 +1,26 @@
+---
+- name: Read the volume ids in the inventory
+  ansible.builtin.set_fact:
+    storage_vm_inventory_ids: >-
+      {{ lookup('ansible.builtin.file', storage_vm_inventory_file) | from_json | map(attribute='id') | list }}
+
+- name: Warn about pending-delete volumes that are back in the inventory
+  ansible.builtin.debug:
+    msg:
+      "WARNING: {{ item.id }} is pending-delete but in the inventory on {{ storage_vm_inventory_branch }}; not expired."
+  loop: "{{ storage_vm_expiry_all | selectattr('id', 'in', storage_vm_inventory_ids) | list }}"
+  loop_control:
+    label: "{{ item.id }}"
+  vars:
+    storage_vm_expiry_all: "{{ hostvars[groups['storage'][0]].storage_vm_expiry_candidates }}"
+
+- name: Expire each candidate
+  ansible.builtin.include_tasks: expire-volume.yml
+  loop: >-
+    {{ hostvars[groups['storage'][0]].storage_vm_expiry_candidates | rejectattr('id', 'in', storage_vm_inventory_ids)
+       | list }}
+  loop_control:
+    loop_var: storage_vm_candidate
+    label: "{{ storage_vm_candidate.id }}"
+  vars:
+    storage_vm_kubeconfig_path: "{{ hostvars[groups['masters'][0]].storage_vm_kubeconfig_path }}"

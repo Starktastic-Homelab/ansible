@@ -1,0 +1,10 @@
+#!/usr/bin/python3
+"""Wrapper: works under `python3 -I` (no script dir on sys.path), beside the package or installed."""
+import sys
+from pathlib import Path
+
+here = Path(__file__).resolve().parent
+sys.path.insert(0, str(here if (here / 'homelab_storage').is_dir() else Path('/usr/local/lib/homelab-storage')))
+from homelab_storage.reconcile import main  # noqa: E402
+
+sys.exit(main())

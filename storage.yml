@@ -1,0 +1,172 @@
+---
+# Reconcile the storage VM against apps' retained-volume inventory (ADR 0017), then grow attached filesystems.
+# Runs under an existing maintenance lock (MAINTENANCE_OWNER/MAINTENANCE_NONCE in the environment).
+# Lab: ansible-playbook -i <lab>/inventory.yml -e @<lab>/vars.yml storage.yml
+- name: Import the lab guard
+  ansible.builtin.import_playbook: storage-play-lab-guard.yml
+
+- name: Import the inventory fetch
+  ansible.builtin.import_playbook: storage-play-fetch-inventory.yml
+
+- name: Write a private kubeconfig
+  hosts: masters[0]
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Read and rewrite the control-plane kubeconfig
+      ansible.builtin.import_role:
+        name: storage_vm
+        tasks_from: kubeconfig.yml
+
+# A refusal (schema, brake, missing VG or ledgered LV, a boot restore still running) ends the run before the lock.
+- name: Dry-run the reconcile before the lock
+  hosts: storage
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Dry-run against the real ledger
+      ansible.builtin.import_role:
+        name: storage_vm
+        tasks_from: dry-run.yml
+
+- name: Configure the storage VM and reconcile
+  hosts: storage
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Verify maintenance ownership
+      ansible.builtin.import_role:
+        name: storage_vm
+        tasks_from: lock-verify.yml
+  roles:
+    - role: storage_vm
+  tasks:
+    - name: Read the storage-fencer token Secret
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ hostvars[groups['masters'][0]].storage_vm_kubeconfig_path }}"
+        kind: Secret
+        namespace: democratic-csi
+        name: storage-fencer-token
+      delegate_to: localhost
+      become: false
+      register: storage_vm_token_secret
+      no_log: true
+
+    - name: Check that the token Secret is populated
+      ansible.builtin.set_fact:
+        storage_vm_token_ready: >-
+          {{ storage_vm_token_secret.resources | length == 1 and
+             (storage_vm_token_secret.resources[0].data | default({})).keys() | list
+             | intersect(['token', 'ca.crt']) | length == 2 }}
+
+    # A k3s rebuild must never block on it; the next run after the Secret exists copies the new token.
+    - name: Warn that the storage-fencer token Secret is missing
+      ansible.builtin.debug:
+        msg: "WARNING: democratic-csi/storage-fencer-token is missing or not populated; the fencer stays blind."
+      when: not storage_vm_token_ready
+
+    - name: Copy the storage-fencer token and CA
+      ansible.builtin.copy:
+        dest: "/etc/storage-fencer/{{ item }}"
+        content: "{{ storage_vm_token_secret.resources[0].data[item] | b64decode }}"
+        owner: root
+        group: root
+        mode: "0600"
+      loop:
+        - token
+        - ca.crt
+      when: storage_vm_token_ready
+      no_log: true
+      notify: Restart storage-fencer
+
+    - name: Install the inventory at the logged commit
+      ansible.builtin.copy:
+        src: "{{ hostvars['localhost'].storage_vm_inventory_file }}"
+        dest: /etc/homelab-storage/retained-volumes.json
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Reconcile volumes and targets
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/storage-reconcile, apply, --inventory, /etc/homelab-storage/retained-volumes.json]
+      register: storage_vm_apply
+      changed_when: storage_vm_apply.rc == 0 and (storage_vm_apply.stdout | from_json).actions | length > 0
+      # A per-entry refusal exits 1 but still exports every live target: grow them and clean up, then fail last.
+      failed_when: false
+
+    - name: Record the exported volumes for the growth play
+      ansible.builtin.set_fact:
+        storage_vm_exported: >-
+          {{ (storage_vm_apply.stdout | from_json).exported if storage_vm_apply.stdout | trim | length > 0 else [] }}
+        storage_vm_portal: "{{ storage_vm_bridge_address }}:3260"
+
+    # The boot check runs only from the targetctl drop-in's ExecStartPost. A fresh root whose stock unit was already
+    # active when the role installed the drop-in never ran it, so storage_boot_check_ok stays absent (alerting) until
+    # the first reboot. Run it once, after the reconcile, so a rebuilt root's targets exist when it checks them.
+    - name: Find the boot check result
+      ansible.builtin.stat:
+        path: /var/lib/prometheus/node-exporter/storage-boot-check.prom
+      register: storage_vm_boot_check_file
+
+    - name: Read the LIO restore unit state
+      ansible.builtin.command:
+        argv: [systemctl, is-active, rtslib-fb-targetctl]
+      register: storage_vm_targetctl_active
+      changed_when: false
+      failed_when: false
+      when: not storage_vm_boot_check_file.stat.exists
+
+    # Inactive: the reconcile starts the unit, which runs the check. Failed: the restore runbook's case, not this.
+    - name: Run the boot check once on a root that never ran it
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/storage-reconcile, boot-check]
+      register: storage_vm_first_boot_check
+      changed_when: true
+      # Grow and clean up first; the last play fails the run.
+      failed_when: false
+      when:
+        - not storage_vm_boot_check_file.stat.exists
+        - storage_vm_targetctl_active.stdout | default('') == 'active'
+
+# The lab k3s server is also a worker (ADR 0017 lab), so this covers every k3s node; a node with no attachment
+# does nothing.
+- name: Grow attached filesystems to their exported size
+  hosts: all_k3s
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Rescan and grow every attached exported volume
+      ansible.builtin.import_role:
+        name: storage_vm
+        tasks_from: grow.yml
+
+- name: Import the cleanup
+  ansible.builtin.import_playbook: storage-play-cleanup.yml
+
+- name: Fail if the reconcile or the first boot check failed
+  hosts: localhost
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: Fail if the first boot check failed
+      ansible.builtin.fail:
+        msg:
+          "storage-reconcile boot-check exited {{ storage_vm_first_check.rc }}: {{ storage_vm_first_check.stderr |
+          default('') }}"
+      vars:
+        storage_vm_first_check: "{{ hostvars[groups['storage'][0]].storage_vm_first_boot_check | default({}) }}"
+      when: storage_vm_first_check.rc | default(0) != 0
+
+    - name: Fail if the reconcile refused an entry or failed
+      ansible.builtin.fail:
+        msg: >-
+          storage-reconcile apply exited {{ storage_vm_reconcile_result.rc }}: {{ storage_vm_reconcile_result.stderr |
+          default('') }}
+      vars:
+        storage_vm_reconcile_result: "{{ hostvars[groups['storage'][0]].storage_vm_apply }}"
+      when: storage_vm_reconcile_result.rc != 0

@@ -1,0 +1,70 @@
+---
+# Daily: delete removed volumes whose 3-day quarantine has passed (ADR 0017). Runs under an existing maintenance lock.
+# Lab: ansible-playbook -i <lab>/inventory.yml -e @<lab>/vars.yml storage-expiry.yml
+- name: Import the lab guard
+  ansible.builtin.import_playbook: storage-play-lab-guard.yml
+
+- name: Verify maintenance ownership
+  hosts: storage
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Verify maintenance ownership
+      ansible.builtin.import_role:
+        name: storage_vm
+        tasks_from: lock-verify.yml
+
+# A volume back in the inventory on main is never expired, even while a red reconcile leaves its pending-delete tag.
+- name: Import the inventory fetch
+  ansible.builtin.import_playbook: storage-play-fetch-inventory.yml
+
+- name: Write a private kubeconfig
+  hosts: masters[0]
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Read and rewrite the control-plane kubeconfig
+      ansible.builtin.import_role:
+        name: storage_vm
+        tasks_from: kubeconfig.yml
+
+- name: List expiry candidates
+  hosts: storage
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: List pending-delete volumes past quarantine
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/storage-reconcile, expire-candidates]
+      register: storage_vm_expiry_list
+      changed_when: false
+
+    - name: Record the candidates
+      ansible.builtin.set_fact:
+        storage_vm_expiry_candidates: "{{ storage_vm_expiry_list.stdout | from_json }}"
+
+- name: Expire removed volumes
+  hosts: localhost
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: Refuse in-use volumes, then delete their claims, PVs and storage
+      ansible.builtin.import_role:
+        name: storage_vm
+        tasks_from: expire.yml
+
+- name: Import the cleanup
+  ansible.builtin.import_playbook: storage-play-cleanup.yml
+
+- name: Fail if a volume was refused or failed
+  hosts: localhost
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: Fail if a volume was refused or failed
+      ansible.builtin.fail:
+        msg: "Not expired, see the errors above: {{ storage_vm_expiry_refused | join(', ') }}"
+      when: storage_vm_expiry_refused | default([]) | length > 0

@@ -1,0 +1,92 @@
+---
+# localhost, one pending-delete volume past quarantine. The PV lookup matches the driver and the handle (R21).
+# One refused or failed volume is recorded and the loop goes on; storage-expiry.yml fails once after the cleanup.
+- name: Expire {{ storage_vm_candidate.id }}
+  block:
+    - name: List PersistentVolumes
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ storage_vm_kubeconfig_path }}"
+        kind: PersistentVolume
+      register: storage_vm_expiry_pvs_all
+
+    # Two tasks: in one set_fact the claims would read the previous candidate's PVs (or fail on the first).
+    - name: Select the PVs of this volume
+      ansible.builtin.set_fact:
+        storage_vm_expiry_pvs: >-
+          {{ storage_vm_expiry_pvs_all.resources | selectattr('spec.csi', 'defined')
+             | selectattr('spec.csi.driver', 'equalto', storage_vm_csi_driver)
+             | selectattr('spec.csi.volumeHandle', 'equalto', storage_vm_candidate.volume_handle) | list }}
+
+    - name: Select the claims of those PVs
+      ansible.builtin.set_fact:
+        storage_vm_expiry_claims: >-
+          {{ storage_vm_expiry_pvs | selectattr('spec.claimRef', 'defined') | map(attribute='spec.claimRef') | list }}
+
+    - name: List VolumeAttachments
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ storage_vm_kubeconfig_path }}"
+        api_version: storage.k8s.io/v1
+        kind: VolumeAttachment
+      register: storage_vm_expiry_vas
+
+    - name: List the Pods in each claim's namespace
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ storage_vm_kubeconfig_path }}"
+        kind: Pod
+        namespace: "{{ item.namespace }}"
+      loop: "{{ storage_vm_expiry_claims }}"
+      loop_control:
+        label: "{{ item.namespace }}/{{ item.name }}"
+      register: storage_vm_expiry_pods
+
+    - name: Refuse while a VolumeAttachment, a session or a Pod uses the volume
+      ansible.builtin.assert:
+        that:
+          - not storage_vm_candidate.sessions
+          - >-
+            storage_vm_expiry_vas.resources | selectattr('spec.source.persistentVolumeName', 'defined') |
+            map(attribute='spec.source.persistentVolumeName') | intersect(storage_vm_expiry_pvs |
+            map(attribute='metadata.name') | list) | length == 0
+          - storage_vm_expiry_used_claims | default('', true) | trim | length == 0
+        fail_msg: "{{ storage_vm_candidate.id }} is still in use; nothing deleted."
+      vars:
+        # Claim names that a Pod in the claim's namespace mounts (an empty result renders as None).
+        storage_vm_expiry_used_claims: >-
+          {% for r in storage_vm_expiry_pods.results if r.item.name in (r.resources | map(attribute='spec.volumes',
+          default=[]) | flatten | selectattr('persistentVolumeClaim', 'defined') |
+          map(attribute='persistentVolumeClaim.claimName')) %}{{ r.item.name }} {% endfor %}
+
+    - name: Delete the claims of this volume
+      kubernetes.core.k8s:
+        kubeconfig: "{{ storage_vm_kubeconfig_path }}"
+        state: absent
+        kind: PersistentVolumeClaim
+        namespace: "{{ item.namespace }}"
+        name: "{{ item.name }}"
+        wait: true
+      loop: "{{ storage_vm_expiry_claims }}"
+      loop_control:
+        label: "{{ item.namespace }}/{{ item.name }}"
+
+    - name: Delete the PVs of this volume
+      kubernetes.core.k8s:
+        kubeconfig: "{{ storage_vm_kubeconfig_path }}"
+        state: absent
+        kind: PersistentVolume
+        name: "{{ item.metadata.name }}"
+        wait: true
+      loop: "{{ storage_vm_expiry_pvs }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+
+    # Re-checks age, hold and sessions under the LIO lock, then removes the target, the data and the ledger entry.
+    - name: Expire the volume on the storage VM
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/storage-reconcile, expire, --id, "{{ storage_vm_candidate.id }}"]
+      delegate_to: "{{ groups['storage'][0] }}"
+      become: true
+      changed_when: true
+  rescue:
+    - name: Record the refused volume
+      ansible.builtin.set_fact:
+        storage_vm_expiry_refused: "{{ storage_vm_expiry_refused | default([]) + [storage_vm_candidate.id] }}"

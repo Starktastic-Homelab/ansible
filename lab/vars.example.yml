@@ -1,0 +1,33 @@
+---
+# Example only: the real file is <lab>/vars.yml. Extra vars beat group_vars/all; inventory group vars would not.
+# The lab guard refuses production_vip_address (group_vars/all), and any vip_address that is not a lab master's
+# ansible_host. Never set lab here: the inventory marks the lab, so the guard catches a run that forgot this file.
+vip_address: 192.0.2.41
+mgmt_iface: eth0
+flannel_iface: eth1
+proxmox_csi_enabled: false
+k3s_node_retirement_enabled: false
+storage_vm_api_url: https://192.0.2.41:6443
+
+# The lab k3s server acts as a worker too, so both nodes get ACLs, rules and the fencer.
+storage_vm_workers:
+  - { name: lab-server, bridge_address: 198.51.100.21 }
+  - { name: lab-agent, bridge_address: 198.51.100.22 }
+storage_vm_bridge_address: 198.51.100.10
+storage_vm_bridge_subnet: 198.51.100.0/24
+storage_vm_ssh_sources: [192.0.2.0/24]
+# The lab VM's virtio1 (retained) and virtio2 (regen) slots as by-path links (read on 971 2026-11-18).
+storage_vm_pv_devices:
+  retained: /dev/disk/by-path/pci-0000:06:0b.0
+  regen: /dev/disk/by-path/pci-0000:06:0c.0
+# A bare repo in <lab> (placeholder path), never the production apps repo.
+storage_vm_inventory_repo: /maintenance/lab-storage/apps-inventory.git
+storage_vm_inventory_branch: feat/retained-storage-vm
+storage_vm_maintenance_root: /maintenance/lab-storage
+storage_vm_timings:
+  not_ready_seconds: 60
+  loop_seconds: 5
+  proof_timeout_seconds: 30
+  quarantine_seconds: 900
+  blind_after_seconds: 120
+  pause_after: []

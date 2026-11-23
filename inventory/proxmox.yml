@@ -17,6 +17,8 @@ groups:
     'k3s' in (proxmox_tags_parsed|list) and 'master' in (proxmox_tags_parsed|list)
   workers: >-
     'k3s' in (proxmox_tags_parsed|list) and 'worker' in (proxmox_tags_parsed|list)
+  # Exact tag: lab VMs are tagged lab-storage and must never land here.
+  storage: "'storage' in (proxmox_tags_parsed|list)"
 
 compose:
   ansible_host: proxmox_ipconfig0.ip.split('/')[0]

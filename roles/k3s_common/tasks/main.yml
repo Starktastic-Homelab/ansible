@@ -89,7 +89,7 @@
         - "resolv-conf={{ k3s_common_resolv_conf }}"
       {% if 'masters' in group_names %}
       kube-controller-manager-arg:
-      {% for arg in k3s_common_leader_elect_args %}
+      {% for arg in k3s_common_kube_controller_manager_args %}
         - "{{ arg }}"
       {% endfor %}
       kube-cloud-controller-manager-arg:
@@ -143,6 +143,69 @@
     group: root
     mode: "0644"
   notify: Restart k3s
+
+# iSCSI initiator identity. It is written before open-iscsi is installed so the
+# package never generates a random IQN; the name equals the Kubernetes node name,
+# which the storage VM's ACLs are rendered from. Never baked into the image: a
+# clone would share one IQN.
+- name: Create the iSCSI config directory
+  ansible.builtin.file:
+    path: /etc/iscsi
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: iscsi
+
+- name: Set the iSCSI initiator name
+  ansible.builtin.copy:
+    content: "InitiatorName={{ storage_initiator_iqn_prefix }}{{ inventory_hostname }}\n"
+    dest: /etc/iscsi/initiatorname.iscsi
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart k3s
+  tags: iscsi
+
+- name: Install open-iscsi
+  ansible.builtin.apt:
+    name: open-iscsi
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  tags: iscsi
+
+# Sessions are opened by the CSI driver per volume, never at boot.
+- name: Keep iSCSI node sessions manual
+  ansible.builtin.lineinfile:
+    path: /etc/iscsi/iscsid.conf
+    regexp: '^#?\s*node\.startup\s*='
+    line: node.startup = manual
+  tags: iscsi
+
+- name: Enable the iscsid socket
+  ansible.builtin.systemd:
+    name: iscsid.socket
+    enabled: true
+    state: started
+  tags: iscsi
+
+- name: Enable the weekly fstrim timer
+  ansible.builtin.systemd:
+    name: fstrim.timer
+    enabled: true
+    state: started
+
+# Persistent journal, workers only: Check 11 reads a worker's previous-boot log (D22).
+- name: Ensure the persistent journal directory exists
+  ansible.builtin.file:
+    path: /var/log/journal
+    state: directory
+    owner: root
+    group: systemd-journal
+    mode: "2755"
+  when: "'workers' in group_names"
+  notify: Flush the journal to disk
 
 - name: Check if K3s is already installed
   ansible.builtin.stat:

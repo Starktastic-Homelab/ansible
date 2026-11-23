@@ -1,0 +1,25 @@
+---
+# Example only: the real file is <lab>/inventory.yml on VM300 (/maintenance/lab-storage/inventory.yml). Hosts and
+# groups and the lab marker only; every override goes in <lab>/vars.yml, passed as -e @<lab>/vars.yml on every lab
+# run. lab: true makes the lab guard check the VIP and allows pause_after. Addresses are placeholders (RFC 5737).
+all:
+  vars:
+    lab: true
+  children:
+    storage:
+      hosts:
+        lab-storage:
+          ansible_host: 192.0.2.40
+    all_k3s:
+      children:
+        masters:
+          hosts:
+            lab-server:
+              ansible_host: 192.0.2.41
+        # lab-server is also a worker: the k3s server schedules the CSI node plugin, which needs the label
+        # k3s_workers sets (its join step skips a node that already has k3s).
+        workers:
+          hosts:
+            lab-server:
+            lab-agent:
+              ansible_host: 192.0.2.42

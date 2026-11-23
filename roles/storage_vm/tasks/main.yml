@@ -1,0 +1,167 @@
+---
+# Checks come first: a failed check after a unit change would leave its reload handler unrun.
+- name: Check the storage VM settings
+  ansible.builtin.import_tasks: assert.yml
+
+- name: Find the bridge interface
+  ansible.builtin.set_fact:
+    storage_vm_bridge_iface: >-
+      {{ ansible_facts.interfaces | map('regex_replace', '[^A-Za-z0-9_]', '_') | map('extract', ansible_facts) |
+      select('mapping')
+         | selectattr('ipv4', 'defined') | selectattr('ipv4.address', 'equalto', storage_vm_bridge_address)
+         | map(attribute='device') | first | default('') }}
+
+- name: Require the bridge interface
+  ansible.builtin.assert:
+    that:
+      - storage_vm_bridge_iface | length > 0
+    fail_msg: No interface has {{ storage_vm_bridge_address }}; the iSCSI and metrics rules bind to it.
+
+# The image holds them too. An LIO upgrade restarts rtslib-fb-targetctl, which drops every session; an lvm2 upgrade
+# runs an unscoped vgcfgbackup and may replace lvm.conf (ADR 0017 F24).
+- name: Hold the LIO and LVM packages
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - python3-rtslib-fb
+    - targetcli-fb
+    - lvm2
+
+# As on pve: an oops reboots the VM instead of leaving a half-dead kernel serving iSCSI.
+- name: Reboot 10 s after a kernel oops
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/90-panic-reboot.conf
+    sysctl_set: true
+    state: present
+    reload: true
+  loop:
+    - { key: "kernel.panic_on_oops", value: "1" }
+    - { key: "kernel.panic", value: "10" }
+
+- name: Create the storage directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /usr/local/lib/homelab-storage, mode: "0755" }
+    - { path: /etc/homelab-storage, mode: "0755" }
+    - { path: /etc/storage-fencer, mode: "0700" }
+    - { path: /etc/systemd/system/nftables.service.d, mode: "0755" }
+    - { path: /etc/systemd/system/rtslib-fb-targetctl.service.d, mode: "0755" }
+
+# Persistent journal: the boot check and the Gate F2 reboot read the previous boot's log.
+- name: Ensure the persistent journal directory exists
+  ansible.builtin.file:
+    path: /var/log/journal
+    state: directory
+    owner: root
+    group: systemd-journal
+    mode: "2755"
+  notify: Flush the journal to disk
+
+# Programs and config.json come before the drop-ins and nftables.conf that call them.
+- name: Install the storage programs
+  ansible.builtin.copy:
+    src: homelab_storage
+    dest: /usr/local/lib/homelab-storage/
+    owner: root
+    group: root
+    mode: "0644"
+    directory_mode: "0755"
+  notify: Restart storage-fencer
+
+- name: Install the storage wrappers
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/usr/local/sbin/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - storage-reconcile
+    - storage-fencer
+  notify: Restart storage-fencer
+
+- name: Write the storage config
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: /etc/homelab-storage/config.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart storage-fencer
+
+- name: Install the storage-fencer unit
+  ansible.builtin.template:
+    src: storage-fencer.service.j2
+    dest: /etc/systemd/system/storage-fencer.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart storage-fencer
+
+- name: Re-apply fences whenever nftables loads its ruleset
+  ansible.builtin.template:
+    src: nftables.service.d-50-fences.conf.j2
+    dest: /etc/systemd/system/nftables.service.d/50-fences.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Re-apply fences and check targets after the LIO restore
+  ansible.builtin.template:
+    src: rtslib-fb-targetctl.service.d-50-homelab.conf.j2
+    dest: /etc/systemd/system/rtslib-fb-targetctl.service.d/50-homelab.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+# nftables.conf renders the fenced set from the VG tags, read under the lock the fencer takes to change them.
+- name: Read the fence tags under the LIO lock
+  ansible.builtin.command:
+    argv: [flock, -w, "120", /run/lock/storage-lio, /usr/local/sbin/storage-fencer, status]
+  register: storage_vm_fence_status
+  changed_when: false
+
+- name: Render fenced workers as bridge addresses
+  ansible.builtin.set_fact:
+    storage_vm_fenced_addresses: >-
+      {{ storage_vm_workers | selectattr('name', 'in', (storage_vm_fence_status.stdout | from_json).fenced)
+         | map(attribute='bridge_address') | list }}
+
+- name: Write the nftables ruleset
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: nft -c -f %s
+  notify: Reload nftables
+
+# Enabled only: starting, stopping or restarting it would restore or clear the live targets.
+- name: Enable the LIO restore at boot
+  ansible.builtin.systemd:
+    name: rtslib-fb-targetctl
+    enabled: true
+
+- name: Enable and start storage-fencer
+  ansible.builtin.systemd:
+    name: storage-fencer
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# Reload systemd, then nftables (loading the fenced set), before the token copy and the reconcile.
+- name: Apply unit and ruleset changes before the reconcile
+  ansible.builtin.meta: flush_handlers

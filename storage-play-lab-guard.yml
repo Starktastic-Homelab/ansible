@@ -1,0 +1,12 @@
+---
+# Imported first by every storage playbook. A playbook at the repo root, so tasks/ and roles/ resolve from here.
+- name: Lab guard
+  hosts: all
+  gather_facts: false
+  any_errors_fatal: true
+  tags:
+    - always
+  tasks:
+    - name: Refuse a lab run aimed at production
+      ansible.builtin.import_tasks: tasks/lab-guard.yml
+      run_once: true

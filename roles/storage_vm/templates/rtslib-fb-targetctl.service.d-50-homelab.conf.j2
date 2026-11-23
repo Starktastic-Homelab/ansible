@@ -1,0 +1,22 @@
+# {{ ansible_managed }}
+# The only LVM activation at boot (the image turns stock activation off, ADR 0017 F24): retained from its own PV,
+# no fallback, so a wrong path fails the unit and restores no targets; regen bounded and never killed (F11).
+# Then re-applies fences, strips fenced ACLs and checks LUN 0 per ledgered LV. A failed start
+# skips ExecStop (targetctl clear), so a failing check never clears targets.
+{% set dev_unit = storage_vm_pv_devices.retained[1:] | replace('-', '\\x2d') | replace('/', '-') ~ '.device' %}
+[Unit]
+Wants=network-online.target
+After=network-online.target
+After=nftables.service
+Wants={{ dev_unit }}
+After={{ dev_unit }}
+
+[Service]
+# A failed start or a stop never signals an abandoned (D-state) LVM child.
+KillMode=process
+ExecStartPre=
+ExecStartPre=/sbin/vgchange --devices {{ storage_vm_pv_devices.retained }} -ay retained
+ExecStartPre=-/usr/local/sbin/storage-reconcile activate --vg regen
+ExecStartPre=-/usr/local/sbin/storage-fencer restore-set
+ExecStartPost=/usr/local/sbin/storage-fencer restore-set
+ExecStartPost=/usr/local/sbin/storage-reconcile boot-check

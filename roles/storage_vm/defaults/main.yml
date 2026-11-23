@@ -1,0 +1,43 @@
+---
+# Workers that may attach volumes: [{name, bridge_address}]; name is the node name and the inventory hostname.
+# They get the target ACLs and the tcp/3260 and tcp/9100 rules, and the fencer watches them.
+storage_vm_workers: []
+# The storage VM's address on the uplink-less bridge; the LIO portal listens only there.
+storage_vm_bridge_address: ""
+# The bridge subnet (x.y.z.0/24) every worker bridge_address must be inside; the assert refuses this empty default.
+storage_vm_bridge_subnet: ""
+# Required: addresses or CIDRs allowed to reach tcp/22 (the runner and the LAN).
+storage_vm_ssh_sources: []
+# Workers approved to leave the installed config.json this run (tasks/assert.yml); the storage.yml dispatch input
+# remove_workers sets it for one run. Any other worker missing from storage_vm_workers is refused.
+storage_vm_remove_workers: []
+storage_vm_api_url: "https://{{ vip_address }}:6443"
+
+# Every run reconciles against this branch's tip, never a pinned commit.
+storage_vm_inventory_repo: "{{ argocd_repo_url }}"
+storage_vm_inventory_branch: main
+storage_vm_inventory_path: infrastructure/base-configs/files/retained-volumes.json
+
+# Each VG's one PV, so every LVM command opens only that disk (ADR 0017 F11/F12): {retained: /dev/..., regen: /dev/...}.
+# Set per VM in group_vars/storage/storage_vm.yml to /dev/disk/by-id/virtio-retained and /dev/disk/by-id/virtio-regen
+# (the disk serials) in Task 3.5, because the first run that sees real PV paths configures the VM. Until then the
+# role refuses (tasks/assert.yml) and scripts/storage_ready.py skips the storage workflows.
+storage_vm_pv_devices: {}
+
+# The removal brake: more untagged removals than this in one run (across every inventory change since the last one)
+# refuse every create and grow. An approved larger removal is one storage.yml dispatch with max_removals=N, which
+# sets this for that run only (apps docs/runbooks/storage-vm-expiry.md).
+storage_vm_max_removals: 2
+# Production values. An override replaces the whole map, and config.json then must still have every key.
+storage_vm_timings:
+  not_ready_seconds: 300
+  loop_seconds: 15
+  proof_timeout_seconds: 60
+  quarantine_seconds: 259200
+  blind_after_seconds: 600
+  pause_after: []
+storage_vm_maintenance_root: /maintenance
+storage_vm_csi_driver: org.democratic-csi.node-manual
+# tasks/host-metrics.yml: the pve mount of the TrueNAS dataset behind the retained images (Task 1.1), and its name.
+storage_vm_k3s_block_mount: /mnt/pve/k3s-block
+storage_vm_k3s_block_dataset: apps/k3s-block

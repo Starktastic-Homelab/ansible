@@ -1,0 +1,67 @@
+---
+# storage, before the maintenance lock: the same code against the real ledger. It reads vgs, lvs and LUN 0 and writes
+# only the reconcile gauges textfile, so a refusal that blocks every run still alerts.
+- name: Check the storage VM settings
+  ansible.builtin.import_tasks: assert.yml
+
+- name: Dry-run the reconcile from a private copy
+  block:
+    - name: Create a private dry-run directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: storage-dry-run-
+      register: storage_vm_dry_run_dir
+
+    - name: Copy the reconcile package
+      ansible.builtin.copy:
+        src: homelab_storage
+        dest: "{{ storage_vm_dry_run_dir.path }}/"
+        mode: "0644"
+        directory_mode: "0700"
+
+    - name: Copy the reconcile wrapper
+      ansible.builtin.copy:
+        src: storage-reconcile
+        dest: "{{ storage_vm_dry_run_dir.path }}/storage-reconcile"
+        mode: "0700"
+
+    - name: Copy the inventory at the logged commit
+      ansible.builtin.copy:
+        src: "{{ hostvars['localhost'].storage_vm_inventory_file }}"
+        dest: "{{ storage_vm_dry_run_dir.path }}/retained-volumes.json"
+        mode: "0600"
+
+    - name: Render the config the run will install
+      ansible.builtin.template:
+        src: config.json.j2
+        dest: "{{ storage_vm_dry_run_dir.path }}/config.json"
+        mode: "0600"
+
+    - name: Dry-run the reconcile against the real ledger
+      ansible.builtin.command:
+        argv:
+          [
+            python3,
+            -I,
+            "{{ storage_vm_dry_run_dir.path }}/storage-reconcile",
+            apply,
+            --dry-run,
+            --inventory,
+            "{{ storage_vm_dry_run_dir.path }}/retained-volumes.json",
+            --config,
+            "{{ storage_vm_dry_run_dir.path }}/config.json"
+          ]
+      register: storage_vm_dry_run
+      changed_when: false
+
+    # Warnings such as "hold_create set, N creates refused" exit 0 and would need -v to reach the log.
+    - name: Show the dry-run warnings
+      ansible.builtin.debug:
+        msg: "{{ storage_vm_dry_run.stderr_lines }}"
+      when: storage_vm_dry_run.stderr | length > 0
+  always:
+    - name: Remove the dry-run directory
+      ansible.builtin.file:
+        path: "{{ storage_vm_dry_run_dir.path }}"
+        state: absent
+      when: storage_vm_dry_run_dir.path is defined

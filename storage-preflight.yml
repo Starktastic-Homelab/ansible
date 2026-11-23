@@ -1,0 +1,55 @@
+---
+# The storage workflows' check before they try the lock: reads only, takes no lock. It fetches and validates the
+# inventory (the expiry's only pre-lock fetch: a failure must not keep the lock, D31), then writes k3s=true|false to
+# the step outputs; false (no k3s on masters[0], a rebuild before its deploy) skips the run green. Any failure goes red.
+# Lab: ansible-playbook -i <lab>/inventory.yml -e @<lab>/vars.yml storage-preflight.yml
+- name: Import the lab guard
+  ansible.builtin.import_playbook: storage-play-lab-guard.yml
+
+- name: Import the inventory fetch
+  ansible.builtin.import_playbook: storage-play-fetch-inventory.yml
+
+- name: Check that k3s answers on the first master
+  hosts: masters[0]
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Ask k3s for readiness
+      ansible.builtin.import_role:
+        name: storage_vm
+        tasks_from: k3s-check.yml
+
+- name: Record the k3s answer
+  hosts: localhost
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  tasks:
+    # An empty masters group or a master that never answered fails here, never reads as a skip.
+    - name: Require the answer of masters[0]
+      ansible.builtin.assert:
+        that:
+          - hostvars[groups['masters'][0]].storage_vm_k3s_ready is defined
+
+    - name: Write the k3s answer to the step outputs
+      ansible.builtin.lineinfile:
+        path: "{{ lookup('env', 'GITHUB_OUTPUT') }}"
+        line: "k3s={{ hostvars[groups['masters'][0]].storage_vm_k3s_ready | bool | lower }}"
+      when: lookup('env', 'GITHUB_OUTPUT') | length > 0
+
+    - name: Show the k3s answer
+      ansible.builtin.debug:
+        msg:
+          "k3s answers on {{ groups['masters'][0] }}: {{ hostvars[groups['masters'][0]].storage_vm_k3s_ready | bool }}"
+
+# No kubeconfig play ran, so only the checkout is removed.
+- name: Remove the inventory checkout
+  hosts: localhost
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: Remove the inventory checkout
+      ansible.builtin.file:
+        path: "{{ storage_vm_checkout.path }}"
+        state: absent

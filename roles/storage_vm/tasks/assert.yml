@@ -1,0 +1,137 @@
+---
+# Addresses go into the nftables ruleset, so anything but a plain IPv4 address or CIDR is refused.
+- name: Require the storage VM settings
+  ansible.builtin.assert:
+    that:
+      - storage_vm_ssh_sources is sequence and storage_vm_ssh_sources is not string
+      - storage_vm_ssh_sources | length > 0
+      - >-
+        storage_vm_ssh_sources | select('string') | select('match', '^[0-9]{1,3}([.][0-9]{1,3}){3}(/[0-9]{1,2})?$') |
+        list | length == storage_vm_ssh_sources | length
+      - storage_vm_bridge_address is string
+      - storage_vm_bridge_address is match('^[0-9]{1,3}([.][0-9]{1,3}){3}$')
+      - storage_vm_workers is sequence and storage_vm_workers is not string
+      - storage_vm_workers | length > 0
+      - >-
+        storage_vm_workers | selectattr('name', 'defined') | selectattr('bridge_address', 'defined') |
+        map(attribute='name') | select('match', '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$') | unique | list | length ==
+        storage_vm_workers | length
+      - >-
+        storage_vm_workers | selectattr('bridge_address', 'defined') | map(attribute='bridge_address') | select('match',
+        '^[0-9]{1,3}([.][0-9]{1,3}){3}$') | list | length == storage_vm_workers | length
+    fail_msg: >-
+      storage_vm_ssh_sources must be a non-empty list of IPv4 addresses or CIDRs, storage_vm_bridge_address an IPv4
+      address, and storage_vm_workers a non-empty list of unique {name, bridge_address}.
+
+# A Proxmox API timeout drops a worker from its tag groups with only a warning (inventory/proxmox.yml). The shorter
+# list would cut that worker's ACLs and its tcp/3260 rule, so refuse it before any write unless storage_vm_remove_workers
+# (the storage.yml dispatch input remove_workers, one run only) names it. Nothing installed yet: first bootstrap.
+- name: Find the installed storage config
+  ansible.builtin.stat:
+    path: /etc/homelab-storage/config.json
+  register: storage_vm_installed_config_stat
+
+- name: Read the installed storage config
+  ansible.builtin.slurp:
+    src: /etc/homelab-storage/config.json
+  register: storage_vm_installed_config
+  when: storage_vm_installed_config_stat.stat.exists
+
+# An unreadable installed config fails this task (from_json, or no workers list): never read as no workers.
+- name: Refuse a worker that left the inventory without an approval naming it
+  ansible.builtin.assert:
+    that:
+      - storage_vm_remove_workers is sequence and storage_vm_remove_workers is not string
+      - storage_vm_installed_workers is sequence and storage_vm_installed_workers is not string
+      - >-
+        storage_vm_installed_workers | map(attribute='name') | difference(storage_vm_workers | map(attribute='name')) |
+        difference(storage_vm_remove_workers) | length == 0
+    fail_msg: >-
+      {{ storage_vm_installed_workers | map(attribute='name') | difference(storage_vm_workers | map(attribute='name'))
+         | join(', ') }} is in the installed config.json but not in the inventory (a Proxmox inventory drop-out?).
+      Nothing was changed. If the removal is deliberate, dispatch storage.yml with remove_workers naming it.
+  vars:
+    storage_vm_installed_workers: >-
+      {{ (storage_vm_installed_config.content | b64decode | from_json).workers
+         if storage_vm_installed_config_stat.stat.exists else [] }}
+
+# shortcut: a prefix compare, so only an x.y.z.0/24 subnet passes; the runner image has no netaddr for
+# ansible.utils.ipaddr. Upgrade both this and group_vars/storage/storage_vm.yml if the bridge needs another size.
+- name: Require distinct worker bridge addresses inside the bridge subnet
+  ansible.builtin.assert:
+    that:
+      - storage_vm_bridge_subnet is string
+      - storage_vm_bridge_subnet is match('^[0-9]{1,3}([.][0-9]{1,3}){2}[.]0/24$')
+      - >-
+        storage_vm_workers | map(attribute='bridge_address') | select('match', '^' ~ (storage_vm_bridge_subnet[:-4] |
+        regex_escape) ~ '[0-9]{1,3}$') | list | length == storage_vm_workers | length
+      - storage_vm_bridge_address not in (storage_vm_workers | map(attribute='bridge_address') | list)
+      - storage_vm_workers | map(attribute='bridge_address') | unique | list | length == storage_vm_workers | length
+    fail_msg: >-
+      Every storage_vm_workers bridge_address must be inside storage_vm_bridge_subnet (an x.y.z.0/24), unique, and not
+      storage_vm_bridge_address.
+
+- name: Require one distinct PV path per VG
+  ansible.builtin.assert:
+    that:
+      - storage_vm_pv_devices is mapping
+      - storage_vm_pv_devices.keys() | sort == ['regen', 'retained']
+      - storage_vm_pv_devices.values() | select('string') | select('match', '^/dev/') | list | length == 2
+      - storage_vm_pv_devices.retained != storage_vm_pv_devices.regen
+    fail_msg: storage_vm_pv_devices must map retained and regen to distinct /dev/ paths (ADR 0017 F11).
+
+# Only the role may activate retained and regen (ADR 0017 F24): the image turns every stock LVM path off. These reads
+# run in check mode too, so the dry run refuses an old image the same way.
+- name: Read the effective LVM event activation
+  ansible.builtin.command:
+    argv: [/sbin/lvmconfig, --type, full, global/event_activation]
+  register: storage_vm_lvm_event_activation
+  check_mode: false
+  changed_when: false
+
+- name: Read the stock LVM units
+  ansible.builtin.command:
+    argv: [systemctl, is-enabled, lvm2-monitor.service, blk-availability.service]
+  register: storage_vm_lvm_units
+  check_mode: false
+  changed_when: false
+  # A masked unit exits non-zero; the assert decides.
+  failed_when: false
+
+- name: Read the lvm2 package selection
+  ansible.builtin.command:
+    argv: [dpkg-query, -W, "--showformat=${Status}", lvm2]
+  register: storage_vm_lvm_selection
+  check_mode: false
+  changed_when: false
+
+# Only the udev pvscan writes these, so an entry means stock activation ran on this boot. Absent paths match nothing.
+- name: Find stock LVM activation records from this boot
+  ansible.builtin.find:
+    paths: [/run/lvm/vgs_online, /run/lvm/pvs_online]
+    file_type: any
+    hidden: true
+  register: storage_vm_lvm_online
+  check_mode: false
+  changed_when: false
+
+- name: Refuse stock LVM activation
+  ansible.builtin.assert:
+    that:
+      - storage_vm_lvm_event_activation.stdout == 'event_activation=0'
+      - storage_vm_lvm_units.stdout_lines == ['masked', 'masked']
+      - (storage_vm_lvm_selection.stdout.split() | first | default('')) == 'hold'
+      - storage_vm_lvm_online.matched == 0
+    fail_msg: >-
+      Stock LVM activation is on (event_activation, lvm2-monitor/blk-availability not masked, lvm2 not held, or
+      /run/lvm/vgs_online|pvs_online not empty on this boot). Rebuild the storage VM from the packer storage image with
+      the F24 change (scripts/storage.sh), or apply those lines and reboot; only the role may activate retained and
+      regen (ADR 0017 F24).
+
+# pause_after SIGSTOPs reconcile or the fencer at a checkpoint (lab only); a stopped fencer fences nothing.
+- name: Refuse lab checkpoints outside the lab
+  ansible.builtin.assert:
+    that:
+      - >-
+        (storage_vm_timings.pause_after | default([]) | length == 0) or (lab | default(false) | bool)
+    fail_msg: storage_vm_timings.pause_after is lab-only (ADR 0017); production never sets it.

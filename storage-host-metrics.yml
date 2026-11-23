@@ -1,0 +1,17 @@
+---
+# The dataset and lock gauges for the storage VM alerts (ADR 0017), from storage.yml's "Write host gauges" step every
+# hour, backup windows and a held lock included. It takes no maintenance lock: it reads and writes one textfile.
+# Needs both inventories (-i inventory/proxmox.yml -i inventory/hosts.yml): proxmox_hosts is only in hosts.yml.
+- name: Import the lab guard
+  ansible.builtin.import_playbook: storage-play-lab-guard.yml
+
+- name: Write the host gauges on the storage VM
+  hosts: storage
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Read the dataset and the lock, write storage-host.prom
+      ansible.builtin.import_role:
+        name: storage_vm
+        tasks_from: host-metrics.yml

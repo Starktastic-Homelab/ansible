@@ -1,0 +1,74 @@
+---
+# k3s nodes: level-triggered, so every run re-checks every exported volume and an interrupted grow finishes on the
+# next run. democratic-csi node-manual advertises no expansion; this is the only thing that grows a mounted filesystem.
+- name: List PersistentVolumes
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ hostvars[groups['masters'][0]].storage_vm_kubeconfig_path }}"
+    kind: PersistentVolume
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: storage_vm_pvs
+
+- name: List VolumeAttachments
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ hostvars[groups['masters'][0]].storage_vm_kubeconfig_path }}"
+    api_version: storage.k8s.io/v1
+    kind: VolumeAttachment
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: storage_vm_vas
+
+# Two tasks: set_fact templates every argument before setting any, so one task cannot read a key it sets.
+- name: Find the PersistentVolumes attached to this node
+  ansible.builtin.set_fact:
+    storage_vm_attached_pvs: >-
+      {{ storage_vm_vas.resources | selectattr('spec.attacher', 'equalto', storage_vm_csi_driver)
+         | selectattr('spec.nodeName', 'equalto', inventory_hostname)
+         | selectattr('spec.source.persistentVolumeName', 'defined')
+         | map(attribute='spec.source.persistentVolumeName') | list }}
+
+- name: Find the volume IDs attached to this node
+  ansible.builtin.set_fact:
+    storage_vm_attached_ids: >-
+      {{ storage_vm_pvs.resources | selectattr('metadata.name', 'in', storage_vm_attached_pvs)
+         | selectattr('spec.csi', 'defined') | selectattr('spec.csi.driver', 'equalto', storage_vm_csi_driver)
+         | map(attribute='spec.csi.volumeHandle') | list }}
+
+- name: Find the exported volumes attached to this node
+  ansible.builtin.set_fact:
+    storage_vm_grow_volumes: >-
+      {{ hostvars[groups['storage'][0]].storage_vm_exported | selectattr('id', 'in', storage_vm_attached_ids) | list }}
+
+# A hung or powered-off worker keeps its VolumeAttachments. Failing on it kept the lock (D31) through exactly those
+# incidents, so skip it once here and report its ids; growth is level-triggered, so the next run retries them.
+# wait_for_connection reports a dead connection as a failed task, not as unreachable: ignore_unreachable still trips
+# any_errors_fatal and ends the play (checked 2026-11-23 with ansible-core 2.21.6).
+- name: Check that this node answers
+  ansible.builtin.wait_for_connection:
+    timeout: 30
+  register: storage_vm_node_answers
+  ignore_errors: true
+  when: storage_vm_grow_volumes | length > 0
+
+- name: Report the volumes not grown on an unreachable node
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: {{ inventory_hostname }} is unreachable; not grown: {{ storage_vm_grow_volumes | map(attribute='id') |
+      join(', ') }}. The next run retries.
+  when: storage_vm_node_answers is failed
+
+- name: Grow each attached exported volume
+  ansible.builtin.include_tasks: grow-volume.yml
+  loop: "{{ storage_vm_grow_volumes }}"
+  when: storage_vm_node_answers is not failed
+  loop_control:
+    loop_var: storage_vm_volume
+    label: "{{ storage_vm_volume.id }}"
+  vars:
+    storage_vm_portal: "{{ hostvars[groups['storage'][0]].storage_vm_portal }}"
+    storage_vm_iqn: "{{ storage_vm_volume.iqn }}"
+    storage_vm_device: "/dev/disk/by-path/ip-{{ storage_vm_portal }}-iscsi-{{ storage_vm_iqn }}-lun-0"
+    # iscsiadm -m session: "tcp: [<sid>] <portal>,<tpgt> <iqn> (non-flash)"
+    storage_vm_sid: "{{ (storage_vm_session_lines[0] | regex_search('^[a-z]+: .([0-9]+). ', '\\1'))[0] }}"

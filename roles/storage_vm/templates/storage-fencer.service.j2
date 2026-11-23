@@ -1,0 +1,18 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Storage fencer: cut hung workers off at the storage side (ADR 0017)
+After=network-online.target nftables.service rtslib-fb-targetctl.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/sbin/storage-fencer run
+# A restart never signals an abandoned (D-state) LVM child (ADR 0017 F11).
+KillMode=process
+# A fencer that stops is a fencer that never fences; StorageFencerBlind alerts on a stale textfile.
+Restart=always
+RestartSec=5
+StateDirectory=storage-fencer
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

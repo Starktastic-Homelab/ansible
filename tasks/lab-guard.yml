@@ -1,0 +1,13 @@
+---
+# Imported by the first play of k3s.yml, storage.yml and storage-expiry.yml. A lab inventory sets lab: true; a lab
+# run passes its overrides with -e @<lab>/vars.yml, and if it forgot them it would inherit the production VIP.
+- name: Refuse a lab run aimed at production
+  ansible.builtin.assert:
+    that:
+      - vip_address != production_vip_address
+      - vip_address in (groups['masters'] | default([]) | map('extract', hostvars, 'ansible_host') | list)
+    fail_msg: >-
+      A lab inventory ({{ inventory_file }}) needs a vip_address that is not {{ production_vip_address }} and is the
+      ansible_host of a host in masters; pass -e @<lab>/vars.yml.
+  # lab: true is the marker; the path also catches a stale lab inventory that lost it.
+  when: (lab | default(false) | bool) or '/lab-storage/' in (inventory_file | default('', true))

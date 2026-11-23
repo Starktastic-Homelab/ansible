@@ -43,3 +43,8 @@ k3s_common_leader_elect_args:
   - leader-elect-lease-duration={{ k3s_common_leader_elect_lease_duration }}
   - leader-elect-renew-deadline={{ k3s_common_leader_elect_renew_deadline }}
   - leader-elect-retry-period={{ k3s_common_leader_elect_retry_period }}
+
+# Masters only. Without this, kube-controller-manager force-detaches a volume
+# 6 minutes after its node goes unready, which on shared iSCSI storage lets a
+# second node attach while the first may still be writing.
+k3s_common_kube_controller_manager_args: "{{ k3s_common_leader_elect_args + ['disable-force-detach-on-timeout=true'] }}"

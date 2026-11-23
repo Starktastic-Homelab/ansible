@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+# Appended to the vendor lines (no empty reset line), so the vendor nft -f still loads the ruleset first.
+[Service]
+ExecReload=/usr/local/sbin/storage-fencer restore-set
+ExecStartPost=-/usr/local/sbin/storage-fencer restore-set

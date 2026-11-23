@@ -40,6 +40,8 @@ class BootstrapTests(unittest.TestCase):
                 for component in ("kube-controller-manager", "kube-cloud-controller-manager", "kube-scheduler"):
                     expected += component + '-arg:\n  - "leader-elect-lease-duration=60s"\n'
                     expected += '  - "leader-elect-renew-deadline=45s"\n  - "leader-elect-retry-period=10s"\n'
+                    if component == "kube-controller-manager":
+                        expected += '  - "disable-force-detach-on-timeout=true"\n'
             with self.subTest(groups=groups):
                 self.assertEqual(self.render_config(self.variables(group_names=groups)), expected)
 

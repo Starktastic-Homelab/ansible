@@ -143,6 +143,7 @@ all uncertain effects may the original owner release. Losing the runner disk or
 its identity blocks maintenance until the shared lock domain is recovered and
 all possible writers/infrastructure jobs have been reconciled. Do not provision
 a second independent runner marker to bypass a held operation.
+Step by step, with `scripts/maintenance_lock_op.sh`: [maintenance-lock-release.md](maintenance-lock-release.md).
 
 The retired iSCSI status/preflight executor, request dispatcher/installer and
 user-service template are removed. `maintenance-runner.yml` retains the VM300

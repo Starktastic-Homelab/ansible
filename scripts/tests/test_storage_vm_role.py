@@ -131,10 +131,10 @@ class LabGuardTests(unittest.TestCase):
     def guard(self):
         return load(ROOT / 'tasks/lab-guard.yml')[0]
 
-    def guard_passes(self, lab, vip, masters):
+    def guard_passes(self, lab, vip, masters, inventory_file='/any/inventory.yml'):
         t = self.guard()
         hostvars = {h: {'ansible_host': a} for h, a in masters.items()}
-        variables = {'inventory_file': '/any/inventory.yml', 'vip_address': vip, 'hostvars': hostvars,
+        variables = {'inventory_file': inventory_file, 'vip_address': vip, 'hostvars': hostvars,
                      'production_vip_address': GROUP_ALL['production_vip_address'],
                      'groups': {'masters': list(masters), 'all': list(masters)}}
         if lab is not None:
@@ -160,6 +160,12 @@ class LabGuardTests(unittest.TestCase):
         self.assertTrue(self.guard_passes(True, '10.9.9.181', {'lab-server': '10.9.9.181'}))
         self.assertIsNone(self.guard_passes(None, prod_vip, {'m': '10.9.9.11'}))  # production: lab unset
         self.assertIsNone(self.guard_passes(False, prod_vip, {'m': '10.9.9.11'}))
+        self.assertIsNone(self.guard_passes(None, prod_vip, {'m': '10.9.9.11'}, inventory_file=None))
+        # A stale lab inventory that lost lab: true is still guarded by its /lab-storage/ path.
+        lab_path = '/maintenance/lab-storage/inventory.yml'
+        self.assertIs(self.guard_passes(None, prod_vip, {'lab-server': '10.9.9.181'}, lab_path), False)
+        self.assertIs(self.guard_passes(False, prod_vip, {'lab-server': '10.9.9.181'}, lab_path), False)
+        self.assertIs(self.guard_passes(None, '10.9.9.181', {'lab-server': '10.9.9.181'}, lab_path), True)
 
 
 class RoleTests(unittest.TestCase):

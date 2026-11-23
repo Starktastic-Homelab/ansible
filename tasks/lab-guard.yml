@@ -9,4 +9,5 @@
     fail_msg: >-
       A lab inventory ({{ inventory_file }}) needs a vip_address that is not {{ production_vip_address }} and is the
       ansible_host of a host in masters; pass -e @<lab>/vars.yml.
-  when: lab | default(false) | bool
+  # lab: true is the marker; the path also catches a stale lab inventory that lost it.
+  when: (lab | default(false) | bool) or '/lab-storage/' in (inventory_file | default('', true))

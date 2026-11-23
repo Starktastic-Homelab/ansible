@@ -157,5 +157,163 @@ class ReadyTests(unittest.TestCase):
                          'ready=true\n')
 
 
+class WorkflowTests(unittest.TestCase):
+    def test_every_step_after_ready_is_gated(self):
+        for name in NAMES:
+            ss = steps(name)
+            ready = next(i for i, s in enumerate(ss) if s.get('id') == 'ready')
+            self.assertEqual(ss[ready]['run'], 'python3 scripts/storage_ready.py', name)
+            outputs = {('ready', 'ready'): 'false'}  # a skipped step leaves its outputs unset
+            for s in ss[ready + 1:-1]:
+                with self.subTest(workflow=name, step=s['name']):
+                    self.assertIn('if', s)
+                    self.assertFalse(evaluate(s['if'], outputs))
+            self.assertEqual(ss[-1]['name'], 'Remove private controller credentials', name)
+
+    def test_dry_run_before_lock_then_apply_then_release(self):
+        ss = steps('storage.yml')
+        order = [step('storage.yml', id='ready'), playbook_step('storage.yml', 'storage-dry-run.yml'),
+                 step('storage.yml', id='lock'), playbook_step('storage.yml', 'storage.yml'),
+                 step('storage.yml', name='Release the lock after success')]
+        self.assertEqual([ss.index(s) for s in order], sorted(ss.index(s) for s in order))
+        self.assertNotIn('maintenance_lock.py', order[1]['run'])
+        self.assertIn(HELPER + ' acquire --operation ansible-storage --github-env', order[2]['run'])
+        self.assertEqual(order[3]['run'].splitlines()[0], HELPER + ' verify')
+        expiry = steps('storage-expiry.yml')
+        self.assertFalse(any('storage-dry-run.yml' in s.get('run', '') for s in expiry))
+        self.assertIn(HELPER + ' acquire --operation ansible-storage-expiry --github-env',
+                      step('storage-expiry.yml', id='lock')['run'])
+        self.assertEqual(playbook_step('storage-expiry.yml', 'storage-expiry.yml')['run'].splitlines()[0],
+                         HELPER + ' verify')
+
+    def test_lock_held_exits_zero(self):
+        for name in NAMES:
+            with self.subTest(workflow=name), tempfile.TemporaryDirectory() as d:
+                f = Fixture(d)
+                record = f.lock / 'operation.json'
+                record.write_text('{"held": "by another run"}\n')
+                got = f.run(step(name, id='lock'))
+                self.assertEqual(got.returncode, 0, got.stderr)
+                self.assertRegex(got.stdout, r'(?m)^::warning::.*held')
+                self.assertEqual(f.outputs(), {'acquired': 'false'})
+                self.assertEqual(record.read_text(), '{"held": "by another run"}\n')
+                record.unlink()
+                (f.d / 'output').unlink()
+                got = f.run(step(name, id='lock'))
+                self.assertEqual(got.returncode, 0, got.stderr)
+                self.assertEqual(f.outputs(), {'acquired': 'true'})
+                self.assertIn('MAINTENANCE_NONCE=', (f.d / 'env').read_text())
+                self.assertTrue(record.exists())
+
+    def test_held_lock_skips_before_dry_run(self):
+        held = step('storage.yml', name='Skip while another maintenance operation runs')
+        ss = steps('storage.yml')
+        dry = playbook_step('storage.yml', 'storage-dry-run.yml')
+        self.assertEqual(held['id'], 'held')
+        self.assertLess(ss.index(held), ss.index(dry))
+        with tempfile.TemporaryDirectory() as d:
+            f = Fixture(d)
+            got = f.run(held)
+            self.assertEqual((got.returncode, f.outputs().get('held')), (0, 'false'), got.stderr)
+            (f.lock / 'operation.json').write_text('{}\n')
+            (f.d / 'output').unlink()
+            got = f.run(held)
+            self.assertEqual((got.returncode, f.outputs()), (0, {'held': 'true'}), got.stderr)
+            self.assertRegex(got.stdout, r'(?m)^::warning::')
+        ready = {('ready', 'ready'): 'true'}
+        self.assertTrue(evaluate(dry['if'], {**ready, ('held', 'held'): 'false'}))
+        self.assertFalse(evaluate(dry['if'], {**ready, ('held', 'held'): 'true'}))
+        self.assertFalse(evaluate(step('storage.yml', id='lock')['if'], {**ready, ('held', 'held'): 'true'}))
+
+    def test_release_only_after_success(self):
+        for name in NAMES:
+            release = step(name, name='Release the lock after success')
+            self.assertEqual(release['if'], "steps.lock.outputs.acquired == 'true'", name)
+            self.assertEqual(release['run'], HELPER + ' release', name)
+            reconcile = playbook_step(name, name)
+            for gate in ('always()', 'failure()', 'cancelled()'):
+                self.assertNotIn(gate, reconcile['if'] + release['if'], name)
+            with self.subTest(workflow=name), tempfile.TemporaryDirectory() as d:
+                f = Fixture(d)
+                self.assertNotEqual(f.run(reconcile).returncode, 0)  # no lock held: verify refuses
+                self.assertEqual(f.run(step(name, id='lock')).returncode, 0)
+                f.take_nonce()
+                f.env['FIXTURE_EXIT'] = '1'
+                self.assertNotEqual(f.run(reconcile).returncode, 0)
+                self.assertTrue((f.lock / 'operation.json').exists())
+                f.env['FIXTURE_EXIT'] = '0'
+                self.assertEqual(f.run(reconcile).returncode, 0)
+                self.assertEqual(f.run(release).returncode, 0)
+                self.assertFalse((f.lock / 'operation.json').exists())
+
+    def test_no_sha_from_payload(self):
+        for name in NAMES:
+            text = (WORKFLOWS / name).read_text()
+            self.assertNotIn('client_payload', text, name)
+            self.assertNotIn('storage_vm_inventory_branch', text, name)
+            for s in steps(name):
+                for line in s.get('run', '').replace('\\\n', ' ').splitlines():
+                    if 'ansible-playbook' in line:
+                        self.assertNotRegex(line, r'\s(-e|--extra-vars)(\s|=)', name)
+
+    def test_triggers(self):
+        on = workflow('storage.yml')[True]
+        self.assertEqual(set(on), {'repository_dispatch', 'workflow_dispatch', 'schedule', 'push'})
+        self.assertEqual(on['repository_dispatch']['types'], ['storage-changed'])
+        self.assertEqual(on['schedule'], [{'cron': '5 * * * *'}])
+        self.assertEqual(on['push']['branches'], ['main'])
+        self.assertEqual(on['push']['paths'], ['group_vars/storage/**', 'roles/storage_vm/**', 'storage-dry-run.yml',
+                                               'storage-play-*.yml', 'storage.yml'])
+        on = workflow('storage-expiry.yml')[True]
+        self.assertEqual(set(on), {'schedule', 'workflow_dispatch'})
+        self.assertEqual(on['schedule'], [{'cron': '5 10 * * *'}])
+        groups = set()
+        for name, group in zip(NAMES, ('storage-reconcile', 'storage-expiry')):
+            doc = workflow(name)
+            self.assertEqual(doc['concurrency'], {'group': group, 'cancel-in-progress': False}, name)
+            job = doc['jobs']['reconcile']
+            self.assertIsInstance(job['timeout-minutes'], int, name)
+            self.assertEqual(job['runs-on'], 'self-hosted', name)
+            self.assertIn('/var/lib/homelab-maintenance:/maintenance', job['container']['volumes'], name)
+            groups.add(group)
+        self.assertEqual(len(groups), 2)
+
+    def test_lock_helper_pinned_like_deploy(self):
+        def ref(doc, job):
+            return next(s['with']['ref'] for s in doc['jobs'][job]['steps']
+                        if s.get('with', {}).get('path') == 'maintenance-helper')
+        deploy = workflow('deploy.yml')
+        want = ref(deploy, 'provision')
+        self.assertRegex(want, r'^[0-9a-f]{40}$')
+        for name in NAMES:
+            self.assertEqual(ref(workflow(name), 'reconcile'), want, name)
+            job = workflow(name)['jobs']['reconcile']
+            self.assertEqual(job['env']['HOMELAB_RUNNER_INSTANCE'], deploy['jobs']['provision']['env']['HOMELAB_RUNNER_INSTANCE'])
+        self.assertEqual(ref(workflow('validate.yml'), 'lint'), want)
+
+    def test_pinned_acquire_repo_verify_compatible(self):
+        pinned = load_helper(pinned_helper(), 'pinned_lock')
+        repo = load_helper(ROOT / 'scripts/maintenance_lock.py', 'repo_lock')
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, HOMELAB_RUNNER_INSTANCE='fixture'):
+            root = Path(d)
+            (root / 'runner-instance').write_text('fixture')
+            nonce = pinned.acquire(root, 'ansible-storage', 'ansible/test/1')
+            repo.verify(root, 'ansible/test/1', nonce)
+            with self.assertRaises(PermissionError):
+                repo.verify(root, 'ansible/test/1', '0' * 64)
+            pinned.release(root, 'ansible/test/1', nonce)
+            self.assertFalse((root / 'operation.json').exists())
+
+    def test_deploy_ignores_storage_only_paths(self):
+        ignored = workflow('deploy.yml')[True]['push']['paths-ignore']
+        for path in ('roles/storage_vm/**', 'storage.yml', 'storage-expiry.yml', 'storage-dry-run.yml',
+                     'storage-play-*.yml', 'group_vars/storage/**', '.github/workflows/storage.yml',
+                     '.github/workflows/storage-expiry.yml', 'scripts/storage_ready.py',
+                     'scripts/tests/test_storage_workflows.py'):
+            self.assertIn(path, ignored)
+        for path in ('roles/k3s_common/**', 'k3s.yml', 'tasks/lab-guard.yml'):
+            self.assertNotIn(path, ignored)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -1,0 +1,100 @@
+name: Expire removed storage volumes
+
+# Daily: delete removed volumes past quarantine (ADR 0017). Skip until configured, try the lock once, expire under it,
+# release only after success. A failed run keeps the lock (D31). 10:05 UTC is outside every backup window.
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: '5 10 * * *'
+
+concurrency:
+  group: storage-expiry
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Expire removed volumes
+    runs-on: self-hosted
+    timeout-minutes: 30
+    container:
+      # Match deploy.yml; Ansible 2.21 fails to import under Python 3.15.
+      image: python:3.14-trixie
+      volumes:
+        - /var/lib/homelab-maintenance:/maintenance
+    env:
+      HOMELAB_RUNNER_INSTANCE: cc1aeeb7-4827-466c-9d4b-5dc6c881f193
+      MAINTENANCE_OWNER: ${{ github.repository }}/${{ github.run_id }}/${{ github.run_attempt }}
+      PROXMOX_URL: ${{ secrets.PROXMOX_URL }}
+      PROXMOX_USER: ${{ secrets.PROXMOX_USER }}
+      PROXMOX_TOKEN_ID: ${{ secrets.PROXMOX_TOKEN_ID }}
+      PROXMOX_TOKEN_SECRET: ${{ secrets.PROXMOX_TOKEN_SECRET }}
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Checkout reviewed maintenance helper
+        uses: actions/checkout@v7
+        with:
+          repository: Starktastic-Homelab/ansible
+          ref: 887269798650e88fed791bb4f22a47bf50ad17be
+          path: maintenance-helper
+          persist-credentials: false
+
+      - name: Cache Pip Packages
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install Ansible and requirements
+        run: pip install -r requirements.txt
+
+      - name: Install Ansible collections
+        run: ansible-galaxy collection install -r requirements.yml --force
+
+      - name: Prepare private connection credentials
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+        run: |
+          umask 077
+          printf '%s\n' "$SSH_PRIVATE_KEY" > private_key.pem
+          printf '%s\n' "$ANSIBLE_VAULT_PASSWORD" > .vault_pass
+
+      - name: Check that the storage VM is configured
+        id: ready
+        run: python3 scripts/storage_ready.py
+
+      # The pinned helper's acquire fails on a held lock, so check first: a lock taken in between fails the run.
+      - name: Try the maintenance lock once
+        id: lock
+        if: steps.ready.outputs.ready == 'true'
+        run: |
+          if test -e /maintenance/operation.json; then
+            echo '::warning::Maintenance lock is held; skipping, the next daily run retries'
+            echo 'acquired=false' >> "$GITHUB_OUTPUT"
+          else
+            python3 maintenance-helper/scripts/maintenance_lock.py acquire --operation ansible-storage-expiry --github-env
+            echo 'acquired=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Expire under the lock
+        if: steps.lock.outputs.acquired == 'true'
+        run: |
+          python3 maintenance-helper/scripts/maintenance_lock.py verify
+          ansible-playbook -i inventory/proxmox.yml \
+            --vault-password-file .vault_pass \
+            --private-key private_key.pem \
+            storage-expiry.yml
+
+      # No always(): a failed run keeps the lock for a human to read the log (D31, as deploy.yml).
+      - name: Release the lock after success
+        if: steps.lock.outputs.acquired == 'true'
+        run: python3 maintenance-helper/scripts/maintenance_lock.py release
+
+      - name: Remove private controller credentials
+        if: always()
+        run: rm -f .vault_pass private_key.pem

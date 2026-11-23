@@ -27,6 +27,17 @@ on:
       - 'proxmox-storage-bridge.yml'
       - '.github/workflows/storage-bridge.yml'
       - 'scripts/tests/test_proxmox_storage_bridge.py'
+      # storage.yml runs these; k3s.yml has no storage play.
+      - 'roles/storage_vm/**'
+      - 'storage.yml'
+      - 'storage-expiry.yml'
+      - 'storage-dry-run.yml'
+      - 'storage-play-*.yml'
+      - 'group_vars/storage/**'
+      - '.github/workflows/storage.yml'
+      - '.github/workflows/storage-expiry.yml'
+      - 'scripts/storage_ready.py'
+      - 'scripts/tests/test_storage_workflows.py'
 
 # Serialize deploys: never cancel an in-progress run (a deploy interrupted
 # mid `helm upgrade` leaves the release in a pending-* state). Queue instead.

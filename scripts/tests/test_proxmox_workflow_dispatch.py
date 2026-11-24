@@ -187,6 +187,22 @@ class WorkflowDispatchTests(unittest.TestCase):
         self.assertLess(read, guard)
         self.assertLess(guard, header)
 
+    def test_vaulted_files_are_prettier_ignored(self):
+        # format.yml rewrites every *.yml on a PR branch; Prettier folding ciphertext lines breaks a vault file.
+        import subprocess
+        tracked = subprocess.run(['git', 'ls-files', '-z'], cwd=ROOT, capture_output=True, check=True).stdout
+        vaulted = []
+        for name in tracked.decode().split('\0'):
+            path = ROOT / name
+            if name and path.is_file() and not path.is_symlink():
+                with open(path, 'rb') as stream:
+                    if stream.read(14) == b'$ANSIBLE_VAULT':  # the header only, never the ciphertext
+                        vaulted.append(name)
+        self.assertIn('group_vars/proxmox_hosts/vault_workflow_dispatch.yml', vaulted)
+        ignored = (ROOT / '.prettierignore').read_text().splitlines()
+        for name in vaulted:
+            self.assertIn(name, ignored)
+
     def test_backup_excludes_dispatch(self):
         # The token is restorable from the vault, so it never goes into the off-site snapshots.
         # The defaults use !unsafe, which safe_load cannot read: check the list line in the excludes block.

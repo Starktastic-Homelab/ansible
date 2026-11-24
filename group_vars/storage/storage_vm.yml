@@ -19,3 +19,8 @@ storage_vm_bridge_address: 10.99.2.10
 # The LAN the storage VM sits on; the runner VM300 (10.9.9.10) and the VIP are on it.
 storage_vm_ssh_sources:
   - 10.9.9.0/24
+# The two data disks by their terraform serials (storage/terraform.tfvars data_disks): retained is backed up, regen is
+# excluded. Mapped through the QEMU slot on VM 101 by two readers (migration Task 3.5 Step 1, 2026-11-24).
+storage_vm_pv_devices:
+  retained: /dev/disk/by-id/virtio-retained
+  regen: /dev/disk/by-id/virtio-regen

@@ -276,11 +276,14 @@ class RoleTests(unittest.TestCase):
         self.assertEqual(v['storage_vm_bridge_address'], '10.99.2.10')
         self.assertEqual(v['storage_vm_bridge_subnet'], '10.99.2.0/24')
         self.assertEqual(v['storage_vm_ssh_sources'], ['10.9.9.0/24'])
-        self.assertNotIn('storage_vm_pv_devices', raw)  # the file as loaded; set in Task 3.5
+        # Serials from terraform storage/terraform.tfvars; mapping read on VM 101 by two readers (Task 3.5 Step 1).
+        self.assertEqual(v['storage_vm_pv_devices'], {'retained': '/dev/disk/by-id/virtio-retained',
+                                                     'regen': '/dev/disk/by-id/virtio-regen'})
         tasks = role_tasks('assert')
         first = module(tasks[0], 'assert')['that']
         bridge = module(by_name(tasks, 'Require distinct worker bridge addresses inside the bridge subnet'), 'assert')['that']
-        self.assertTrue(holds(first + bridge, **v))
+        pv = module(by_name(tasks, 'Require one distinct PV path per VG'), 'assert')['that']
+        self.assertTrue(holds(first + bridge + pv, **v))
         # The one-NIC cohort fixture: the storage NIC is ipconfig1. Selection is by subnet, never by index.
         _, one = self.production_vars({'kube-worker-01': {0: '10.9.9.51/24', 1: '10.99.2.21/24'}})
         self.assertEqual(one['storage_vm_workers'], [{'name': 'kube-worker-01', 'bridge_address': '10.99.2.21'}])

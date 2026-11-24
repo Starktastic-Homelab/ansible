@@ -1,0 +1,8 @@
+# Managed by ansible (proxmox_zfs_trim).
+[Unit]
+Description=Start a full trim of the opted-in ZFS pools
+Documentation=man:zpool-trim(8)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/zfs-linux/trim

@@ -27,6 +27,10 @@ on:
       - 'proxmox-storage-bridge.yml'
       - '.github/workflows/storage-bridge.yml'
       - 'scripts/tests/test_proxmox_storage_bridge.py'
+      - 'roles/proxmox_zfs_trim/**'
+      - 'proxmox-zfs-trim.yml'
+      - '.github/workflows/proxmox-zfs-trim.yml'
+      - 'scripts/tests/test_proxmox_zfs_trim.py'
       # storage.yml runs these; k3s.yml has no storage play.
       - 'roles/storage_vm/**'
       - 'storage.yml'

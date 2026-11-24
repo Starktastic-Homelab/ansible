@@ -1,0 +1,10 @@
+---
+# Manual: ansible-playbook -i inventory/hosts.yml proxmox-zfs-trim.yml
+- name: Install the weekly ZFS trim timer
+  hosts: proxmox_hosts
+  become: true
+  gather_facts: false
+  tags:
+    - proxmox_zfs_trim
+  roles:
+    - role: proxmox_zfs_trim

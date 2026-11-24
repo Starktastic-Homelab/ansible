@@ -1,0 +1,55 @@
+name: Install the weekly ZFS trim timer
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "roles/proxmox_zfs_trim/**"
+      - "proxmox-zfs-trim.yml"
+      - "group_vars/proxmox_hosts/zfs_trim.yml"
+
+  workflow_dispatch:
+
+jobs:
+  zfs-trim:
+    name: Install the weekly ZFS trim timer on Proxmox
+    runs-on: self-hosted
+    container:
+      # Match deploy.yml; Ansible 2.21 fails to import under Python 3.15.
+      image: python:3.14-trixie
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Cache Pip Packages
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install Ansible and requirements
+        run: pip install -r requirements.txt
+
+      - name: Install sshpass for password auth
+        run: apt-get update && apt-get install -y sshpass
+
+      - name: Prepare private connection credentials
+        env:
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+        run: |
+          umask 077
+          printf '%s\n' "$ANSIBLE_VAULT_PASSWORD" > .vault_pass
+
+      - name: Run ZFS trim playbook
+        run: |
+          ansible-playbook -i inventory/hosts.yml \
+            --vault-password-file .vault_pass \
+            proxmox-zfs-trim.yml
+
+      - name: Remove private controller credentials
+        if: always()
+        run: rm -f .vault_pass

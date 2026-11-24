@@ -9,7 +9,7 @@ packer → terraform → ansible → apps; the system overview is `../CLAUDE.md`
 - **Every push to `main` is a full deploy** (`deploy.yml` → `k3s.yml`, ArgoCD helm upgrade, rewrite of
   org secret `KUBECONFIG_RAW`). Path-ignored: `README.md`, `renovate.json`, `group_vars/proxmox_hosts/**`,
   `roles/ser2net/**`, `ser2net.yml`, the `proxmox_guest_startup` role, playbook, workflow and test, the `proxmox_backup`
-  role, playbook, workflow and test. Docs-only commits (including this file) need `[skip ci]`.
+  role, playbook, workflow and test, the `proxmox_zfs_trim` role, playbook, workflow and test. Docs-only commits (including this file) need `[skip ci]`.
 - `deploy.yml` also runs on Terraform's `repository_dispatch: infrastructure-changed`. Deploys queue and
   are never cancelled, since an interrupted `helm upgrade` leaves a pending release.
 - **A change to `group_vars/proxmox_hosts/i915_sriov.yml` on `main` reboots the Proxmox host**
@@ -18,7 +18,8 @@ packer → terraform → ansible → apps; the system overview is `../CLAUDE.md`
   (`proxmox-backup.yml`); pushing the guest startup role, playbook or `group_vars/proxmox_hosts/guest_startup.yml`
   sets guest boot order (`proxmox-guest-startup.yml`, effective next host boot), the host's reboot-on-crash
   sysctl and SPL settings (live at once) and intel-microcode. kdump, KFENCE, rasdaemon and KSM off were removed
-  from the role on 2026-11-16 and reverted on the host by hand (no tasks undo them).
+  from the role on 2026-11-16 and reverted on the host by hand (no tasks undo them). Pushing the `proxmox_zfs_trim`
+  role, playbook or `group_vars/proxmox_hosts/zfs_trim.yml` installs the weekly trim timer (`proxmox-zfs-trim.yml`).
   `format.yml` pushes Prettier commits to PR branches.
 - `deploy.yml` does not path-ignore this file: keep CLAUDE.md edits out of PRs that must deploy a role, since
   a plain merge would also run the full K3s deploy and a `[skip ci]` merge would skip the role's own workflow.

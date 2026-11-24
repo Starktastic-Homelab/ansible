@@ -1,0 +1,135 @@
+---
+- name: Refuse an unsafe workflow entry, input or repository
+  ansible.builtin.assert:
+    that:
+      - "item.key is match('^[a-z0-9][a-z0-9._-]*\\.ya?ml$')"
+      - item.value is mapping
+      - item.value.on_calendar is string
+      - "'\n' not in item.value.on_calendar"
+      - item.value.inputs | default({}) is mapping
+      # The timer only ever sends these inputs; approvals and lock owners stay with humans and runbooks.
+      - "(item.value.inputs | default({})).keys() | difference(['backstop']) | length == 0"
+      - (item.value.inputs | default({})).values() | reject('string') | list | length == 0
+      - "(item.value.inputs | default({})).values() | select('search', '\n') | list | length == 0"
+      - "proxmox_workflow_dispatch_repo is match('^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$')"
+      - "proxmox_workflow_dispatch_api is match('^https://[A-Za-z0-9.-]+(/[A-Za-z0-9._/-]*)?$')"
+    fail_msg: "{{ item.key }}: a workflow file name, a one-line on_calendar, and string inputs from the allowlist only"
+  loop: "{{ proxmox_workflow_dispatch_workflows | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Refuse without the dispatch token
+  ansible.builtin.assert:
+    that:
+      - proxmox_workflow_dispatch_token is defined
+      - proxmox_workflow_dispatch_token is string
+      - proxmox_workflow_dispatch_token | length > 0
+      - "'\n' not in proxmox_workflow_dispatch_token"
+    fail_msg: Set vault_github_dispatch_token in group_vars/proxmox_hosts/vault_workflow_dispatch.yml
+  no_log: true
+
+- name: Check each schedule with systemd
+  ansible.builtin.command:
+    argv: [systemd-analyze, calendar, "{{ item.value.on_calendar }}"]
+  loop: "{{ proxmox_workflow_dispatch_workflows | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  changed_when: false
+
+- name: Create the dispatch directory
+  ansible.builtin.file:
+    path: /etc/homelab-dispatch
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install the token header
+  ansible.builtin.copy:
+    content: "Authorization: Bearer {{ proxmox_workflow_dispatch_token }}\n"
+    dest: /etc/homelab-dispatch/github.header
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Install the dispatch script
+  ansible.builtin.template:
+    src: homelab-dispatch.sh.j2
+    dest: /usr/local/sbin/homelab-dispatch
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the dispatch service
+  ansible.builtin.template:
+    src: homelab-dispatch@.service.j2
+    dest: /etc/systemd/system/homelab-dispatch@.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install each request body
+  ansible.builtin.copy:
+    content: "{{ {'ref': 'main', 'inputs': item.value.inputs | default({})} | to_json }}\n"
+    dest: /etc/homelab-dispatch/{{ item.key }}.json
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ proxmox_workflow_dispatch_workflows | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Install each timer
+  ansible.builtin.template:
+    src: homelab-dispatch.timer.j2
+    dest: /etc/systemd/system/homelab-dispatch@{{ item.key }}.timer
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ proxmox_workflow_dispatch_workflows | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Find installed timers
+  ansible.builtin.find:
+    paths: /etc/systemd/system
+    patterns: homelab-dispatch@*.timer
+    file_type: file
+  register: proxmox_workflow_dispatch_installed
+
+- name: Name the timers no longer in the map
+  ansible.builtin.set_fact:
+    proxmox_workflow_dispatch_stale: >-
+      {{ proxmox_workflow_dispatch_installed.files | map(attribute='path') | map('basename')
+         | map('regex_replace', '^homelab-dispatch@(.*)\.timer$', '\1') | list
+         | difference(proxmox_workflow_dispatch_workflows.keys() | list) }}
+
+- name: Stop and disable the removed timers
+  ansible.builtin.systemd:
+    name: homelab-dispatch@{{ item }}.timer
+    enabled: false
+    state: stopped
+  loop: "{{ proxmox_workflow_dispatch_stale }}"
+
+- name: Remove the removed timers
+  ansible.builtin.file:
+    path: /etc/systemd/system/homelab-dispatch@{{ item }}.timer
+    state: absent
+  loop: "{{ proxmox_workflow_dispatch_stale }}"
+
+- name: Remove the removed request bodies
+  ansible.builtin.file:
+    path: /etc/homelab-dispatch/{{ item }}.json
+    state: absent
+  loop: "{{ proxmox_workflow_dispatch_stale }}"
+
+- name: Enable each timer
+  ansible.builtin.systemd:
+    name: homelab-dispatch@{{ item.key }}.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop: "{{ proxmox_workflow_dispatch_workflows | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"

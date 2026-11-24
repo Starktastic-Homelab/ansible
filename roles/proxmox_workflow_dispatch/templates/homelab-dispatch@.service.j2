@@ -1,0 +1,10 @@
+# Managed by ansible (proxmox_workflow_dispatch).
+[Unit]
+Description=Dispatch workflow %i of {{ proxmox_workflow_dispatch_repo }}
+Documentation=https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/homelab-dispatch %i

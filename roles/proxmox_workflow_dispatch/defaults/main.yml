@@ -1,0 +1,7 @@
+---
+# Timers on the Proxmox host that send workflow_dispatch, for jobs GitHub's scheduler must not be trusted with.
+# Each entry: <workflow file>: {on_calendar: <systemd OnCalendar>, inputs: {<name>: <string>}}. An entry removed here
+# has its timer stopped and removed on the next run. The token comes from the vault (group_vars/proxmox_hosts).
+proxmox_workflow_dispatch_repo: Starktastic-Homelab/ansible
+proxmox_workflow_dispatch_api: https://api.github.com
+proxmox_workflow_dispatch_workflows: {}

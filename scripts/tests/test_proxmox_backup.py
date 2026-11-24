@@ -330,8 +330,9 @@ class ResticTests(unittest.TestCase):
         lines = [l for l in render('excludes.txt.j2').splitlines() if l.strip() and not l.startswith('#')]
         images = sorted(f'/srv/backup-src/k3s-block/images/9999/vm-9999-{n}.raw'
                         for n in ('prometheus', 'loki', 'tempo', 'alertmanager', 'karakeep-meilisearch'))
+        # /etc/homelab-dispatch holds the dispatch token (roles/proxmox_workflow_dispatch), restorable from the vault.
         self.assertEqual(sorted(lines), sorted(images + ['/srv/backup-src/immich/thumbs',
-                                                         '/srv/backup-src/immich/encoded-video']))
+                                                         '/srv/backup-src/immich/encoded-video', '/etc/homelab-dispatch']))
 
 class HostSafetyTests(unittest.TestCase):
     def test_import_unit_never_blocks_boot(self):

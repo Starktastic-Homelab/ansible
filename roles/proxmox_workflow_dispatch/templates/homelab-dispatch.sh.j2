@@ -1,0 +1,13 @@
+#!/bin/bash
+# Managed by ansible (proxmox_workflow_dispatch).
+# Dispatch one workflow of {{ proxmox_workflow_dispatch_repo }} on main. curl never retries (a POST can land twice);
+# the next timer firing is the retry. The credential stays in the header file, never in argv or the journal.
+set -euo pipefail
+workflow=${1:?usage: homelab-dispatch <workflow file>}
+[[ $workflow =~ ^[a-z0-9][a-z0-9._-]*\.ya?ml$ ]] || { echo "refusing workflow name: $workflow" >&2; exit 2; }
+exec curl -fsS --max-time 30 -X POST \
+  -H @/etc/homelab-dispatch/github.header \
+  -H 'Accept: application/vnd.github+json' \
+  -H 'X-GitHub-Api-Version: 2022-11-28' \
+  --data @/etc/homelab-dispatch/"$workflow".json \
+  '{{ proxmox_workflow_dispatch_api }}/repos/{{ proxmox_workflow_dispatch_repo }}/actions/workflows/'"$workflow"'/dispatches'

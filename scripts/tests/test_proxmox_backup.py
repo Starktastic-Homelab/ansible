@@ -1,4 +1,5 @@
 """Offline checks for the host-side backup: freshness refusals, dump checks, restic argv and boot-safe units."""
+import fnmatch
 import importlib.util
 import json
 import os
@@ -328,11 +329,20 @@ class ResticTests(unittest.TestCase):
     def test_excludes_cover_regenerable_images(self):
         # restic skips blank and '#' lines in an exclude file.
         lines = [l for l in render('excludes.txt.j2').splitlines() if l.strip() and not l.startswith('#')]
-        images = sorted(f'/srv/backup-src/k3s-block/images/9999/vm-9999-{n}.raw'
-                        for n in ('prometheus', 'loki', 'tempo', 'alertmanager', 'karakeep-meilisearch'))
+        images = sorted([*(f'/srv/backup-src/k3s-block/images/9999/vm-9999-{n}.raw'
+                           for n in ('prometheus', 'loki', 'tempo', 'alertmanager', 'karakeep-meilisearch')),
+                         '/srv/backup-src/k3s-block/images/9998/vm-9998-disk-1.raw'])
         # /etc/homelab-dispatch holds the dispatch token (roles/proxmox_workflow_dispatch), restorable from the vault.
         self.assertEqual(sorted(lines), sorted(images + ['/srv/backup-src/immich/thumbs',
                                                          '/srv/backup-src/immich/encoded-video', '/etc/homelab-dispatch']))
+
+    def test_retained_image_is_backed_up(self):
+        # The storage VM's regen disk (ADR 0017) is excluded beside it, so no line may match, contain or glob it.
+        retained = '/srv/backup-src/k3s-block/images/9998/vm-9998-disk-0.raw'
+        lines = [l for l in render('excludes.txt.j2').splitlines() if l.strip() and not l.startswith('#')]
+        for line in lines:
+            self.assertFalse(retained == line or retained.startswith(line.rstrip('/') + '/')
+                             or fnmatch.fnmatch(retained, line), line)
 
 class HostSafetyTests(unittest.TestCase):
     def test_import_unit_never_blocks_boot(self):

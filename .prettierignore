@@ -1,3 +1,4 @@
 .github/workflows/
 .vault_pass
 group_vars/all/secrets.yml
+group_vars/proxmox_hosts/vault_workflow_dispatch.yml

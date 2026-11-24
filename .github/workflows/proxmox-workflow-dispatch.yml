@@ -1,0 +1,56 @@
+name: Install the workflow dispatch timers
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "roles/proxmox_workflow_dispatch/**"
+      - "proxmox-workflow-dispatch.yml"
+      - "group_vars/proxmox_hosts/workflow_dispatch.yml"
+      - "group_vars/proxmox_hosts/vault_workflow_dispatch.yml"
+
+  workflow_dispatch:
+
+jobs:
+  workflow-dispatch:
+    name: Install the workflow dispatch timers on Proxmox
+    runs-on: self-hosted
+    container:
+      # Match deploy.yml; Ansible 2.21 fails to import under Python 3.15.
+      image: python:3.14-trixie
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Cache Pip Packages
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install Ansible and requirements
+        run: pip install -r requirements.txt
+
+      - name: Install sshpass for password auth
+        run: apt-get update && apt-get install -y sshpass
+
+      - name: Prepare private connection credentials
+        env:
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+        run: |
+          umask 077
+          printf '%s\n' "$ANSIBLE_VAULT_PASSWORD" > .vault_pass
+
+      - name: Run the workflow dispatch playbook
+        run: |
+          ansible-playbook -i inventory/hosts.yml \
+            --vault-password-file .vault_pass \
+            proxmox-workflow-dispatch.yml
+
+      - name: Remove private controller credentials
+        if: always()
+        run: rm -f .vault_pass

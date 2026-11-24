@@ -5,17 +5,28 @@ name: Expire removed storage volumes
 # the lock (D31), so every check that can fail runs before it. 10:05 UTC is outside every backup window.
 on:
   workflow_dispatch:
+    inputs:
+      # The pve timer (roles/proxmox_workflow_dispatch) dispatches with backstop, standing in for GitHub's scheduler,
+      # which drops most scheduled runs (D29): such a run is window-checked like a scheduled one.
+      backstop:
+        description: Run as the scheduled backstop (the pve timer); skip inside the backup windows
+        required: false
+        default: false
+        type: boolean
 
   schedule:
     - cron: '5 10 * * *'
 
 concurrency:
-  group: storage-expiry
+  # Scheduled and backstop runs replace only each other, never a pending human or runbook dispatch.
+  group: ${{ (github.event_name == 'schedule' || inputs.backstop) && 'storage-expiry-backstop' || 'storage-expiry' }}
   cancel-in-progress: false
 
 jobs:
   reconcile:
     name: Expire removed volumes
+    # Only main's code runs with these secrets: a dispatch of a stale branch is refused.
+    if: github.ref == 'refs/heads/main'
     runs-on: self-hosted
     timeout-minutes: 30
     container:
@@ -67,6 +78,8 @@ jobs:
 
       - name: Check that the storage VM is configured
         id: ready
+        env:
+          STORAGE_BACKSTOP: ${{ inputs.backstop }}
         run: python3 scripts/storage_ready.py
 
       # D31 keeps the lock on a failed run, so a master without k3s (a run between a rebuild apply and its deploy)

@@ -1,0 +1,15 @@
+---
+# Dispatch timers on pve (roles/proxmox_workflow_dispatch): GitHub's scheduler dropped almost every run of these
+# workflows' crons (D29, 2026-11-24), so pve sends the backstop runs. The crons stay as a second trigger; both kinds
+# share one concurrency group per workflow. :05 UTC matches the crons and storage_ready.py's window tests.
+proxmox_workflow_dispatch_workflows:
+  storage.yml:
+    on_calendar: "*-*-* *:05:00 UTC"
+    inputs:
+      backstop: "true"
+  storage-expiry.yml:
+    on_calendar: "*-*-* 10:05:00 UTC"
+    inputs:
+      backstop: "true"
+# A fine-grained PAT (ansible only, Actions: read and write), in the pve-only vault file beside this one.
+proxmox_workflow_dispatch_token: "{{ vault_github_dispatch_token }}"

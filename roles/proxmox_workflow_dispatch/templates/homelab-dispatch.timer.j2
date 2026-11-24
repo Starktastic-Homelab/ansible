@@ -1,0 +1,10 @@
+# Managed by ansible (proxmox_workflow_dispatch).
+[Unit]
+Description=Dispatch {{ item.key }} on a schedule
+
+[Timer]
+OnCalendar={{ item.value.on_calendar }}
+Persistent=false
+
+[Install]
+WantedBy=timers.target

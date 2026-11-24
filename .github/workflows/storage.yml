@@ -26,6 +26,13 @@ on:
         required: false
         default: ''
         type: string
+      # The pve timer (roles/proxmox_workflow_dispatch) dispatches with backstop, standing in for GitHub's scheduler,
+      # which drops most scheduled runs (D29): such a run is window-checked like a scheduled one.
+      backstop:
+        description: Run as the scheduled backstop (the pve timer); skip inside the backup windows
+        required: false
+        default: false
+        type: boolean
 
   # Sent by apps on an inventory change. The run always reconciles the branch tip, never a payload SHA.
   repository_dispatch:
@@ -48,12 +55,15 @@ on:
       - 'storage.yml'
 
 concurrency:
-  group: storage-reconcile
+  # Scheduled and backstop runs replace only each other, never a pending human or runbook dispatch.
+  group: ${{ (github.event_name == 'schedule' || inputs.backstop) && 'storage-reconcile-backstop' || 'storage-reconcile' }}
   cancel-in-progress: false
 
 jobs:
   reconcile:
     name: Reconcile the storage VM
+    # Only main's code runs with these secrets: a dispatch of a stale branch is refused.
+    if: github.ref == 'refs/heads/main'
     runs-on: self-hosted
     timeout-minutes: 30
     container:
@@ -106,6 +116,9 @@ jobs:
 
       - name: Check that the storage VM is configured
         id: ready
+        env:
+          STORAGE_BACKSTOP: ${{ inputs.backstop }}
+          STORAGE_HELD_LOCK_OWNER: ${{ inputs.held_lock_owner }}
         run: python3 scripts/storage_ready.py
 
       # The dispatch approvals for this run, validated; both playbooks read only this file (-e @), never a raw input.

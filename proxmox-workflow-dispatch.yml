@@ -1,0 +1,10 @@
+---
+# Manual: ansible-playbook -i inventory/hosts.yml proxmox-workflow-dispatch.yml
+- name: Install the workflow dispatch timers
+  hosts: proxmox_hosts
+  become: true
+  gather_facts: false
+  tags:
+    - proxmox_workflow_dispatch
+  roles:
+    - role: proxmox_workflow_dispatch

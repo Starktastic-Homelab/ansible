@@ -1,0 +1,4 @@
+---
+# rpool (SATA SSD mirror) is not NVMe-only, so Debian's default skips it; vm-pool (NVMe) needs no entry.
+proxmox_zfs_trim_pools:
+  rpool: enable

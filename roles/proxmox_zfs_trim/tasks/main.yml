@@ -1,0 +1,61 @@
+---
+# Weekly full trim through Debian's own script, which picks the pools: healthy, not already trimming, and NVMe-only
+# unless org.debian:periodic-trim says enable or disable. This role sets that property and installs the timer; it
+# never starts a trim itself.
+- name: Refuse an unsafe pool name or unknown trim policy
+  ansible.builtin.assert:
+    that:
+      - proxmox_zfs_trim_pools is mapping
+      - proxmox_zfs_trim_pools.keys() | reject('match', '^[A-Za-z0-9][A-Za-z0-9_.:-]*$') | list | length == 0
+      - proxmox_zfs_trim_pools.values() | reject('in', ['auto', 'enable', 'disable']) | list | length == 0
+    quiet: true
+
+- name: Check Debian's trim script
+  ansible.builtin.stat:
+    path: /usr/lib/zfs-linux/trim
+  register: proxmox_zfs_trim_script
+
+- name: Refuse without Debian's trim script
+  ansible.builtin.assert:
+    that:
+      - proxmox_zfs_trim_script.stat.exists
+      - proxmox_zfs_trim_script.stat.executable
+    fail_msg: /usr/lib/zfs-linux/trim is missing or not executable; the timer would do nothing.
+    quiet: true
+
+- name: Read each pool's trim policy
+  ansible.builtin.command:
+    argv: [zfs, get, -H, -o, value, org.debian:periodic-trim, "{{ item.key }}"]
+  loop: "{{ proxmox_zfs_trim_pools | dict2items }}"
+  register: proxmox_zfs_trim_current
+  changed_when: false
+
+- name: Set the trim policy where it differs
+  ansible.builtin.command:
+    argv: [zfs, set, "org.debian:periodic-trim={{ item.item.value }}", "{{ item.item.key }}"]
+  loop: "{{ proxmox_zfs_trim_current.results }}"
+  when: item.stdout != item.item.value
+  changed_when: true
+
+- name: Install the trim service
+  ansible.builtin.copy:
+    src: zfs-trim-weekly.service
+    dest: /etc/systemd/system/zfs-trim-weekly.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the weekly trim timer
+  ansible.builtin.copy:
+    src: zfs-trim-weekly.timer
+    dest: /etc/systemd/system/zfs-trim-weekly.timer
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable the weekly trim timer
+  ansible.builtin.systemd:
+    name: zfs-trim-weekly.timer
+    enabled: true
+    state: started
+    daemon_reload: true

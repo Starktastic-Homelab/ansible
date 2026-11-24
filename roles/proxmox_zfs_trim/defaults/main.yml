@@ -1,0 +1,4 @@
+---
+# Pools whose Debian trim policy this role sets: pool name -> auto | enable | disable (the org.debian:periodic-trim
+# property read by /usr/lib/zfs-linux/trim). Unlisted pools keep Debian's default, auto: trim only if NVMe-only.
+proxmox_zfs_trim_pools: {}

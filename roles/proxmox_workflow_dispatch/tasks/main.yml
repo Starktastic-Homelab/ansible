@@ -36,6 +36,26 @@
     label: "{{ item.key }}"
   changed_when: false
 
+# restic uploads /etc daily; proxmox_backup's exclude for /etc/homelab-dispatch is live only once that role has
+# re-rendered excludes.txt. Never write the token while a live excludes file lacks it.
+- name: Check for the backup excludes file
+  ansible.builtin.stat:
+    path: /etc/homelab-backup.d/excludes.txt
+  register: proxmox_workflow_dispatch_excludes_stat
+
+- name: Read the backup excludes file
+  ansible.builtin.slurp:
+    src: /etc/homelab-backup.d/excludes.txt
+  register: proxmox_workflow_dispatch_excludes
+  when: proxmox_workflow_dispatch_excludes_stat.stat.exists
+
+- name: Refuse while the backup would upload the token
+  ansible.builtin.assert:
+    that:
+      - "'/etc/homelab-dispatch' in (proxmox_workflow_dispatch_excludes.content | b64decode).splitlines()"
+    fail_msg: Run proxmox-backup.yml first, so restic excludes /etc/homelab-dispatch before the token is written
+  when: proxmox_workflow_dispatch_excludes_stat.stat.exists
+
 - name: Create the dispatch directory
   ansible.builtin.file:
     path: /etc/homelab-dispatch

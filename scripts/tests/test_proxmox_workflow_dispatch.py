@@ -169,6 +169,24 @@ class WorkflowDispatchTests(unittest.TestCase):
                          [('proxmox_hosts', True, False, ['proxmox_workflow_dispatch'])])
         self.assertNotIn('proxmox_workflow_dispatch', (ROOT / 'k3s.yml').read_text())
 
+    def test_refuses_token_before_backup_exclude_is_live(self):
+        # The exclude only takes effect when proxmox_backup re-renders excludes.txt; until then a daily backup would
+        # upload the header. Refuse before writing it while the live excludes file lacks the path.
+        t = tasks()
+        excludes = '/etc/homelab-backup.d/excludes.txt'
+        stat = index_of(lambda x: x.get('ansible.builtin.stat', {}).get('path') == excludes)
+        read = index_of(lambda x: x.get('ansible.builtin.slurp', {}).get('src') == excludes)
+        guard = index_of(lambda x: 'ansible.builtin.assert' in x and
+                         CONF in ' '.join(x['ansible.builtin.assert']['that']))
+        self.assertIn('stat.exists', t[read]['when'])
+        self.assertIn('stat.exists', t[guard]['when'])
+        self.assertIn('b64decode', ' '.join(t[guard]['ansible.builtin.assert']['that']))
+        self.assertIn('proxmox-backup.yml', t[guard]['ansible.builtin.assert']['fail_msg'])
+        header = t.index(by_dest(HEADER))
+        self.assertLess(stat, read)
+        self.assertLess(read, guard)
+        self.assertLess(guard, header)
+
     def test_backup_excludes_dispatch(self):
         # The token is restorable from the vault, so it never goes into the off-site snapshots.
         # The defaults use !unsafe, which safe_load cannot read: check the list line in the excludes block.

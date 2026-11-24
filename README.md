@@ -97,7 +97,7 @@ the drills that tested them are in [docs/backup-and-restore.md](docs/backup-and-
 |---|---|
 | `k3s.yml` | The cluster playbook: eight plays, from waiting for SSH to the Argo CD root app |
 | `i915-sriov.yml`, `i915-acceptance.yml` | Host GPU driver install, and the capture and acceptance checks around it |
-| `proxmox-backup.yml`, `proxmox-guest-startup.yml`, `proxmox-zfs-trim.yml`, `ser2net.yml` | Host playbooks, each deployed by its own workflow |
+| `proxmox-backup.yml`, `proxmox-guest-startup.yml`, `proxmox-workflow-dispatch.yml`, `proxmox-zfs-trim.yml`, `ser2net.yml` | Host playbooks, each deployed by its own workflow |
 | `proxmox-csi-storage.yml`, `csi-activation-preflight.yml`, `maintenance-runner.yml` | Manual setup and checks for Proxmox CSI storage and the runner |
 | `roles/` | The roles listed below |
 | `inventory/` | `proxmox.yml`, the dynamic inventory from Proxmox tags, and `hosts.yml`, the Proxmox host |
@@ -116,6 +116,7 @@ the drills that tested them are in [docs/backup-and-restore.md](docs/backup-and-
 | `i915_sriov` | Proxmox host | Installs the DKMS driver, pins the kernel, sets the boot parameters and the seven virtual functions, schedules the reboot |
 | `proxmox_backup` | Proxmox host | The backup script and timers, the USB pool import, the vzdump job, a storage quota and the TrueNAS drift check |
 | `proxmox_guest_startup` | Proxmox host | Starts TrueNAS first and waits for it, reboots the host after a kernel oops, caps the ZFS ARC, pins the runner's memory, installs CPU microcode |
+| `proxmox_workflow_dispatch` | Proxmox host | Timers that dispatch workflows on a schedule GitHub cannot drop (the storage backstop) |
 | `proxmox_zfs_trim` | Proxmox host | Weekly full trim of opted-in ZFS pools (Debian's script; rpool opted in, NVMe pools by default) |
 | `ser2net` | Proxmox host | Exposes the Zigbee USB dongle on TCP port 3333 |
 | `proxmox_csi_storage` | Proxmox host, by hand | Registers the NFS storage, resource pool, role and API token for Proxmox CSI, and refuses anything that already differs |
@@ -132,6 +133,7 @@ the drills that tested them are in [docs/backup-and-restore.md](docs/backup-and-
 | `i915-sriov-upgrade.yml` | push that changes the host driver pin, manual | Installs the host GPU driver, then reboots the host |
 | `proxmox-backup.yml` | push that changes the backup role, manual | Deploys the host-side backup |
 | `proxmox-guest-startup.yml` | push that changes the startup role, manual | Sets guest boot order and the host's crash behaviour |
+| `proxmox-workflow-dispatch.yml` | push that changes the dispatch role or its vars, manual | Installs the dispatch timers |
 | `proxmox-zfs-trim.yml` | push that changes the trim role or its vars, manual | Installs the weekly trim timer |
 | `ser2net.yml` | push that changes the ser2net role, manual | Deploys the Zigbee serial bridge |
 | `i915-acceptance.yml` | manual, or called | Proves GPU acceleration works on the running stack or after a reboot |

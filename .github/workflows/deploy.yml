@@ -31,6 +31,10 @@ on:
       - 'proxmox-zfs-trim.yml'
       - '.github/workflows/proxmox-zfs-trim.yml'
       - 'scripts/tests/test_proxmox_zfs_trim.py'
+      - 'roles/proxmox_workflow_dispatch/**'
+      - 'proxmox-workflow-dispatch.yml'
+      - '.github/workflows/proxmox-workflow-dispatch.yml'
+      - 'scripts/tests/test_proxmox_workflow_dispatch.py'
       # storage.yml runs these; k3s.yml has no storage play.
       - 'roles/storage_vm/**'
       - 'storage.yml'

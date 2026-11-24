@@ -176,6 +176,29 @@ class WorkflowDispatchTests(unittest.TestCase):
         block = text.split('proxmox_backup_excludes:\n', 1)[1].split('\n\n', 1)[0]
         self.assertIn(f'  - {CONF}', block.splitlines())
 
+    def test_workflow_and_deploy_ignore(self):
+        deploy_ignored = yaml.safe_load((ROOT / '.github/workflows/deploy.yml').read_text())[True]['push']['paths-ignore']
+        for path in ('roles/proxmox_workflow_dispatch/**', 'proxmox-workflow-dispatch.yml',
+                     '.github/workflows/proxmox-workflow-dispatch.yml', 'scripts/tests/test_proxmox_workflow_dispatch.py',
+                     'group_vars/proxmox_hosts/**'):
+            self.assertIn(path, deploy_ignored)
+        own = yaml.safe_load((ROOT / '.github/workflows/proxmox-workflow-dispatch.yml').read_text())
+        self.assertEqual(own[True]['push']['branches'], ['main'])
+        self.assertIn('workflow_dispatch', own[True])
+        self.assertEqual(sorted(own[True]['push']['paths']), [
+            'group_vars/proxmox_hosts/vault_workflow_dispatch.yml', 'group_vars/proxmox_hosts/workflow_dispatch.yml',
+            'proxmox-workflow-dispatch.yml', 'roles/proxmox_workflow_dispatch/**'])
+        (job,) = own['jobs'].values()
+        self.assertEqual(job['runs-on'], 'self-hosted')
+        run = ' '.join(s.get('run', '') for s in job['steps'])
+        self.assertIn('-i inventory/hosts.yml', run)
+        self.assertIn('proxmox-workflow-dispatch.yml', run)
+        last = job['steps'][-1]
+        self.assertEqual((last['if'], last['run'].strip()), ('always()', 'rm -f .vault_pass'))
+        syntax = next(line for line in (ROOT / '.github/workflows/validate.yml').read_text().splitlines()
+                      if line.strip().startswith('--syntax-check'))
+        self.assertIn('proxmox-workflow-dispatch.yml', syntax.split())
+
 
 if __name__ == '__main__':
     unittest.main()

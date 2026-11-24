@@ -6,6 +6,8 @@
 # 180 s before the unordered guests. Terraform ignores startup on the K3s VMs.
 proxmox_guest_startup:
   "100": "order=1,up=180"
+  # Storage VM (ADR 0017): after TrueNAS NFS, before the unordered k3s VMs
+  "101": "order=2,up=30"
 
 # ZFS ARC ceiling, applied live and at boot by a tmpfiles.d line. It wins over the installer's
 # 13481541632 in /etc/modprobe.d/zfs.conf after boot. 8 GiB leaves room for the guests.

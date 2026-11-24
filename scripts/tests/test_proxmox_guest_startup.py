@@ -36,6 +36,12 @@ class CrashSettings(unittest.TestCase):
             self.assertNotIn(word, text)
 
 
+class GuestStartup(unittest.TestCase):
+    def test_storage_vm_starts_after_truenas(self):
+        # The K3s workers stay unordered, so they start after both and stop first.
+        self.assertEqual(host_vars()['proxmox_guest_startup'], {'100': 'order=1,up=180', '101': 'order=2,up=30'})
+
+
 class HostMemory(unittest.TestCase):
     def test_arc_cap_is_8_gib(self):
         self.assertEqual(host_vars()['proxmox_guest_startup_zfs_arc_max_bytes'], 8 * 1024 ** 3)

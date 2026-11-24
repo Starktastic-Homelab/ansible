@@ -115,6 +115,27 @@ class ZfsTrimTests(unittest.TestCase):
                          [('proxmox_hosts', True, False, ['proxmox_zfs_trim'])])
         self.assertNotIn('proxmox_zfs_trim', (ROOT / 'k3s.yml').read_text())
 
+    def test_workflow_and_deploy_ignore(self):
+        deploy_ignored = yaml.safe_load((ROOT / '.github/workflows/deploy.yml').read_text())[True]['push']['paths-ignore']
+        for p in ('roles/proxmox_zfs_trim/**', 'proxmox-zfs-trim.yml', '.github/workflows/proxmox-zfs-trim.yml',
+                  'scripts/tests/test_proxmox_zfs_trim.py', 'group_vars/proxmox_hosts/**'):
+            self.assertIn(p, deploy_ignored)
+        own = yaml.safe_load((ROOT / '.github/workflows/proxmox-zfs-trim.yml').read_text())
+        self.assertEqual(own[True]['push']['branches'], ['main'])
+        self.assertIn('workflow_dispatch', own[True])
+        self.assertEqual(sorted(own[True]['push']['paths']),
+                         ['group_vars/proxmox_hosts/zfs_trim.yml', 'proxmox-zfs-trim.yml', 'roles/proxmox_zfs_trim/**'])
+        (job,) = own['jobs'].values()
+        self.assertEqual(job['runs-on'], 'self-hosted')
+        run = ' '.join(s.get('run', '') for s in job['steps'])
+        self.assertIn('-i inventory/hosts.yml', run)
+        self.assertIn('proxmox-zfs-trim.yml', run)
+        last = job['steps'][-1]
+        self.assertEqual((last['if'], last['run'].strip()), ('always()', 'rm -f .vault_pass'))
+        syntax = next(line for line in (ROOT / '.github/workflows/validate.yml').read_text().splitlines()
+                      if line.strip().startswith('--syntax-check'))
+        self.assertIn('proxmox-zfs-trim.yml', syntax.split())
+
 
 if __name__ == '__main__':
     unittest.main()

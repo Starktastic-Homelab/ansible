@@ -26,7 +26,7 @@ flowchart LR
 
 | Tag | Contents |
 |---|---|
-| `daily` | `/srv/backup-src/{k3s-block,pv}`, `/etc` (including `/etc/pve`), `/usbbk/git`, `/root`; minus `/etc/homelab-backup` and the excludes in `/etc/homelab-backup.d/excludes.txt` (five images re-initialised blank after a loss, see **Re-initialise an excluded image**; Immich `thumbs/` and `encoded-video/`; `/etc/homelab-dispatch`, the workflow dispatch token, restorable from the vault) |
+| `daily` | `/srv/backup-src/{k3s-block,pv}`, `/etc` (including `/etc/pve`), `/usbbk/git`, `/root`; minus `/etc/homelab-backup` and the excludes in `/etc/homelab-backup.d/excludes.txt` (six images: five re-initialised blank after a loss, see **Re-initialise an excluded image**, and the storage VM's regen disk `images/9998/vm-9998-disk-1.raw`; Immich `thumbs/` and `encoded-video/`; `/etc/homelab-dispatch`, the workflow dispatch token, restorable from the vault) |
 | `vzdump` | the newest `vzdump-qemu-300-*.vma` (Garage Terraform state). The VM100 dump stays local. |
 | `nfs` | `/srv/backup-src/immich`, uploaded last so a broken share can't hold back the others |
 
@@ -366,6 +366,15 @@ deleted on 2026-11-16, Ben's decision). This section applies when the live image
 `usbbk/tn/k3s-block@auto-*` snapshot has it, or `usbbk` itself is lost. To check the replica, hold the lock
 (**Hold the backup lock**) and run `ls /srv/restore-src/images/9999/` on each snapshot mounted as in **One image
 from the replica**.
+
+The storage VM's regen disk (`images/9998/vm-9998-disk-1.raw`, ADR 0017) is excluded too, and not by the `vm-9999`
+steps in this section. Its only copy is the replica: restore it as in apps `docs/runbooks/storage-vm-restore.md`
+"Whole-disk restore", with the file from **One image from the replica** (its step 2) and the regen VG handled as in
+step 3 ("If `regen` was restored too"). `storage-vm-rebuild.md` does not cover it: that runbook keeps both data disks.
+With no replica copy, a blank re-creation has no runbook yet and needs Ben: a new volume on `k3s-block`, a regen-only
+VG bootstrap (`storage-vm-bootstrap.md` refuses a VM that already has LVs), and `storage-vm-crashed-create.md`
+"lost (ledgered, LV missing)" for each regen id. Until one of these is done, every `storage.yml` dry run fails on the
+missing VG, so retained creates and grows wait too (ADR 0017, migration plan D42).
 
 **Pre-approved.** Ben decided on 2026-11-16 that these five images may be re-initialised blank, accepting the loss
 of their history, once the checks above show no replica copy. No further approval is needed. This is the only

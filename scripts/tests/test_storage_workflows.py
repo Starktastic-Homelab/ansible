@@ -413,12 +413,42 @@ class WorkflowTests(unittest.TestCase):
 
     def test_held_lock_input(self):
         inputs = workflow('storage.yml')[True]['workflow_dispatch']['inputs']
-        self.assertEqual(set(inputs), {'held_lock_owner', 'remove_workers', 'max_removals'})
+        self.assertEqual(set(inputs), {'held_lock_owner', 'remove_workers', 'max_removals', 'backstop'})
         for name in ('held_lock_owner', 'remove_workers', 'max_removals'):
             self.assertIs(inputs[name]['required'], False, name)
             self.assertEqual(inputs[name]['default'], '', name)
         self.assertIs(inputs['held_lock_owner']['required'], False)
         self.assertEqual(inputs['held_lock_owner']['default'], '')
+
+    def test_backstop_input(self):
+        for name in NAMES:
+            inputs = workflow(name)[True]['workflow_dispatch']['inputs']
+            if name == 'storage-expiry.yml':
+                self.assertEqual(set(inputs), {'backstop'})
+            backstop = inputs['backstop']
+            self.assertEqual((backstop['required'], backstop['default'], backstop['type']), (False, False, 'boolean'),
+                             name)
+            self.assertIn('backup windows', backstop['description'], name)
+
+    def test_ready_step_env(self):
+        # The inputs reach storage_ready.py through env only; the run line stays pinned (every_step_after_ready).
+        expected = {'storage.yml': {'STORAGE_BACKSTOP': '${{ inputs.backstop }}',
+                                    'STORAGE_HELD_LOCK_OWNER': '${{ inputs.held_lock_owner }}'},
+                    'storage-expiry.yml': {'STORAGE_BACKSTOP': '${{ inputs.backstop }}'}}
+        for name in NAMES:
+            ready = step(name, id='ready')
+            self.assertEqual(ready['env'], expected[name], name)
+            self.assertEqual(ready['run'], 'python3 scripts/storage_ready.py', name)
+
+    def test_main_ref_guard(self):
+        # A dispatch of a stale branch must not run old storage code with today's secrets.
+        for name in NAMES:
+            self.assertEqual(workflow(name)['jobs']['reconcile']['if'], "github.ref == 'refs/heads/main'", name)
+
+    def test_backstop_never_in_if(self):
+        for name in NAMES:
+            for s in steps(name):
+                self.assertNotIn('inputs.backstop', s.get('if', ''), (name, s.get('name', s.get('uses'))))
 
     def test_held_lock_owner_set_at_job_level(self):
         # GITHUB_ENV may not override a job-level env key, so the owner the verify step reads must not depend on it.
@@ -587,7 +617,11 @@ class WorkflowTests(unittest.TestCase):
         groups = set()
         for name, group in zip(NAMES, ('storage-reconcile', 'storage-expiry')):
             doc = workflow(name)
-            self.assertEqual(doc['concurrency'], {'group': group, 'cancel-in-progress': False}, name)
+            # Scheduled and backstop runs replace only each other, never a pending human or runbook dispatch.
+            self.assertEqual(doc['concurrency'], {
+                'group': f"${{{{ (github.event_name == 'schedule' || inputs.backstop) && '{group}-backstop' || "
+                         f"'{group}' }}}}",
+                'cancel-in-progress': False}, name)
             job = doc['jobs']['reconcile']
             self.assertIsInstance(job['timeout-minutes'], int, name)
             self.assertEqual(job['runs-on'], 'self-hosted', name)

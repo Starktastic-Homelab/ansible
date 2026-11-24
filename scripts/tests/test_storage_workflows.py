@@ -223,6 +223,45 @@ class ReadyTests(unittest.TestCase):
             self.outputs(event='schedule', now=dumps)
 
 
+    def test_backstop_dispatch_skips_inside_windows(self):
+        # The pve timer dispatches with backstop (D29 reopen): such a dispatch is window-checked like a schedule.
+        dumps = datetime(2027, 1, 13, 0, 5, tzinfo=timezone.utc)  # Wednesday 02:05 local
+        one = ['storage-01']
+        self.assertEqual(self.ready(hosts=one, event='workflow_dispatch', now=dumps, backstop=True)[0], 'ready=false\n')
+        self.assertEqual(self.ready(hosts=one, event='workflow_dispatch', now=dumps, backstop=False)[0], 'ready=true\n')
+        self.assertEqual(self.gauges(hosts=one, event='workflow_dispatch', now=dumps, backstop=True), ('false', 'true'))
+        for event in ('push', 'repository_dispatch'):
+            self.assertEqual(self.ready(hosts=one, event=event, now=dumps, backstop=True)[0], 'ready=true\n', event)
+
+    def test_backstop_env_is_exact(self):
+        dumps = datetime(2027, 1, 13, 0, 5, tzinfo=timezone.utc)
+        for value, expected in (('true', 'ready=false\n'), ('false', 'ready=true\n'), ('', 'ready=true\n'),
+                                ('True', 'ready=true\n'), ('1', 'ready=true\n')):
+            with mock.patch.dict(os.environ, STORAGE_BACKSTOP=value, STORAGE_HELD_LOCK_OWNER=''):
+                self.assertEqual(self.ready(hosts=['storage-01'], event='workflow_dispatch', now=dumps)[0],
+                                 expected, value)
+
+    def test_backstop_with_held_owner_refuses(self):
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            self.outputs(hosts=['storage-01'], event='workflow_dispatch', backstop=True, held_owner=RESTORE_OWNER)
+        self.assertIn('contradictory', str(raised.exception.code))
+        written = self.outputs(hosts=['storage-01'], event='workflow_dispatch', backstop=False,
+                               held_owner=RESTORE_OWNER)[0]
+        self.assertIn('ready=true', written)
+
+    def test_snapshot_windows(self):
+        def at(*utc):
+            return datetime(*utc, tzinfo=timezone.utc)
+        # :25-:50 of 03, 09, 15 and 21 local (outline.md "backup windows"); a delayed run can land in them.
+        self.assertEqual(backup_window(at(2027, 1, 13, 1, 30)), 'snapshots')  # 03:30 January (UTC+2)
+        self.assertIsNone(backup_window(at(2027, 1, 13, 1, 24)))  # 03:24
+        self.assertIsNone(backup_window(at(2027, 1, 13, 1, 50)))  # 03:50, the end is exclusive
+        self.assertEqual(backup_window(at(2027, 7, 14, 12, 25)), 'snapshots')  # 15:25 July (UTC+3)
+        self.assertEqual(backup_window(at(2027, 1, 13, 19, 45)), 'snapshots')  # 21:45
+        self.assertEqual(backup_window(at(2027, 1, 13, 7, 40)), 'snapshots')  # 09:40
+        self.assertIsNone(backup_window(at(2027, 1, 13, 10, 30)))  # 12:30
+
+
 class WorkflowTests(unittest.TestCase):
     def test_every_step_after_ready_is_gated(self):
         for name in NAMES:

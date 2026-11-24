@@ -2,7 +2,8 @@
 """Decide whether a storage workflow run may touch anything (ADR 0017), writing ready=true|false to GITHUB_OUTPUT.
 
 A run skips, green, while the storage group is empty or storage_vm_pv_devices is still the placeholder, and a
-scheduled run skips inside the backup windows (D29). Dispatch, manual and push runs are never window-skipped.
+scheduled run skips inside the backup windows (D29). Dispatch, manual and push runs are never window-skipped unless
+dispatched with backstop (the pve timer, which stands in for GitHub's unreliable scheduler).
 gauges=true|false is ready without the window skip: the host gauges (a read and a textfile) are written every hour.
 """
 from datetime import datetime, time, timezone
@@ -23,9 +24,10 @@ ZONE = ZoneInfo('Asia/Jerusalem')
 SUNDAY = 6
 # docs/backup-and-restore.md. backup and maint end when their unit has finished, which a runner container cannot
 # see: 06:00 and 07:00 are provisional (D29, unanswered); confirm them from the healthchecks run durations.
-# The :25-:50 snapshot windows are never hit by a :05 cron.
+# The :25-:50 snapshot windows are listed too: a run dispatched at :05 can start late (a cron landed at :51).
 WINDOWS = (('dumps', None, time(1, 55), time(2, 15)), ('vzdump', SUNDAY, time(0, 55), time(1, 15)),
-           ('backup', None, time(4, 25), time(6, 0)), ('maint', SUNDAY, time(5, 25), time(7, 0)))
+           ('backup', None, time(4, 25), time(6, 0)), ('maint', SUNDAY, time(5, 25), time(7, 0)),
+           *(('snapshots', None, time(hour, 25), time(hour, 50)) for hour in (3, 9, 15, 21)))
 
 
 def skip_reason(hosts, group_vars):
@@ -61,9 +63,15 @@ def storage_hosts():
     return groups.get('storage', [])
 
 
-def main(hosts=None, event=None, now=None):
+def main(hosts=None, event=None, now=None, backstop=None, held_owner=None):
     event = os.environ.get('GITHUB_EVENT_NAME', '') if event is None else event
-    window = backup_window(now or datetime.now(timezone.utc)) if event == 'schedule' else None
+    # The ready step passes the dispatch inputs through env: a boolean input renders 'true', 'false' or ''.
+    backstop = os.environ.get('STORAGE_BACKSTOP', '') == 'true' if backstop is None else backstop
+    held_owner = os.environ.get('STORAGE_HELD_LOCK_OWNER', '') if held_owner is None else held_owner
+    if backstop and held_owner:
+        sys.exit('backstop and held_lock_owner are contradictory: the runbook dispatch never sets backstop')
+    windowed = event == 'schedule' or (event == 'workflow_dispatch' and backstop)
+    window = backup_window(now or datetime.now(timezone.utc)) if windowed else None
     group_vars = (yaml.safe_load(GROUP_VARS.read_text()) or {}) if GROUP_VARS.exists() else {}
     unconfigured = skip_reason(storage_hosts() if hosts is None else hosts, group_vars)
     if window:

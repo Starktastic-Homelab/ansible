@@ -128,8 +128,8 @@ class ReadyTests(unittest.TestCase):
             self.assertEqual(skip_reason(['storage-01'], {'storage_vm_pv_devices': bad}),
                              'storage_vm_pv_devices is the placeholder', bad)
         self.assertIsNone(skip_reason(['storage-01'], {'storage_vm_pv_devices': PV}))
-        self.assertEqual(skip_reason(['storage-01'], yaml.safe_load(storage_ready.GROUP_VARS.read_text())),
-                         'storage_vm_pv_devices is the placeholder')  # until Task 3.5 sets it
+        # Production holds real paths since Task 3.5: the storage host is reconciled.
+        self.assertIsNone(skip_reason(['storage-01'], yaml.safe_load(storage_ready.GROUP_VARS.read_text())))
         with self.assertRaises(SystemExit) as e:
             skip_reason(['a', 'b'], {'storage_vm_pv_devices': PV})
         self.assertIn('more than one host in the storage group', str(e.exception.code))
